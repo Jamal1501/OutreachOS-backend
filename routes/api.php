@@ -1,5 +1,8 @@
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', function () {
-    return response()->json(['ok' => true]);
+    return response()->json([
+        'status' => 'ok',
+        'service' => 'loveframes-outreach-api'
+    ]);
 });
