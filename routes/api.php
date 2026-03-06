@@ -10,7 +10,7 @@ Route::get('/health', function () {
     ]);
 });
 
-<<<<<<< HEAD
+ HEAD
 Route::post('/apify/run', [ApifyController::class, 'runTikTokHashtagActor']);
 Route::get('/apify/status/{runId}', [ApifyController::class, 'getRunStatus']);
 Route::get('/apify/results/{datasetId}', [ApifyController::class, 'getDatasetResults']);
