@@ -10,12 +10,6 @@ Route::get('/health', function () {
     ]);
 });
 
- HEAD
-Route::post('/apify/run', [ApifyController::class, 'runTikTokHashtagActor']);
-Route::get('/apify/status/{runId}', [ApifyController::class, 'getRunStatus']);
-Route::get('/apify/results/{datasetId}', [ApifyController::class, 'getDatasetResults']);
-Route::post('/apify/import-results', [ApifyController::class, 'importDatasetToSheet']);
-=======
 Route::middleware('app.key')->group(function () {
     Route::post('/apify/run', [ApifyController::class, 'runActor']);
     Route::get('/apify/status/{runId}', [ApifyController::class, 'getRunStatus']);
@@ -29,4 +23,3 @@ Route::middleware('app.key')->group(function () {
 
     Route::post('/outreach/log', [ApifyController::class, 'logOutreachEvent']);
 });
->>>>>>> 4a32212 (Add protected API, CRM merge, task queue, outreach log)
