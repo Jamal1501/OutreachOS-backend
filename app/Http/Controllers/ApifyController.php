@@ -362,14 +362,13 @@ class ApifyController extends Controller
                 'status' => $response->status(),
                 'body' => $response->json() ?? $response->body(),
             ], 500);
-=======
             throw new RuntimeException('Failed to fetch dataset results: ' . $response->body());
->>>>>>> 4a32212 (Add protected API, CRM merge, task queue, outreach log)
+4a32212 (Add protected API, CRM merge, task queue, outreach log)
         }
 
         $items = $response->json();
 
-<<<<<<< HEAD
+HEAD
         if (!is_array($items) || count($items) === 0) {
             return response()->json([
                 'message' => 'No items found in dataset',
