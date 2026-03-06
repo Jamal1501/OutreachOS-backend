@@ -2,17 +2,16 @@
 
 namespace App\Http\Controllers;
 
-<<<<<<< HEAD
+HEAD
 use Google\Client as GoogleClient;
 use Google\Service\Sheets;
 use Google\Service\Sheets\ValueRange;
-=======
 use App\Services\ApifyRowMapper;
 use App\Services\CreatorMergeService;
 use App\Services\GoogleSheetsService;
 use App\Services\OutreachLogService;
 use App\Services\TaskQueueService;
->>>>>>> 4a32212 (Add protected API, CRM merge, task queue, outreach log)
+4a32212 (Add protected API, CRM merge, task queue, outreach log)
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
@@ -21,7 +20,7 @@ use RuntimeException;
 
 class ApifyController extends Controller
 {
-<<<<<<< HEAD
+ HEAD
     private const IMPORTABLE_SHEETS = [
         'TikTok_Posts_Raw',
         'Instagram_Posts_Raw',
@@ -41,7 +40,6 @@ class ApifyController extends Controller
             return response()->json([
                 'error' => 'Missing Apify env vars',
             ], 500);
-=======
     public function __construct(
         private ApifyRowMapper $rowMapper,
         private GoogleSheetsService $sheets,
@@ -57,7 +55,7 @@ class ApifyController extends Controller
 
         if ($token === '') {
             return response()->json(['error' => 'Missing APIFY_API_TOKEN'], 500);
->>>>>>> 4a32212 (Add protected API, CRM merge, task queue, outreach log)
+4a32212 (Add protected API, CRM merge, task queue, outreach log)
         }
 
         $validated = $request->validate([
@@ -111,15 +109,14 @@ class ApifyController extends Controller
     {
         $token = (string) config('services.apify.token');
 
-<<<<<<< HEAD
+ HEAD
         if (!$token) {
             return response()->json([
                 'error' => 'Missing APIFY_API_TOKEN',
             ], 500);
-=======
         if ($token === '') {
             return response()->json(['error' => 'Missing APIFY_API_TOKEN'], 500);
->>>>>>> 4a32212 (Add protected API, CRM merge, task queue, outreach log)
+ 4a32212 (Add protected API, CRM merge, task queue, outreach log)
         }
 
         $response = Http::withToken($token)
@@ -143,15 +140,15 @@ class ApifyController extends Controller
     {
         $token = (string) config('services.apify.token');
 
-<<<<<<< HEAD
+ HEAD
         if (!$token) {
             return response()->json([
                 'error' => 'Missing APIFY_API_TOKEN',
             ], 500);
-=======
+
         if ($token === '') {
             return response()->json(['error' => 'Missing APIFY_API_TOKEN'], 500);
->>>>>>> 4a32212 (Add protected API, CRM merge, task queue, outreach log)
+ 4a32212 (Add protected API, CRM merge, task queue, outreach log)
         }
 
         $limit = (int) $request->query('limit', 100);
@@ -185,7 +182,7 @@ class ApifyController extends Controller
 
     public function importDatasetToSheet(Request $request)
     {
-<<<<<<< HEAD
+ HEAD
         $token = env('APIFY_API_TOKEN');
         $sheetId = $request->input('sheetId') ?: env('GOOGLE_SHEET_ID');
         $serviceAccountJson = env('GOOGLE_SERVICE_ACCOUNT_JSON');
@@ -206,7 +203,7 @@ class ApifyController extends Controller
 
         $datasetId = $validated['datasetId'];
         $sheetName = $validated['sheetName'];
-=======
+
         $validated = $request->validate([
             'datasetId' => ['required', 'string'],
             'sheetName' => ['required', 'string', Rule::in(ApifyRowMapper::IMPORTABLE_SHEETS)],
@@ -350,7 +347,7 @@ class ApifyController extends Controller
         if ($token === '') {
             throw new RuntimeException('Missing APIFY_API_TOKEN');
         }
->>>>>>> 4a32212 (Add protected API, CRM merge, task queue, outreach log)
+ 4a32212 (Add protected API, CRM merge, task queue, outreach log)
 
         $response = Http::withToken($token)
             ->get("https://api.apify.com/v2/datasets/{$datasetId}/items", [
@@ -359,7 +356,7 @@ class ApifyController extends Controller
             ]);
 
         if (!$response->successful()) {
-<<<<<<< HEAD
+ HEAD
             return response()->json([
                 'error' => 'Failed to fetch dataset results',
                 'status' => $response->status(),
@@ -692,7 +689,7 @@ class ApifyController extends Controller
 
         return $unique;
     }
-=======
+
         return is_array($items) ? $items : [];
     }
 
@@ -705,5 +702,5 @@ class ApifyController extends Controller
             'tiktok_profile' => (string) config('services.apify.actors.tiktok_profile'),
         ];
     }
->>>>>>> 4a32212 (Add protected API, CRM merge, task queue, outreach log)
+ 4a32212 (Add protected API, CRM merge, task queue, outreach log)
 }
