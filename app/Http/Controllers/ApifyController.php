@@ -104,18 +104,22 @@ class ApifyController extends Controller
         ]);
     }
 
-    public function getDatasetResults(Request $request, string $datasetId)
-    {
+public function getDatasetResults(Request $request, string $datasetId)
+{
+    try {
         $token = (string) config('services.apify.token');
 
         if ($token === '') {
-            return response()->json(['error' => 'Missing APIFY_API_TOKEN'], 500);
+            return response()->json([
+                'error' => 'Missing APIFY_API_TOKEN',
+            ], 500);
         }
 
         $limit = (int) $request->query('limit', 100);
         $offset = (int) $request->query('offset', 0);
 
         $response = Http::withToken($token)
+            ->acceptJson()
             ->get("https://api.apify.com/v2/datasets/{$datasetId}/items", [
                 'clean' => 'true',
                 'format' => 'json',
@@ -127,19 +131,32 @@ class ApifyController extends Controller
             return response()->json([
                 'error' => 'Failed to fetch dataset results',
                 'status' => $response->status(),
-                'body' => $response->json() ?? $response->body(),
-            ], 500);
+                'body' => $response->body(),
+            ], $response->status());
         }
 
-        $items = $response->json();
+        $items = json_decode($response->body(), true);
+
+        if (!is_array($items)) {
+            return response()->json([
+                'error' => 'Dataset response was not a valid JSON array',
+                'raw_body' => $response->body(),
+            ], 500);
+        }
 
         return response()->json([
             'message' => 'Dataset results fetched',
             'datasetId' => $datasetId,
-            'count' => is_array($items) ? count($items) : 0,
+            'count' => count($items),
             'items' => $items,
         ]);
+    } catch (\Throwable $e) {
+        return response()->json([
+            'error' => 'Unhandled error while fetching dataset results',
+            'message' => $e->getMessage(),
+        ], 500);
     }
+}
 
     public function importDatasetToSheet(Request $request)
     {
