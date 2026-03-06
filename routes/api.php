@@ -13,3 +13,4 @@ Route::get('/health', function () {
 Route::post('/apify/run', [ApifyController::class, 'runTikTokHashtagActor']);
 Route::get('/apify/status/{runId}', [ApifyController::class, 'getRunStatus']);
 Route::get('/apify/results/{datasetId}', [ApifyController::class, 'getDatasetResults']);
+Route::post('/apify/import-results', [ApifyController::class, 'importDatasetToSheet']);
