@@ -207,8 +207,9 @@ public function getDatasetResults(Request $request, string $datasetId)
         ]);
     }
 
-    public function mergeEnrichedToCreators(Request $request)
-    {
+public function mergeEnrichedToCreators(Request $request)
+{
+    try {
         $validated = $request->validate([
             'sheetId' => ['nullable', 'string'],
             'sourceSheet' => ['required', 'string', Rule::in(CreatorMergeService::SOURCE_SHEETS)],
@@ -230,7 +231,15 @@ public function getDatasetResults(Request $request, string $datasetId)
             'sheetId' => $sheetId,
             'result' => $result,
         ]);
+    } catch (\Throwable $e) {
+        return response()->json([
+            'error' => 'Merge failed',
+            'message' => $e->getMessage(),
+            'file' => basename($e->getFile()),
+            'line' => $e->getLine(),
+        ], 500);
     }
+}
 
     public function generateTasks(Request $request)
     {
