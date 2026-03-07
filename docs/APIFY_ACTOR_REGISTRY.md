@@ -140,3 +140,24 @@ Input JSON
 Notes
 
 Looks like a profile enricher because it uses profiles, not hashtags. Final confirmation depends on output shape.
+
+Google Sheet mapping
+Discovery outputs
+
+Instagram hashtag discovery -> Instagram_Posts_Raw
+
+TikTok hashtag discovery -> TikTok_Posts_Raw
+
+Enrichment outputs
+
+Instagram profile enrichment -> Instagram_Profile_Enriched
+
+TikTok profile enrichment -> TikTok_Profile_Enriched
+
+Downstream
+
+Enriched profile sheets are merged into Creators_CRM
+
+Outreach tasks are created in Task_Queue
+
+Outreach actions are logged in Outreach_Log
