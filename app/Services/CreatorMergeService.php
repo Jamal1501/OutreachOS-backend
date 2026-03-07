@@ -17,78 +17,91 @@ class CreatorMergeService
     {
     }
 
-    public function mergeFromEnrichedSheet(string $sheetId, string $sourceSheet): array
-    {
-        if (!in_array($sourceSheet, self::SOURCE_SHEETS, true)) {
-            throw new RuntimeException('Invalid source sheet for merge');
-        }
-
-        $sourceRows = $this->sheets->getRows($sheetId, $sourceSheet);
-        $crmHeaders = $this->sheets->getHeaders($sheetId, 'Creators_CRM');
-        $crmRows = $this->sheets->getRows($sheetId, 'Creators_CRM');
-
-        $crmIndex = [];
-        $maxRowNumber = 1;
-
-        foreach ($crmRows as $row) {
-            $crmIndex[$this->crmKey($row['Platform'] ?? '', $row['Handle'] ?? '')] = $row;
-            $maxRowNumber = max($maxRowNumber, (int) ($row['_row_number'] ?? 1));
-        }
-
-        $newRecords = [];
-        $updated = 0;
-        $created = 0;
-        $skipped = 0;
-        $unmatched = [];
-        $nextRowNumber = $maxRowNumber + 1;
-
-        foreach ($sourceRows as $sourceRow) {
-            $creator = $this->sourceRowToCreatorRecord($sourceSheet, $sourceRow);
-            $key = $this->crmKey($creator['Platform'], $creator['Handle']);
-
-            if ($creator['Handle'] === '') {
-                $skipped++;
-                $unmatched[] = [
-                    'row_number' => $sourceRow['_row_number'] ?? '',
-                    'handle' => '',
-                    'dm_link' => $creator['DM_Link'],
-                    'status' => 'SKIPPED_NO_HANDLE',
-                    'note' => 'Missing handle in enriched source row',
-                ];
-                continue;
-            }
-
-            if (isset($crmIndex[$key])) {
-                $existing = $crmIndex[$key];
-                $rowNumber = (int) ($existing['_row_number'] ?? 0);
-                $merged = $this->mergeCreatorRecords($existing, $creator, $rowNumber);
-                $this->sheets->updateAssocRow($sheetId, 'Creators_CRM', $rowNumber, $merged, $crmHeaders);
-                $crmIndex[$key] = array_merge($existing, $merged);
-                $updated++;
-                continue;
-            }
-
-            $record = $this->applyCreatorFormulas($creator, $nextRowNumber);
-            $newRecords[] = $record;
-            $crmIndex[$key] = array_merge($record, ['_row_number' => $nextRowNumber]);
-            $created++;
-            $nextRowNumber++;
-        }
-
-        $this->sheets->appendAssocRows($sheetId, 'Creators_CRM', $newRecords, $crmHeaders);
-
-        if (count($unmatched) > 0) {
-            $this->sheets->appendAssocRows($sheetId, 'Merge_Unmatched', $unmatched);
-        }
-
-        return [
-            'sourceSheet' => $sourceSheet,
-            'processed' => count($sourceRows),
-            'created' => $created,
-            'updated' => $updated,
-            'skipped' => $skipped,
-        ];
+public function mergeFromEnrichedSheet(string $sheetId, string $sourceSheet): array
+{
+    if (!in_array($sourceSheet, self::SOURCE_SHEETS, true)) {
+        throw new RuntimeException('Invalid source sheet for merge');
     }
+
+    $sourceRows = $this->sheets->getRows($sheetId, $sourceSheet);
+    $crmHeaders = $this->sheets->getHeaders($sheetId, 'Creators_CRM');
+    $crmRows = $this->sheets->getRows($sheetId, 'Creators_CRM');
+
+    $crmIndex = [];
+    $maxRowNumber = 1;
+
+    foreach ($crmRows as $row) {
+        $crmIndex[$this->crmKey($row['Platform'] ?? '', $row['Handle'] ?? '')] = $row;
+        $maxRowNumber = max($maxRowNumber, (int) ($row['_row_number'] ?? 1));
+    }
+
+    $newRecords = [];
+    $updates = [];
+    $updated = 0;
+    $created = 0;
+    $skipped = 0;
+    $unmatched = [];
+    $nextRowNumber = $maxRowNumber + 1;
+
+    foreach ($sourceRows as $sourceRow) {
+        $creator = $this->sourceRowToCreatorRecord($sourceSheet, $sourceRow);
+        $key = $this->crmKey($creator['Platform'], $creator['Handle']);
+
+        if ($creator['Handle'] === '') {
+            $skipped++;
+            $unmatched[] = [
+                'row_number' => $sourceRow['_row_number'] ?? '',
+                'handle' => '',
+                'dm_link' => $creator['DM_Link'],
+                'status' => 'SKIPPED_NO_HANDLE',
+                'note' => 'Missing handle in enriched source row',
+            ];
+            continue;
+        }
+
+        if (isset($crmIndex[$key])) {
+            $existing = $crmIndex[$key];
+            $rowNumber = (int) ($existing['_row_number'] ?? 0);
+
+            $merged = $this->mergeCreatorRecords($existing, $creator, $rowNumber);
+
+            $updates[] = [
+                'rowNumber' => $rowNumber,
+                'record' => $merged,
+            ];
+
+            $crmIndex[$key] = array_merge($existing, $merged);
+            $updated++;
+            continue;
+        }
+
+        $record = $this->applyCreatorFormulas($creator, $nextRowNumber);
+        $newRecords[] = $record;
+        $crmIndex[$key] = array_merge($record, ['_row_number' => $nextRowNumber]);
+        $created++;
+        $nextRowNumber++;
+    }
+
+    if (count($updates) > 0) {
+        $this->sheets->batchUpdateAssocRows($sheetId, 'Creators_CRM', $updates, $crmHeaders);
+    }
+
+    if (count($newRecords) > 0) {
+        $this->sheets->appendAssocRows($sheetId, 'Creators_CRM', $newRecords, $crmHeaders);
+    }
+
+    if (count($unmatched) > 0) {
+        $this->sheets->appendAssocRows($sheetId, 'Merge_Unmatched', $unmatched);
+    }
+
+    return [
+        'sourceSheet' => $sourceSheet,
+        'processed' => count($sourceRows),
+        'created' => $created,
+        'updated' => $updated,
+        'skipped' => $skipped,
+    ];
+}
 
     private function sourceRowToCreatorRecord(string $sourceSheet, array $sourceRow): array
     {
