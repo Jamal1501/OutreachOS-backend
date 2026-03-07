@@ -94,6 +94,47 @@ public function appendRows(string $sheetId, string $sheetName, array $rows): int
         $this->updateRow($sheetId, $sheetName, $rowNumber, $row);
     }
 
+    // app/Services/GoogleSheetsService.php
+public function batchUpdateAssocRows(string $sheetId, string $sheetName, array $updates, ?array $headers = null): int
+{
+    if (count($updates) === 0) {
+        return 0;
+    }
+
+    $headers ??= $this->getHeaders($sheetId, $sheetName);
+    $data = [];
+
+    foreach ($updates as $update) {
+        $rowNumber = (int) ($update['rowNumber'] ?? 0);
+        $record = $update['record'] ?? null;
+
+        if ($rowNumber <= 0 || !is_array($record)) {
+            continue;
+        }
+
+        $row = $this->recordToRow($record, $headers);
+        $lastColumn = $this->columnLetter(count($row));
+
+        $data[] = new ValueRange([
+            'range' => "{$sheetName}!A{$rowNumber}:{$lastColumn}{$rowNumber}",
+            'values' => [$row],
+        ]);
+    }
+
+    if (count($data) === 0) {
+        return 0;
+    }
+
+    $this->service()->spreadsheets_values->batchUpdate(
+        $sheetId,
+        new \Google\Service\Sheets\BatchUpdateValuesRequest([
+            'valueInputOption' => 'USER_ENTERED',
+            'data' => $data,
+        ])
+    );
+
+    return count($data);
+}
     public function updateRow(string $sheetId, string $sheetName, int $rowNumber, array $row): void
     {
         $body = new ValueRange(['values' => [$row]]);
