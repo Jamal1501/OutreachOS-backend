@@ -109,34 +109,37 @@ class ApifyRowMapper
         return $platform ? $this->mapProfileQueueRow($item, $platform, $context) : null;
     }
 
-    private function mapInstagramProfileEnrichedRow(array $item): array
-    {
-        return [
-            Arr::get($item, 'username', Arr::get($item, 'ownerUsername', '')),
-            $this->normalizeHandle(Arr::get($item, 'handle', Arr::get($item, 'username', Arr::get($item, 'ownerUsername', '')))),
-            $this->extractProfileUrl($item, 'instagram', Arr::get($item, 'username', Arr::get($item, 'ownerUsername', ''))),
-            Arr::get($item, 'inputUrl', Arr::get($item, 'input_url', Arr::get($item, 'url', ''))),
-            Arr::get($item, 'fullName', Arr::get($item, 'full_name', '')),
-            Arr::get($item, 'biography', Arr::get($item, 'bio', '')),
-            Arr::get($item, 'email_from_bio', $this->extractEmailFromText(Arr::get($item, 'biography', Arr::get($item, 'bio', '')))),
-            Arr::get($item, 'externalUrl', Arr::get($item, 'external_url', '')),
-            Arr::get($item, 'followersCount', Arr::get($item, 'followers', '')),
-            Arr::get($item, 'followsCount', Arr::get($item, 'following', '')),
-            Arr::get($item, 'postsCount', Arr::get($item, 'posts_count', '')),
-            $this->boolString(Arr::get($item, 'isBusinessAccount', Arr::get($item, 'is_business_account', ''))),
-            Arr::get($item, 'businessCategoryName', Arr::get($item, 'business_category_name', '')),
-            $this->boolString(Arr::get($item, 'private', Arr::get($item, 'is_private', ''))),
-            $this->boolString(Arr::get($item, 'verified', Arr::get($item, 'is_verified', ''))),
-            Arr::get($item, 'highlightReelCount', Arr::get($item, 'highlight_reel_count', '')),
-            Arr::get($item, 'igtvVideoCount', Arr::get($item, 'igtv_video_count', '')),
-            $this->estimateInstagramEngagementRate($item),
-            $this->averageFromLatestPosts($item, 'likesCount'),
-            $this->averageFromLatestPosts($item, 'commentsCount'),
-            count(Arr::get($item, 'latestPosts', [])),
-            count(Arr::get($item, 'latestPosts', [])),
-            Arr::get($item, 'apify_profile_id', Arr::get($item, 'id', '')),
-        ];
-    }
+private function mapInstagramProfileEnrichedRow(array $item): array
+{
+    $latestPosts = Arr::get($item, 'latestPosts', Arr::get($item, 'latest_posts', []));
+    $latestPosts = is_array($latestPosts) ? $latestPosts : [];
+
+    return [
+        Arr::get($item, 'username', Arr::get($item, 'ownerUsername', '')),
+        $this->normalizeHandle(Arr::get($item, 'handle', Arr::get($item, 'username', Arr::get($item, 'ownerUsername', '')))),
+        $this->extractProfileUrl($item, 'instagram', Arr::get($item, 'username', Arr::get($item, 'ownerUsername', ''))),
+        Arr::get($item, 'inputUrl', Arr::get($item, 'input_url', Arr::get($item, 'url', ''))),
+        Arr::get($item, 'fullName', Arr::get($item, 'full_name', '')),
+        Arr::get($item, 'biography', Arr::get($item, 'bio', '')),
+        Arr::get($item, 'email_from_bio', $this->extractEmailFromText(Arr::get($item, 'biography', Arr::get($item, 'bio', '')))),
+        Arr::get($item, 'externalUrl', Arr::get($item, 'external_url', '')),
+        Arr::get($item, 'followersCount', Arr::get($item, 'followers', '')),
+        Arr::get($item, 'followsCount', Arr::get($item, 'following', '')),
+        Arr::get($item, 'postsCount', Arr::get($item, 'posts_count', '')),
+        $this->boolString(Arr::get($item, 'isBusinessAccount', Arr::get($item, 'is_business_account', ''))),
+        Arr::get($item, 'businessCategoryName', Arr::get($item, 'business_category_name', '')),
+        $this->boolString(Arr::get($item, 'private', Arr::get($item, 'is_private', ''))),
+        $this->boolString(Arr::get($item, 'verified', Arr::get($item, 'is_verified', ''))),
+        Arr::get($item, 'highlightReelCount', Arr::get($item, 'highlight_reel_count', '')),
+        Arr::get($item, 'igtvVideoCount', Arr::get($item, 'igtv_video_count', '')),
+        $this->estimateInstagramEngagementRate($item),
+        $this->averageFromLatestPosts($latestPosts, 'likesCount'),
+        $this->averageFromLatestPosts($latestPosts, 'commentsCount'),
+        count($latestPosts),
+        count($latestPosts),
+        Arr::get($item, 'apify_profile_id', Arr::get($item, 'id', '')),
+    ];
+}
 
     private function mapTikTokProfileEnrichedRow(array $item): array
     {
