@@ -140,7 +140,7 @@ Status: Tested - output is post-centric, not clean profile enrichment
 }
 Notes
 
-Looks like a profile enricher because it uses profiles, not hashtags. Final confirmation depends on output shape.
+Uses profile usernames as input, but returns post/video rows with nested author data. Do not import directly into TikTok_Profile_Enriched.
 
 Google Sheet mapping
 Discovery outputs
