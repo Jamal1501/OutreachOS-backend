@@ -116,14 +116,15 @@ Notes
 
 Confirmed working for TikTok raw discovery import. Do not import this actor into Instagram sheets.
 
-4) TikTok profile enrichment
+## 4) TikTok profile enrichment candidate
 
-Actor ID: 0FXVyOXXEmdGcV88a
-Purpose: Enrich TikTok creator profiles from usernames
-Pipeline stage: Enrichment
+Actor ID: `0FXVyOXXEmdGcV88a`
+Purpose: Scrapes TikTok posts from specific profiles
+Pipeline stage: Mixed / profile-input but post-output
 Input type: profiles
-Target sheet: TikTok_Profile_Enriched
-Status: Needs output confirmation
+Target sheet: `TikTok_Posts_Raw`
+Status: Tested - output is post-centric, not clean profile-enrichment
+Notes: Uses profile usernames as input, but returns video rows with nested `authorMeta`. Do not import directly into `TikTok_Profile_Enriched` unless a custom mapper is added.
 
 Input JSON
 {
