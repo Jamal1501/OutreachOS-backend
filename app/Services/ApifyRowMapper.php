@@ -140,7 +140,6 @@ private function mapInstagramProfileEnrichedRow(array $item): array
         Arr::get($item, 'apify_profile_id', Arr::get($item, 'id', '')),
     ];
 }
-
     private function mapTikTokProfileEnrichedRow(array $item): array
     {
         $bio = Arr::get($item, 'bio', Arr::get($item, 'signature', ''));
