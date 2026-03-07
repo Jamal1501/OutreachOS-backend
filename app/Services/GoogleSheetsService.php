@@ -46,23 +46,29 @@ class GoogleSheetsService
         return $records;
     }
 
-    public function appendRows(string $sheetId, string $sheetName, array $rows): int
-    {
-        if (count($rows) === 0) {
-            return 0;
-        }
-
-        $body = new ValueRange(['values' => $rows]);
-
-        $this->service()->spreadsheets_values->append(
-            $sheetId,
-            "{$sheetName}!A1",
-            $body,
-            ['valueInputOption' => 'USER_ENTERED']
-        );
-
-        return count($rows);
+public function appendRows(string $sheetId, string $sheetName, array $rows): int
+{
+    if (count($rows) === 0) {
+        return 0;
     }
+
+    $cleanRows = array_map(function ($row) {
+        return array_map(function ($value) {
+            return $this->sanitizeCellValue($value);
+        }, $row);
+    }, $rows);
+
+    $body = new ValueRange(['values' => $cleanRows]);
+
+    $this->service()->spreadsheets_values->append(
+        $sheetId,
+        "{$sheetName}!A1",
+        $body,
+        ['valueInputOption' => 'USER_ENTERED']
+    );
+
+    return count($cleanRows);
+}
 
     public function appendAssocRows(string $sheetId, string $sheetName, array $records, ?array $headers = null): int
     {
@@ -121,16 +127,16 @@ class GoogleSheetsService
         return $response->getValues() ?? [];
     }
 
-    private function recordToRow(array $record, array $headers): array
-    {
-        $row = [];
+private function recordToRow(array $record, array $headers): array
+{
+    $row = [];
 
-        foreach ($headers as $header) {
-            $row[] = Arr::get($record, $header, '');
-        }
-
-        return $row;
+    foreach ($headers as $header) {
+        $row[] = $this->sanitizeCellValue(Arr::get($record, $header, ''));
     }
+
+    return $row;
+}
 
     private function service(): Sheets
     {
@@ -176,4 +182,22 @@ class GoogleSheetsService
 
         return $letters;
     }
+    private function sanitizeCellValue(mixed $value): string
+{
+    if ($value === null) {
+        return '';
+    }
+
+    if (is_bool($value)) {
+        return $value ? 'TRUE' : 'FALSE';
+    }
+
+    if (is_scalar($value)) {
+        return (string) $value;
+    }
+
+    $json = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+    return $json === false ? '' : $json;
+}
 }
