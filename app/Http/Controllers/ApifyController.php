@@ -10,6 +10,7 @@ use App\Services\TaskQueueService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use RuntimeException;
 
@@ -24,11 +25,13 @@ class ApifyController extends Controller
     ) {
     }
 
-    public function runActor(Request $request)
-    {
+public function runActor(Request $request)
+{
+    try {
         $token = (string) config('services.apify.token');
 
         if ($token === '') {
+            Log::error('APIFY_API_TOKEN missing');
             return response()->json(['error' => 'Missing APIFY_API_TOKEN'], 500);
         }
 
@@ -41,15 +44,25 @@ class ApifyController extends Controller
             'input' => ['nullable', 'array'],
         ]);
 
-        $actorId = $validated['actorId'] ?? $this->actorMap()[$validated['actorKey'] ?? ''] ?? null;
+        $actorMap = $this->actorMap();
+        $actorKey = $validated['actorKey'] ?? null;
+        $actorId = $validated['actorId'] ?? $actorMap[$actorKey ?? ''] ?? null;
 
         if (!$actorId) {
+            Log::warning('Missing actorId or unmapped actorKey', [
+                'actorKey' => $actorKey,
+                'actorMap' => $actorMap,
+            ]);
+
             return response()->json([
                 'error' => 'Missing actorId or unmapped actorKey',
             ], 422);
         }
 
-        $input = $validated['input'] ?? Arr::except($request->all(), ['actorKey', 'actorId', 'maxTotalChargeUsd', 'memoryMbytes', 'timeoutSecs']);
+        $input = $validated['input'] ?? Arr::except($request->all(), [
+            'actorKey', 'actorId', 'maxTotalChargeUsd', 'memoryMbytes', 'timeoutSecs'
+        ]);
+
         $query = array_filter([
             'maxTotalChargeUsd' => $validated['maxTotalChargeUsd'] ?? config('services.apify.default_max_total_charge_usd'),
             'memoryMbytes' => $validated['memoryMbytes'] ?? null,
@@ -61,23 +74,60 @@ class ApifyController extends Controller
             $url .= '?' . http_build_query($query);
         }
 
+        Log::info('Starting Apify actor run', [
+            'actorKey' => $actorKey,
+            'actorId' => $actorId,
+            'url' => $url,
+            'input' => $input,
+        ]);
+
         $response = Http::withToken($token)
+            ->acceptJson()
+            ->timeout(90)
             ->post($url, $input);
 
-if (!$response->successful()) {
-    return response()->json([
-        'error' => 'Apify run failed',
-        'apifyStatus' => $response->status(),
-        'apifyBody' => $response->json() ?? $response->body(),
-    ], $response->status());
-}
+        if (!$response->successful()) {
+            Log::error('Apify run failed', [
+                'actorKey' => $actorKey,
+                'actorId' => $actorId,
+                'status' => $response->status(),
+                'body' => $response->json() ?? $response->body(),
+                'input' => $input,
+            ]);
+
+            return response()->json([
+                'error' => 'Apify run failed',
+                'apifyStatus' => $response->status(),
+                'apifyBody' => $response->json() ?? $response->body(),
+            ], $response->status());
+        }
+
+        Log::info('Apify actor run started', [
+            'actorKey' => $actorKey,
+            'actorId' => $actorId,
+            'response' => $response->json(),
+        ]);
 
         return response()->json([
             'message' => 'Actor started',
             'actorId' => $actorId,
             'apify' => $response->json(),
         ]);
+    } catch (\Throwable $e) {
+        Log::error('Unhandled exception in runActor', [
+            'message' => $e->getMessage(),
+            'file' => basename($e->getFile()),
+            'line' => $e->getLine(),
+        ]);
+
+        return response()->json([
+            'error' => 'Unhandled backend error while starting actor',
+            'message' => $e->getMessage(),
+            'file' => basename($e->getFile()),
+            'line' => $e->getLine(),
+        ], 500);
     }
+}
 
     public function getRunStatus(string $runId)
     {
