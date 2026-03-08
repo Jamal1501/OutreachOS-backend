@@ -24,4 +24,5 @@ Route::middleware('app.key')->group(function () {
     Route::post('/tasks/generate', [ApifyController::class, 'generateTasks']);
     Route::post('/tasks/{taskId}/complete', [ApifyController::class, 'completeTask']);
     Route::post('/outreach/log', [ApifyController::class, 'logOutreachEvent']);
+    Route::get('/tasks/list', [ApifyController::class, 'listTasks']);
 });
