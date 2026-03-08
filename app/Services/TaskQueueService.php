@@ -104,6 +104,14 @@ class TaskQueueService
             throw new RuntimeException('Task not found');
         }
 
+        if (array_key_exists('template_id', $payload) && $payload['template_id'] !== null) {
+    $task['Template_ID'] = (string) $payload['template_id'];
+}
+
+if (array_key_exists('message_draft', $payload) && $payload['message_draft'] !== null) {
+    $task['Message_Draft'] = (string) $payload['message_draft'];
+}
+        
         $task['Status'] = (string) ($payload['status'] ?? 'COMPLETED');
         $task['Completed_At'] = now()->toDateTimeString();
         $task['Notes'] = trim(((string) ($task['Notes'] ?? '')) . ' ' . ((string) ($payload['notes'] ?? '')));
