@@ -268,4 +268,44 @@ class TaskQueueService
 
         return $creator;
     }
+    public function listTasks(string $sheetId): array
+{
+    $rows = $this->sheets->getRows($sheetId, 'Task_Queue');
+
+    usort($rows, function (array $a, array $b) {
+        return strcmp((string) ($b['Created_At'] ?? ''), (string) ($a['Created_At'] ?? ''));
+    });
+
+    return array_map(function (array $row) {
+        $status = strtoupper(trim((string) ($row['Status'] ?? 'PENDING')));
+        $priority = strtoupper(trim((string) ($row['Priority'] ?? 'NORMAL')));
+
+        return [
+            'taskId' => (string) ($row['Task_ID'] ?? ''),
+            'taskType' => (string) ($row['Task_Type'] ?? ''),
+            'platform' => strtolower((string) ($row['Platform'] ?? 'instagram')),
+            'handle' => (string) ($row['Handle'] ?? ''),
+            'profileUrl' => (string) ($row['Open_URL'] ?? ''),
+            'dmUrl' => (string) ($row['Open_URL'] ?? ''),
+            'status' => match ($status) {
+                'DONE', 'COMPLETED' => 'completed',
+                'SKIPPED' => 'skipped',
+                'IN_PROGRESS' => 'in_progress',
+                'SNOOZED' => 'snoozed',
+                default => 'pending',
+            },
+            'priority' => match ($priority) {
+                'URGENT' => 'urgent',
+                'HIGH' => 'high',
+                'MEDIUM' => 'medium',
+                default => 'low',
+            },
+            'dueDate' => (string) ($row['Due_At'] ?? ''),
+            'createdAt' => (string) ($row['Created_At'] ?? ''),
+            'completedAt' => (string) ($row['Completed_At'] ?? ''),
+            'messageText' => (string) ($row['Message_Draft'] ?? ''),
+            'notes' => (string) ($row['Notes'] ?? ''),
+        ];
+    }, $rows);
+}
 }
