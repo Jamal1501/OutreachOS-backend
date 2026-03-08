@@ -328,6 +328,23 @@ public function mergeEnrichedToCreators(Request $request)
         return is_array($items) ? $items : [];
     }
 
+
+    public function listTasks(Request $request)
+{
+    $validated = $request->validate([
+        'sheetId' => ['nullable', 'string'],
+    ]);
+
+    $sheetId = $validated['sheetId'] ?: (string) config('services.google.default_sheet_id');
+    $tasks = $this->taskQueue->listTasks($sheetId);
+
+    return response()->json([
+        'message' => 'Tasks fetched',
+        'sheetId' => $sheetId,
+        'tasks' => $tasks,
+    ]);
+}
+    
     private function actorMap(): array
     {
         return [
