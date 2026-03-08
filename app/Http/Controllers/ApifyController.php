@@ -262,12 +262,14 @@ public function mergeEnrichedToCreators(Request $request)
 
     public function completeTask(Request $request, string $taskId)
     {
-        $validated = $request->validate([
-            'sheetId' => ['nullable', 'string'],
-            'status' => ['nullable', 'string'],
-            'notes' => ['nullable', 'string'],
-            'sender_account' => ['nullable', 'string'],
-        ]);
+$validated = $request->validate([
+    'sheetId' => ['nullable', 'string'],
+    'status' => ['nullable', 'string'],
+    'notes' => ['nullable', 'string'],
+    'sender_account' => ['nullable', 'string'],
+    'template_id' => ['nullable', 'string'],
+    'message_draft' => ['nullable', 'string'],
+]);
 
         $sheetId = $validated['sheetId'] ?: (string) config('services.google.default_sheet_id');
         $result = $this->taskQueue->completeTask($sheetId, $taskId, $validated);
