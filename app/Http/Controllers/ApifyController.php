@@ -64,13 +64,13 @@ class ApifyController extends Controller
         $response = Http::withToken($token)
             ->post($url, $input);
 
-        if (!$response->successful()) {
-            return response()->json([
-                'error' => 'Apify run failed',
-                'status' => $response->status(),
-                'body' => $response->json() ?? $response->body(),
-            ], 500);
-        }
+if (!$response->successful()) {
+    return response()->json([
+        'error' => 'Apify run failed',
+        'apifyStatus' => $response->status(),
+        'apifyBody' => $response->json() ?? $response->body(),
+    ], $response->status());
+}
 
         return response()->json([
             'message' => 'Actor started',
