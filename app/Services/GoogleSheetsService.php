@@ -135,6 +135,16 @@ public function batchUpdateAssocRows(string $sheetId, string $sheetName, array $
 
     return count($data);
 }
+
+
+    public function clearAssocRow(string $sheetId, string $sheetName, int $rowNumber, ?array $headers = null): void
+    {
+        $headers ??= $this->getHeaders($sheetId, $sheetName);
+        $row = array_fill(0, count($headers), '');
+
+        $this->updateRow($sheetId, $sheetName, $rowNumber, $row);
+    }
+
     public function updateRow(string $sheetId, string $sheetName, int $rowNumber, array $row): void
     {
         $body = new ValueRange(['values' => [$row]]);
