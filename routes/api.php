@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\ApifyController;
+use App\Http\Controllers\SheetDataController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', function () {
@@ -25,4 +26,18 @@ Route::middleware('app.key')->group(function () {
     Route::post('/tasks/{taskId}/complete', [ApifyController::class, 'completeTask']);
     Route::post('/outreach/log', [ApifyController::class, 'logOutreachEvent']);
     Route::get('/tasks/list', [ApifyController::class, 'listTasks']);
+
+    Route::get('/discovery/list', [SheetDataController::class, 'discoveryList']);
+    Route::post('/discovery/extract-urls', [SheetDataController::class, 'discoveryExtractUrls']);
+    Route::post('/discovery/push-to-enrichment', [SheetDataController::class, 'discoveryPushToEnrichment']);
+
+    Route::get('/crm/list', [SheetDataController::class, 'crmList']);
+
+    Route::get('/messages/list', [SheetDataController::class, 'messagesList']);
+    Route::post('/messages/create', [SheetDataController::class, 'messagesCreate']);
+    Route::put('/messages/{id}', [SheetDataController::class, 'messagesUpdate']);
+    Route::delete('/messages/{id}', [SheetDataController::class, 'messagesDelete']);
+
+    Route::get('/enrichment/queue', [SheetDataController::class, 'enrichmentQueue']);
+    Route::get('/dashboard/metrics', [SheetDataController::class, 'dashboardMetrics']);
 });
