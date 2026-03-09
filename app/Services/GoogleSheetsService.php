@@ -4,6 +4,7 @@ namespace App\Services;
 
 use Google\Client as GoogleClient;
 use Google\Service\Sheets;
+use Google\Service\Sheets\BatchUpdateValuesRequest;
 use Google\Service\Sheets\ValueRange;
 use Illuminate\Support\Arr;
 use RuntimeException;
@@ -46,29 +47,27 @@ class GoogleSheetsService
         return $records;
     }
 
-public function appendRows(string $sheetId, string $sheetName, array $rows): int
-{
-    if (count($rows) === 0) {
-        return 0;
+    public function appendRows(string $sheetId, string $sheetName, array $rows): int
+    {
+        if (count($rows) === 0) {
+            return 0;
+        }
+
+        $cleanRows = array_map(function ($row) {
+            return array_map(fn ($value) => $this->sanitizeCellValue($value), $row);
+        }, $rows);
+
+        $body = new ValueRange(['values' => $cleanRows]);
+
+        $this->service()->spreadsheets_values->append(
+            $sheetId,
+            "{$sheetName}!A1",
+            $body,
+            ['valueInputOption' => 'USER_ENTERED']
+        );
+
+        return count($cleanRows);
     }
-
-    $cleanRows = array_map(function ($row) {
-        return array_map(function ($value) {
-            return $this->sanitizeCellValue($value);
-        }, $row);
-    }, $rows);
-
-    $body = new ValueRange(['values' => $cleanRows]);
-
-    $this->service()->spreadsheets_values->append(
-        $sheetId,
-        "{$sheetName}!A1",
-        $body,
-        ['valueInputOption' => 'USER_ENTERED']
-    );
-
-    return count($cleanRows);
-}
 
     public function appendAssocRows(string $sheetId, string $sheetName, array $records, ?array $headers = null): int
     {
@@ -94,55 +93,57 @@ public function appendRows(string $sheetId, string $sheetName, array $rows): int
         $this->updateRow($sheetId, $sheetName, $rowNumber, $row);
     }
 
-    // app/Services/GoogleSheetsService.php
-public function batchUpdateAssocRows(string $sheetId, string $sheetName, array $updates, ?array $headers = null): int
-{
-    if (count($updates) === 0) {
-        return 0;
-    }
-
-    $headers ??= $this->getHeaders($sheetId, $sheetName);
-    $data = [];
-
-    foreach ($updates as $update) {
-        $rowNumber = (int) ($update['rowNumber'] ?? 0);
-        $record = $update['record'] ?? null;
-
-        if ($rowNumber <= 0 || !is_array($record)) {
-            continue;
+    public function batchUpdateAssocRows(string $sheetId, string $sheetName, array $updates, ?array $headers = null): int
+    {
+        if (count($updates) === 0) {
+            return 0;
         }
 
-        $row = $this->recordToRow($record, $headers);
-        $lastColumn = $this->columnLetter(count($row));
+        $headers ??= $this->getHeaders($sheetId, $sheetName);
+        $data = [];
 
-        $data[] = new ValueRange([
-            'range' => "{$sheetName}!A{$rowNumber}:{$lastColumn}{$rowNumber}",
-            'values' => [$row],
-        ]);
+        foreach ($updates as $update) {
+            $rowNumber = (int) ($update['rowNumber'] ?? 0);
+            $record = $update['record'] ?? null;
+
+            if ($rowNumber <= 0 || !is_array($record)) {
+                continue;
+            }
+
+            $row = $this->recordToRow($record, $headers);
+            $lastColumn = $this->columnLetter(count($row));
+
+            $data[] = new ValueRange([
+                'range' => "{$sheetName}!A{$rowNumber}:{$lastColumn}{$rowNumber}",
+                'values' => [$row],
+            ]);
+        }
+
+        if (count($data) === 0) {
+            return 0;
+        }
+
+        $this->service()->spreadsheets_values->batchUpdate(
+            $sheetId,
+            new BatchUpdateValuesRequest([
+                'valueInputOption' => 'USER_ENTERED',
+                'data' => $data,
+            ])
+        );
+
+        return count($data);
     }
-
-    if (count($data) === 0) {
-        return 0;
-    }
-
-    $this->service()->spreadsheets_values->batchUpdate(
-        $sheetId,
-        new \Google\Service\Sheets\BatchUpdateValuesRequest([
-            'valueInputOption' => 'USER_ENTERED',
-            'data' => $data,
-        ])
-    );
-
-    return count($data);
-}
-
 
     public function clearAssocRow(string $sheetId, string $sheetName, int $rowNumber, ?array $headers = null): void
     {
         $headers ??= $this->getHeaders($sheetId, $sheetName);
-        $row = array_fill(0, count($headers), '');
+        $emptyRecord = [];
 
-        $this->updateRow($sheetId, $sheetName, $rowNumber, $row);
+        foreach ($headers as $header) {
+            $emptyRecord[(string) $header] = '';
+        }
+
+        $this->updateAssocRow($sheetId, $sheetName, $rowNumber, $emptyRecord, $headers);
     }
 
     public function updateRow(string $sheetId, string $sheetName, int $rowNumber, array $row): void
@@ -178,16 +179,16 @@ public function batchUpdateAssocRows(string $sheetId, string $sheetName, array $
         return $response->getValues() ?? [];
     }
 
-private function recordToRow(array $record, array $headers): array
-{
-    $row = [];
+    private function recordToRow(array $record, array $headers): array
+    {
+        $row = [];
 
-    foreach ($headers as $header) {
-        $row[] = $this->sanitizeCellValue(Arr::get($record, $header, ''));
+        foreach ($headers as $header) {
+            $row[] = $this->sanitizeCellValue(Arr::get($record, $header, ''));
+        }
+
+        return $row;
     }
-
-    return $row;
-}
 
     private function service(): Sheets
     {
@@ -233,22 +234,23 @@ private function recordToRow(array $record, array $headers): array
 
         return $letters;
     }
+
     private function sanitizeCellValue(mixed $value): string
-{
-    if ($value === null) {
-        return '';
+    {
+        if ($value === null) {
+            return '';
+        }
+
+        if (is_bool($value)) {
+            return $value ? 'TRUE' : 'FALSE';
+        }
+
+        if (is_scalar($value)) {
+            return (string) $value;
+        }
+
+        $json = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        return $json === false ? '' : $json;
     }
-
-    if (is_bool($value)) {
-        return $value ? 'TRUE' : 'FALSE';
-    }
-
-    if (is_scalar($value)) {
-        return (string) $value;
-    }
-
-    $json = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-
-    return $json === false ? '' : $json;
-}
 }
