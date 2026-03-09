@@ -10,6 +10,7 @@ class TaskQueueService
     public function __construct(
         private GoogleSheetsService $sheets,
         private OutreachLogService $outreachLog,
+        private InfluencerScoringService $scoring,
     ) {
     }
 
@@ -195,17 +196,18 @@ if (array_key_exists('message_draft', $payload) && $payload['message_draft'] !==
 
     private function priorityFromCreator(array $creator): string
     {
-        $score = (float) ($creator['Value_Score'] ?? 0);
+        $rawScore = (string) ($creator['Value_Score'] ?? '');
+        $score = is_numeric($rawScore) ? (float) $rawScore : 0.0;
 
-        if ($score >= 70) {
-            return 'HIGH';
+        if ($score <= 0) {
+            $score = $this->scoring->score($creator);
         }
 
-        if ($score >= 40) {
-            return 'MEDIUM';
-        }
-
-        return 'NORMAL';
+        return match ($this->scoring->tier($score)) {
+            'HIGH' => 'HIGH',
+            'MEDIUM' => 'MEDIUM',
+            default => 'LOW',
+        };
     }
 
     private function taskUniqKey(string $platform, string $handle, string $taskType): string
