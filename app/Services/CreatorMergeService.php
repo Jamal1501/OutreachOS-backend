@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -13,95 +12,118 @@ class CreatorMergeService
         'TikTok_Profile_Enriched',
     ];
 
-    public function __construct(private GoogleSheetsService $sheets)
+    public function __construct(
+        private GoogleSheetsService $sheets,
+        private InfluencerScoringService $scoring,
+    ) {
+    }
+
+    public function mergeFromEnrichedSheet(string $sheetId, string $sourceSheet): array
     {
+        $this->assertSourceSheet($sourceSheet);
+        $sourceRows = $this->sheets->getRows($sheetId, $sourceSheet);
+
+        return $this->mergeSourceRows($sheetId, $sourceSheet, $sourceRows);
     }
 
-public function mergeFromEnrichedSheet(string $sheetId, string $sourceSheet): array
-{
-    if (!in_array($sourceSheet, self::SOURCE_SHEETS, true)) {
-        throw new RuntimeException('Invalid source sheet for merge');
+    public function mergeSelectedFromEnrichedSheet(string $sheetId, string $sourceSheet, array $rowNumbers): array
+    {
+        $this->assertSourceSheet($sourceSheet);
+        $wanted = array_values(array_unique(array_filter(array_map('intval', $rowNumbers), fn ($row) => $row > 1)));
+        $wantedLookup = array_fill_keys($wanted, true);
+
+        $sourceRows = array_values(array_filter(
+            $this->sheets->getRows($sheetId, $sourceSheet),
+            fn (array $row) => isset($wantedLookup[(int) ($row['_row_number'] ?? 0)])
+        ));
+
+        $result = $this->mergeSourceRows($sheetId, $sourceSheet, $sourceRows);
+        $result['selected'] = count($wanted);
+        $result['matchedSelected'] = count($sourceRows);
+        $result['missingSelected'] = max(0, count($wanted) - count($sourceRows));
+
+        return $result;
     }
 
-    $sourceRows = $this->sheets->getRows($sheetId, $sourceSheet);
-    $crmHeaders = $this->sheets->getHeaders($sheetId, 'Creators_CRM');
-    $crmRows = $this->sheets->getRows($sheetId, 'Creators_CRM');
+    private function mergeSourceRows(string $sheetId, string $sourceSheet, array $sourceRows): array
+    {
+        $crmHeaders = $this->sheets->getHeaders($sheetId, 'Creators_CRM');
+        $crmRows = $this->sheets->getRows($sheetId, 'Creators_CRM');
 
-    $crmIndex = [];
-    $maxRowNumber = 1;
+        $crmIndex = [];
+        $maxRowNumber = 1;
 
-    foreach ($crmRows as $row) {
-        $crmIndex[$this->crmKey($row['Platform'] ?? '', $row['Handle'] ?? '')] = $row;
-        $maxRowNumber = max($maxRowNumber, (int) ($row['_row_number'] ?? 1));
-    }
-
-    $newRecords = [];
-    $updates = [];
-    $updated = 0;
-    $created = 0;
-    $skipped = 0;
-    $unmatched = [];
-    $nextRowNumber = $maxRowNumber + 1;
-
-    foreach ($sourceRows as $sourceRow) {
-        $creator = $this->sourceRowToCreatorRecord($sourceSheet, $sourceRow);
-        $key = $this->crmKey($creator['Platform'], $creator['Handle']);
-
-        if ($creator['Handle'] === '') {
-            $skipped++;
-            $unmatched[] = [
-                'row_number' => $sourceRow['_row_number'] ?? '',
-                'handle' => '',
-                'dm_link' => $creator['DM_Link'],
-                'status' => 'SKIPPED_NO_HANDLE',
-                'note' => 'Missing handle in enriched source row',
-            ];
-            continue;
+        foreach ($crmRows as $row) {
+            $crmIndex[$this->crmKey($row['Platform'] ?? '', $row['Handle'] ?? '')] = $row;
+            $maxRowNumber = max($maxRowNumber, (int) ($row['_row_number'] ?? 1));
         }
 
-        if (isset($crmIndex[$key])) {
-            $existing = $crmIndex[$key];
-            $rowNumber = (int) ($existing['_row_number'] ?? 0);
+        $newRecords = [];
+        $updates = [];
+        $updated = 0;
+        $created = 0;
+        $skipped = 0;
+        $unmatched = [];
+        $nextRowNumber = $maxRowNumber + 1;
 
-            $merged = $this->mergeCreatorRecords($existing, $creator, $rowNumber);
+        foreach ($sourceRows as $sourceRow) {
+            $creator = $this->sourceRowToCreatorRecord($sourceSheet, $sourceRow);
+            $key = $this->crmKey($creator['Platform'], $creator['Handle']);
 
-            $updates[] = [
-                'rowNumber' => $rowNumber,
-                'record' => $merged,
-            ];
+            if ($creator['Handle'] === '') {
+                $skipped++;
+                $unmatched[] = [
+                    'row_number' => $sourceRow['_row_number'] ?? '',
+                    'handle' => '',
+                    'dm_link' => $creator['DM_Link'],
+                    'status' => 'SKIPPED_NO_HANDLE',
+                    'note' => 'Missing handle in enriched source row',
+                ];
+                continue;
+            }
 
-            $crmIndex[$key] = array_merge($existing, $merged);
-            $updated++;
-            continue;
+            if (isset($crmIndex[$key])) {
+                $existing = $crmIndex[$key];
+                $rowNumber = (int) ($existing['_row_number'] ?? 0);
+                $merged = $this->mergeCreatorRecords($existing, $creator, $rowNumber, $sourceRow);
+
+                $updates[] = [
+                    'rowNumber' => $rowNumber,
+                    'record' => $merged,
+                ];
+
+                $crmIndex[$key] = array_merge($existing, $merged);
+                $updated++;
+                continue;
+            }
+
+            $record = $this->applyCreatorDerivedFields($creator, $nextRowNumber, $sourceRow);
+            $newRecords[] = $record;
+            $crmIndex[$key] = array_merge($record, ['_row_number' => $nextRowNumber]);
+            $created++;
+            $nextRowNumber++;
         }
 
-        $record = $this->applyCreatorFormulas($creator, $nextRowNumber);
-        $newRecords[] = $record;
-        $crmIndex[$key] = array_merge($record, ['_row_number' => $nextRowNumber]);
-        $created++;
-        $nextRowNumber++;
-    }
+        if (count($updates) > 0) {
+            $this->sheets->batchUpdateAssocRows($sheetId, 'Creators_CRM', $updates, $crmHeaders);
+        }
 
-    if (count($updates) > 0) {
-        $this->sheets->batchUpdateAssocRows($sheetId, 'Creators_CRM', $updates, $crmHeaders);
-    }
+        if (count($newRecords) > 0) {
+            $this->sheets->appendAssocRows($sheetId, 'Creators_CRM', $newRecords, $crmHeaders);
+        }
 
-    if (count($newRecords) > 0) {
-        $this->sheets->appendAssocRows($sheetId, 'Creators_CRM', $newRecords, $crmHeaders);
-    }
+        if (count($unmatched) > 0) {
+            $this->sheets->appendAssocRows($sheetId, 'Merge_Unmatched', $unmatched);
+        }
 
-    if (count($unmatched) > 0) {
-        $this->sheets->appendAssocRows($sheetId, 'Merge_Unmatched', $unmatched);
+        return [
+            'sourceSheet' => $sourceSheet,
+            'processed' => count($sourceRows),
+            'created' => $created,
+            'updated' => $updated,
+            'skipped' => $skipped,
+        ];
     }
-
-    return [
-        'sourceSheet' => $sourceSheet,
-        'processed' => count($sourceRows),
-        'created' => $created,
-        'updated' => $updated,
-        'skipped' => $skipped,
-    ];
-}
 
     private function sourceRowToCreatorRecord(string $sourceSheet, array $sourceRow): array
     {
@@ -112,27 +134,31 @@ public function mergeFromEnrichedSheet(string $sheetId, string $sourceSheet): ar
         $followers = $sourceRow['followersCount'] ?? '';
         $engagement = $platform === 'Instagram'
             ? ($sourceRow['recent_est_engagement_rate_pct'] ?? '')
-            : '';
+            : $this->estimateTikTokEngagement($sourceRow);
         $language = $platform === 'Instagram'
             ? ''
             : (string) ($sourceRow['language'] ?? '');
+        $nowIso = now()->toDateTimeString();
         $notes = $platform === 'Instagram'
             ? sprintf(
-                'IG enriched import; followers=%s; recentER%%~=%s; postsUsed=%s; biz=%s; verified=%s; private=%s; ext=%s',
+                'source=ig_enriched; added_to_crm_at=%s; followers=%s; recent_er_pct=%s; posts_used=%s; posts_count=%s; verified=%s; private=%s; ext=%s',
+                $nowIso,
                 $followers,
                 $sourceRow['recent_est_engagement_rate_pct'] ?? '',
                 $sourceRow['recent_posts_used_for_engagement'] ?? '',
-                $sourceRow['isBusinessAccount'] ?? '',
+                $sourceRow['postsCount'] ?? $sourceRow['latestPosts_count'] ?? '',
                 $sourceRow['verified'] ?? '',
                 $sourceRow['private'] ?? '',
                 $sourceRow['externalUrl'] ?? ''
             )
             : sprintf(
-                'TikTok enriched import; followers=%s; avgViews=%s; avgLikes=%s; postsUsed=%s; verified=%s; private=%s; ext=%s',
+                'source=tiktok_enriched; added_to_crm_at=%s; followers=%s; avg_views=%s; avg_likes=%s; posts_used=%s; posts_count=%s; verified=%s; private=%s; ext=%s',
+                $nowIso,
                 $followers,
                 $sourceRow['recent_avg_views'] ?? '',
                 $sourceRow['recent_avg_likes'] ?? '',
                 $sourceRow['recent_posts_used'] ?? '',
+                $sourceRow['videoCount'] ?? $sourceRow['latestPosts_count'] ?? '',
                 $sourceRow['verified'] ?? '',
                 $sourceRow['private'] ?? '',
                 $sourceRow['externalUrl'] ?? ''
@@ -147,7 +173,7 @@ public function mergeFromEnrichedSheet(string $sheetId, string $sourceSheet): ar
             'Country' => (string) ($sourceRow['region'] ?? ''),
             'City' => '',
             'Primary_Language' => $language,
-            'Niche_Category' => '',
+            'Niche_Category' => (string) ($sourceRow['niche_category'] ?? ''),
             'Angle_Assigned' => '',
             'Contact_Email' => $email,
             'DM_Link' => $profileUrl,
@@ -171,7 +197,7 @@ public function mergeFromEnrichedSheet(string $sheetId, string $sourceSheet): ar
         ];
     }
 
-    private function mergeCreatorRecords(array $existing, array $incoming, int $rowNumber): array
+    private function mergeCreatorRecords(array $existing, array $incoming, int $rowNumber, ?array $sourceRow = null): array
     {
         $merged = $existing;
 
@@ -190,18 +216,38 @@ public function mergeFromEnrichedSheet(string $sheetId, string $sourceSheet): ar
 
         $merged['Notes'] = $this->appendNote((string) ($existing['Notes'] ?? ''), (string) ($incoming['Notes'] ?? ''));
 
-        return $this->applyCreatorFormulas($merged, $rowNumber);
+        return $this->applyCreatorDerivedFields($merged, $rowNumber, $sourceRow);
     }
 
-    private function applyCreatorFormulas(array $record, int $rowNumber): array
+    private function applyCreatorDerivedFields(array $record, int $rowNumber, ?array $sourceRow = null): array
     {
-        $record['Preferred_Channel'] = '=IF(LEN($K' . $rowNumber . ')>0,"Email","DM")';
-        $record['Last_Content_Date'] = '=IF($A' . $rowNumber . '="TikTok",IFERROR(DATEVALUE(LEFT(VLOOKUP($B' . $rowNumber . ',\'TikTok_Creators\'!$B:$N,13,FALSE),10)),""),IF($A' . $rowNumber . '="Instagram",IFERROR(DATEVALUE(LEFT(VLOOKUP($B' . $rowNumber . ',\'Instagram_Creators\'!$B:$F,5,FALSE),10)),""),""))';
-        $record['Value_Score'] = '=IF($A' . $rowNumber . '="Instagram",IFERROR(VLOOKUP($B' . $rowNumber . ',\'Instagram_Creators\'!$B:$H,7,FALSE),""),IF($A' . $rowNumber . '="TikTok",IFERROR(MIN(100,ROUND(LOG10(1+VLOOKUP($B' . $rowNumber . ',\'TikTok_Creators\'!$B:$K,10,FALSE))*25 + LOG10(1+VLOOKUP($B' . $rowNumber . ',\'TikTok_Creators\'!$B:$J,9,FALSE))*20,0)),""),""))';
-        $record['Value_Bar'] = '=IF(LEN($AA' . $rowNumber . ')=0,"",REPT("█",ROUND($AA' . $rowNumber . '/10,0))&REPT("░",10-ROUND($AA' . $rowNumber . '/10,0)))';
+        $record['Preferred_Channel'] = trim((string) ($record['Contact_Email'] ?? '')) !== '' ? 'Email' : 'DM';
+        $record['Last_Content_Date'] = $this->formulaLastContentDate($rowNumber);
+
+        $score = $this->scoring->score($record, $sourceRow);
+        $record['Value_Score'] = (string) $score;
+        $record['Value_Bar'] = $this->scoring->bar($score);
         $record['Duplicate_Flag'] = '=IF(COUNTIFS($A:$A,$A' . $rowNumber . ',$B:$B,$B' . $rowNumber . ')>1,"DUP","")';
 
         return $record;
+    }
+
+    private function formulaLastContentDate(int $rowNumber): string
+    {
+        return '=IF($A' . $rowNumber . '="TikTok",IFERROR(DATEVALUE(LEFT(VLOOKUP($B' . $rowNumber . ',\'TikTok_Creators\'!$B:$N,13,FALSE),10)),""),IF($A' . $rowNumber . '="Instagram",IFERROR(DATEVALUE(LEFT(VLOOKUP($B' . $rowNumber . ',\'Instagram_Creators\'!$B:$F,5,FALSE),10)),""),""))';
+    }
+
+    private function estimateTikTokEngagement(array $sourceRow): string
+    {
+        $followers = (float) ($sourceRow['followersCount'] ?? 0);
+        $avgLikes = (float) ($sourceRow['recent_avg_likes'] ?? 0);
+        $avgComments = (float) ($sourceRow['recent_avg_comments'] ?? 0);
+
+        if ($followers <= 0 || ($avgLikes <= 0 && $avgComments <= 0)) {
+            return '';
+        }
+
+        return (string) round((($avgLikes + $avgComments) / $followers) * 100, 2);
     }
 
     private function appendNote(string $existing, string $incoming): string
@@ -238,5 +284,12 @@ public function mergeFromEnrichedSheet(string $sheetId, string $sourceSheet): ar
         }
 
         return str_starts_with($handle, '@') ? $handle : '@' . $handle;
+    }
+
+    private function assertSourceSheet(string $sourceSheet): void
+    {
+        if (!in_array($sourceSheet, self::SOURCE_SHEETS, true)) {
+            throw new RuntimeException('Invalid source sheet for merge');
+        }
     }
 }
