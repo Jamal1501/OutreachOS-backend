@@ -38,7 +38,7 @@ class ApifyRowMapper
             }
         }
 
-        return $this->dedupeRows($rows);
+        return $this->dedupeRows($sheetName, $rows);
     }
 
     private function mapTikTokPostRawRow(array $item): array
@@ -109,47 +109,54 @@ class ApifyRowMapper
         return $platform ? $this->mapProfileQueueRow($item, $platform, $context) : null;
     }
 
-private function mapInstagramProfileEnrichedRow(array $item): array
-{
-    $latestPosts = Arr::get($item, 'latestPosts', Arr::get($item, 'latest_posts', []));
-    $latestPosts = is_array($latestPosts) ? $latestPosts : [];
+    private function mapInstagramProfileEnrichedRow(array $item): array
+    {
+        $latestPosts = Arr::get($item, 'latestPosts', Arr::get($item, 'latest_posts', []));
+        $latestPosts = is_array($latestPosts) ? $latestPosts : [];
+        $username = Arr::get($item, 'username', Arr::get($item, 'ownerUsername', ''));
 
-    return [
-        Arr::get($item, 'username', Arr::get($item, 'ownerUsername', '')),
-        $this->normalizeHandle(Arr::get($item, 'handle', Arr::get($item, 'username', Arr::get($item, 'ownerUsername', '')))),
-        $this->extractProfileUrl($item, 'instagram', Arr::get($item, 'username', Arr::get($item, 'ownerUsername', ''))),
-        Arr::get($item, 'inputUrl', Arr::get($item, 'input_url', Arr::get($item, 'url', ''))),
-        Arr::get($item, 'fullName', Arr::get($item, 'full_name', '')),
-        Arr::get($item, 'biography', Arr::get($item, 'bio', '')),
-        Arr::get($item, 'email_from_bio', $this->extractEmailFromText(Arr::get($item, 'biography', Arr::get($item, 'bio', '')))),
-        Arr::get($item, 'externalUrl', Arr::get($item, 'external_url', '')),
-        Arr::get($item, 'followersCount', Arr::get($item, 'followers', '')),
-        Arr::get($item, 'followsCount', Arr::get($item, 'following', '')),
-        Arr::get($item, 'postsCount', Arr::get($item, 'posts_count', '')),
-        $this->boolString(Arr::get($item, 'isBusinessAccount', Arr::get($item, 'is_business_account', ''))),
-        Arr::get($item, 'businessCategoryName', Arr::get($item, 'business_category_name', '')),
-        $this->boolString(Arr::get($item, 'private', Arr::get($item, 'is_private', ''))),
-        $this->boolString(Arr::get($item, 'verified', Arr::get($item, 'is_verified', ''))),
-        Arr::get($item, 'highlightReelCount', Arr::get($item, 'highlight_reel_count', '')),
-        Arr::get($item, 'igtvVideoCount', Arr::get($item, 'igtv_video_count', '')),
-        $this->estimateInstagramEngagementRate($item),
-        $this->averageFromLatestPosts($latestPosts, 'likesCount'),
-        $this->averageFromLatestPosts($latestPosts, 'commentsCount'),
-        count($latestPosts),
-        count($latestPosts),
-        Arr::get($item, 'apify_profile_id', Arr::get($item, 'id', '')),
-    ];
-}
+        return [
+            $username,
+            $this->normalizeHandle(Arr::get($item, 'handle', $username)),
+            $this->extractProfileUrl($item, 'instagram', $username),
+            Arr::get($item, 'inputUrl', Arr::get($item, 'input_url', Arr::get($item, 'url', ''))),
+            Arr::get($item, 'fullName', Arr::get($item, 'full_name', '')),
+            Arr::get($item, 'biography', Arr::get($item, 'bio', '')),
+            Arr::get($item, 'email_from_bio', $this->extractEmailFromText(Arr::get($item, 'biography', Arr::get($item, 'bio', '')))),
+            Arr::get($item, 'externalUrl', Arr::get($item, 'external_url', '')),
+            Arr::get($item, 'followersCount', Arr::get($item, 'followers', '')),
+            Arr::get($item, 'followsCount', Arr::get($item, 'following', '')),
+            Arr::get($item, 'postsCount', Arr::get($item, 'posts_count', '')),
+            $this->boolString(Arr::get($item, 'isBusinessAccount', Arr::get($item, 'is_business_account', ''))),
+            Arr::get($item, 'businessCategoryName', Arr::get($item, 'business_category_name', '')),
+            $this->boolString(Arr::get($item, 'private', Arr::get($item, 'is_private', ''))),
+            $this->boolString(Arr::get($item, 'verified', Arr::get($item, 'is_verified', ''))),
+            Arr::get($item, 'highlightReelCount', Arr::get($item, 'highlight_reel_count', '')),
+            Arr::get($item, 'igtvVideoCount', Arr::get($item, 'igtv_video_count', '')),
+            $this->estimateInstagramEngagementRate($item),
+            $this->averageFromLatestPosts($latestPosts, 'likesCount'),
+            $this->averageFromLatestPosts($latestPosts, 'commentsCount'),
+            count($latestPosts),
+            count($latestPosts),
+            Arr::get($item, 'apify_profile_id', Arr::get($item, 'id', '')),
+        ];
+    }
+
     private function mapTikTokProfileEnrichedRow(array $item): array
     {
         $bio = Arr::get($item, 'bio', Arr::get($item, 'signature', ''));
         $latestPosts = Arr::get($item, 'latestPosts', Arr::get($item, 'latest_posts', []));
+        $latestPosts = is_array($latestPosts) ? $latestPosts : [];
+        $username = Arr::get($item, 'username', Arr::get($item, 'authorMeta.name', Arr::get($item, 'author.username', '')));
+        $profileUrl = $this->extractProfileUrl($item, 'tiktok', $username);
+        $inputUrl = Arr::get($item, 'inputUrl', Arr::get($item, 'input_url', ''));
+        $inputUrl = $this->sanitizeTikTokProfileUrl((string) $inputUrl, (string) $username);
 
         return [
-            Arr::get($item, 'username', Arr::get($item, 'authorMeta.name', '')),
-            $this->normalizeHandle(Arr::get($item, 'handle', Arr::get($item, 'username', Arr::get($item, 'authorMeta.name', '')))),
-            $this->extractProfileUrl($item, 'tiktok', Arr::get($item, 'username', Arr::get($item, 'authorMeta.name', ''))),
-            Arr::get($item, 'inputUrl', Arr::get($item, 'input_url', Arr::get($item, 'url', ''))),
+            $username,
+            $this->normalizeHandle(Arr::get($item, 'handle', $username)),
+            $profileUrl,
+            $inputUrl !== '' ? $inputUrl : $profileUrl,
             Arr::get($item, 'nickname', Arr::get($item, 'authorMeta.nickName', '')),
             $bio,
             Arr::get($item, 'email_from_bio', $this->extractEmailFromText($bio)),
@@ -240,8 +247,8 @@ private function mapInstagramProfileEnrichedRow(array $item): array
             Arr::get($item, 'profileUrl'),
             Arr::get($item, 'inputUrl'),
             Arr::get($item, 'input_url'),
-            Arr::get($item, 'url'),
             Arr::get($item, 'authorMeta.profileUrl'),
+            Arr::get($item, 'url'),
         ];
 
         foreach ($candidates as $candidate) {
@@ -255,7 +262,10 @@ private function mapInstagramProfileEnrichedRow(array $item): array
             }
 
             if ($platform === 'tiktok' && Str::contains($candidate, 'tiktok.com')) {
-                return $candidate;
+                $clean = $this->sanitizeTikTokProfileUrl($candidate, (string) $username);
+                if ($clean !== '') {
+                    return $clean;
+                }
             }
         }
 
@@ -267,6 +277,25 @@ private function mapInstagramProfileEnrichedRow(array $item): array
         return $platform === 'instagram'
             ? "https://www.instagram.com/{$username}/"
             : "https://www.tiktok.com/@{$username}";
+    }
+
+    private function sanitizeTikTokProfileUrl(string $candidate, string $username = ''): string
+    {
+        $candidate = trim($candidate);
+        if ($candidate === '') {
+            return '';
+        }
+
+        if (!Str::contains($candidate, 'tiktok.com')) {
+            return '';
+        }
+
+        if (Str::contains($candidate, '/video/')) {
+            $username = trim($username);
+            return $username !== '' ? "https://www.tiktok.com/@{$username}" : '';
+        }
+
+        return $candidate;
     }
 
     private function extractEmailFromText(?string $text): string
@@ -300,20 +329,39 @@ private function mapInstagramProfileEnrichedRow(array $item): array
         return (string) $value;
     }
 
-    private function dedupeRows(array $rows): array
+    private function dedupeRows(string $sheetName, array $rows): array
     {
         $unique = [];
         $seen = [];
 
         foreach ($rows as $row) {
-            $key = md5(json_encode($row));
-            if (isset($seen[$key])) {
+            $key = match ($sheetName) {
+                'IG_Profile_URL_Queue', 'TikTok_Profile_URL_Queue', 'Profile_URL_Queue_All' => strtolower(trim((string) ($row[0] ?? ''))) . '|' . strtolower(trim((string) ($row[1] ?? ''))) . '|' . strtolower(trim((string) ($row[2] ?? ''))),
+                'Instagram_Profile_Enriched', 'TikTok_Profile_Enriched' => strtolower(trim((string) ($row[1] ?? $row[2] ?? $row[0] ?? ''))),
+                default => md5(json_encode($row)),
+            };
+
+            if ($key === '') {
+                $key = md5(json_encode($row));
+            }
+
+            if (!isset($seen[$key])) {
+                $seen[$key] = count($unique);
+                $unique[] = $row;
                 continue;
             }
-            $seen[$key] = true;
-            $unique[] = $row;
+
+            $existingIndex = $seen[$key];
+            if ($this->rowFillScore($row) > $this->rowFillScore($unique[$existingIndex])) {
+                $unique[$existingIndex] = $row;
+            }
         }
 
-        return $unique;
+        return array_values($unique);
+    }
+
+    private function rowFillScore(array $row): int
+    {
+        return count(array_filter($row, fn ($value) => trim((string) $value) !== ''));
     }
 }
