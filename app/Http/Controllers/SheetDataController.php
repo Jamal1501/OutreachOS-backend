@@ -38,7 +38,7 @@ class SheetDataController extends Controller
         $search = Str::lower(trim((string) ($validated['search'] ?? '')));
         $limit = (int) ($validated['limit'] ?? 200);
         $offset = (int) ($validated['offset'] ?? 0);
-        $dedupe = array_key_exists('dedupe', $validated) ? (bool) $validated['dedupe'] : true;
+        $dedupe = $request->boolean('dedupe', true);
 
         $normalized = [];
         foreach ($platforms as $platform) {
