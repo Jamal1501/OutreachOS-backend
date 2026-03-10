@@ -395,13 +395,18 @@ class SheetDataController extends Controller
                     }
                 }
 
+                $rowStatus = strtolower(trim((string) ($row['status'] ?? 'queued')));
+                if ($enrichedRowNumber !== null) {
+                    $rowStatus = 'enriched';
+                }
+
                 $items[] = [
                     'id' => $this->queueId($platformName, (int) ($row['_row_number'] ?? 0)),
                     'rowId' => $this->queueId($platformName, (int) ($row['_row_number'] ?? 0)),
                     'platform' => $platformName,
                     'handle' => $handle,
                     'profileUrl' => $url,
-                    'status' => (string) ($row['status'] ?? 'queued'),
+                    'status' => $rowStatus,
                     'sourceNotes' => (string) ($row['source_notes'] ?? ''),
                     'addedAt' => $this->extractTaggedValue((string) ($row['source_notes'] ?? ''), 'added_at') ?? '',
                     'readyToMerge' => $enrichedRowNumber !== null,
@@ -429,10 +434,21 @@ class SheetDataController extends Controller
         $creators = $this->sheets->getRows($sheetId, 'Creators_CRM');
         $tasks = $this->sheets->getRows($sheetId, 'Task_Queue');
         $outreach = $this->sheets->getRows($sheetId, 'Outreach_Log');
+        $discoveredHandles = [];
+
+        foreach ([['instagram', 'Instagram_Posts_Raw', 'ownerUsername'], ['tiktok', 'TikTok_Posts_Raw', 'authorMeta.name']] as [$platformKey, $sheetName, $handleKey]) {
+            foreach ($this->sheets->getRows($sheetId, $sheetName) as $row) {
+                $handle = strtolower(trim((string) ($row[$handleKey] ?? '')));
+                if ($handle === '') {
+                    continue;
+                }
+                $discoveredHandles[$platformKey . '|' . $handle] = true;
+            }
+        }
 
         $today = now()->toDateString();
         $metrics = [
-            'creatorsDiscovered' => count($this->sheets->getRows($sheetId, 'Instagram_Posts_Raw')) + count($this->sheets->getRows($sheetId, 'TikTok_Posts_Raw')),
+            'creatorsDiscovered' => count($discoveredHandles),
             'creatorsEnriched' => count(array_filter($creators, fn (array $row) => trim((string) ($row['Followers'] ?? '')) !== '' || trim((string) ($row['Contact_Email'] ?? '')) !== '')),
             'readyForOutreach' => count(array_filter($creators, fn (array $row) => in_array(strtoupper((string) ($row['Status'] ?? '')), ['NEW', 'ENRICHED', 'DISCOVERED'], true))),
             'tasksDueToday' => count(array_filter($tasks, fn (array $row) => str_starts_with((string) ($row['Due_At'] ?? ''), $today) && !in_array(strtoupper((string) ($row['Status'] ?? '')), ['DONE', 'COMPLETED', 'SKIPPED'], true))),
