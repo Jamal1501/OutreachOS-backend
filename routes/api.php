@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\ApifyController;
 use App\Http\Controllers\SheetDataController;
+use App\Http\Controllers\PipelineController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', function () {
@@ -42,4 +43,7 @@ Route::middleware('app.key')->group(function () {
     Route::post('/tasks/{taskId}/complete', [ApifyController::class, 'completeTask']);
     Route::get('/tasks/list', [ApifyController::class, 'listTasks']);
     Route::post('/outreach/log', [ApifyController::class, 'logOutreachEvent']);
+
+    Route::post('/pipeline/discover', [PipelineController::class, 'discover']);
+    Route::get('/pipeline/status', [PipelineController::class, 'status']);
 });
