@@ -431,7 +431,8 @@ class SheetDataController extends Controller
         ]);
 
         $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
-        $creators = $this->sheets->getRows($sheetId, 'Creators_CRM');
+        $creatorRows = $this->sheets->getRows($sheetId, 'Creators_CRM');
+        $creators = array_map(fn (array $row) => $this->normalizeCreatorRow($row), $creatorRows);
         $tasks = $this->sheets->getRows($sheetId, 'Task_Queue');
         $outreach = $this->sheets->getRows($sheetId, 'Outreach_Log');
         $discoveredHandles = [];
@@ -449,8 +450,8 @@ class SheetDataController extends Controller
         $today = now()->toDateString();
         $metrics = [
             'creatorsDiscovered' => count($discoveredHandles),
-            'creatorsEnriched' => count(array_filter($creators, fn (array $row) => trim((string) ($row['Followers'] ?? '')) !== '' || trim((string) ($row['Contact_Email'] ?? '')) !== '')),
-            'readyForOutreach' => count(array_filter($creators, fn (array $row) => in_array(strtoupper((string) ($row['Status'] ?? '')), ['NEW', 'ENRICHED', 'DISCOVERED'], true))),
+            'creatorsEnriched' => count(array_filter($creators, fn (array $row) => ($row['enrichmentStatus'] ?? 'pending') === 'enriched')),
+            'readyForOutreach' => count(array_filter($creators, fn (array $row) => in_array((string) ($row['status'] ?? 'discovered'), ['discovered', 'enriched'], true))),
             'tasksDueToday' => count(array_filter($tasks, fn (array $row) => str_starts_with((string) ($row['Due_At'] ?? ''), $today) && !in_array(strtoupper((string) ($row['Status'] ?? '')), ['DONE', 'COMPLETED', 'SKIPPED'], true))),
             'outreachSent' => count(array_filter($outreach, fn (array $row) => Str::contains(strtoupper((string) ($row['Event_Type'] ?? '')), ['SENT']))),
             'repliesReceived' => count(array_filter($outreach, fn (array $row) => Str::contains(strtoupper((string) ($row['Event_Type'] ?? '')), ['REPLY', 'ACCEPTED']))),
@@ -638,7 +639,8 @@ class SheetDataController extends Controller
     private function normalizeCreatorRow(array $row): array
     {
         $platform = Str::lower((string) ($row['Platform'] ?? 'instagram'));
-        $status = $this->normalizeCreatorStatus((string) ($row['Status'] ?? ''));
+        $enrichmentStatus = $this->normalizeEnrichmentStatus($row);
+        $status = $this->normalizeCreatorStatus((string) ($row['Status'] ?? ''), $enrichmentStatus);
         $score = is_numeric((string) ($row['Value_Score'] ?? '')) ? (float) $row['Value_Score'] : $this->scoring->score($row);
         $addedAt = $this->extractTaggedValue((string) ($row['Notes'] ?? ''), 'added_to_crm_at') ?? '';
 
@@ -652,7 +654,7 @@ class SheetDataController extends Controller
             'engagementRate' => $this->sanitizeFloat($row['Engagement_Rate_%'] ?? null),
             'email' => (string) ($row['Contact_Email'] ?? ''),
             'status' => $status,
-            'enrichmentStatus' => (trim((string) ($row['Followers'] ?? '')) !== '' || trim((string) ($row['Contact_Email'] ?? '')) !== '') ? 'enriched' : 'pending',
+            'enrichmentStatus' => $enrichmentStatus,
             'profileUrl' => (string) ($row['DM_Link'] ?? ''),
             'dmUrl' => (string) ($row['DM_Link'] ?? ''),
             'niche' => (string) ($row['Niche_Category'] ?? ''),
@@ -665,17 +667,53 @@ class SheetDataController extends Controller
         ];
     }
 
-    private function normalizeCreatorStatus(string $status): string
+    private function normalizeCreatorStatus(string $status, string $enrichmentStatus = 'pending'): string
     {
         return match (Str::upper(trim($status))) {
-            'NEW', 'ENRICHED' => 'enriched',
+            'QUEUED' => 'queued',
             'CONTACTED', 'FOLLOW_REQUEST_SENT', 'FOLLOWED_UP' => 'contacted',
             'REPLIED' => 'replied',
             'ACCEPTED' => 'accepted',
             'DECLINED' => 'declined',
             'ARCHIVED' => 'archived',
-            default => 'discovered',
+            default => $enrichmentStatus === 'enriched' ? 'enriched' : 'discovered',
         };
+    }
+
+    private function normalizeEnrichmentStatus(array $row): string
+    {
+        $rawStatus = Str::upper(trim((string) ($row['Status'] ?? '')));
+        $notes = (string) ($row['Notes'] ?? '');
+        $sourceTag = Str::lower((string) ($this->extractTaggedValue($notes, 'source') ?? ''));
+
+        if (in_array($rawStatus, ['FAILED', 'ENRICHMENT_FAILED', 'FAILED_ENRICHMENT'], true)
+            || Str::contains(Str::lower($notes), ['enrichment_failed', 'enrichment failed'])) {
+            return 'failed';
+        }
+
+        $hasEnrichmentData = trim((string) ($row['Followers'] ?? '')) !== ''
+            || trim((string) ($row['Engagement_Rate_%'] ?? '')) !== ''
+            || trim((string) ($row['Contact_Email'] ?? '')) !== '';
+
+        $statusImpliesEnriched = in_array($rawStatus, [
+            'NEW',
+            'ENRICHED',
+            'CONTACTED',
+            'FOLLOW_REQUEST_SENT',
+            'FOLLOWED_UP',
+            'REPLIED',
+            'ACCEPTED',
+            'DECLINED',
+            'ARCHIVED',
+        ], true);
+
+        if ($hasEnrichmentData
+            || in_array($sourceTag, ['ig_enriched', 'tiktok_enriched'], true)
+            || $statusImpliesEnriched) {
+            return 'enriched';
+        }
+
+        return 'pending';
     }
 
     private function normalizeMessageRow(array $row): array
