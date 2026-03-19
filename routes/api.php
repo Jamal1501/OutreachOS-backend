@@ -38,6 +38,9 @@ Route::middleware('app.key')->group(function () {
 
     Route::get('/enrichment/queue', [SheetDataController::class, 'enrichmentQueue']);
     Route::get('/dashboard/metrics', [SheetDataController::class, 'dashboardMetrics']);
+    Route::get('/operator/view', [SheetDataController::class, 'operatorView']);
+    Route::get('/creators/{id}/decision-sheet', [SheetDataController::class, 'creatorDecisionSheet']);
+    Route::post('/creators/{id}/transition', [SheetDataController::class, 'transitionCreator']);
 
     Route::post('/tasks/generate', [ApifyController::class, 'generateTasks']);
     Route::post('/tasks/{taskId}/complete', [ApifyController::class, 'completeTask']);
