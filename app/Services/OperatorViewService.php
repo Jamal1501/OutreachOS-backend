@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class OperatorViewService
@@ -15,13 +16,14 @@ class OperatorViewService
 
     public function build(string $sheetId): array
     {
-        $creatorRows = $this->sheets->getRows($sheetId, 'Creators_CRM');
-        $taskRows = $this->sheets->getRows($sheetId, 'Task_Queue');
-        $outreachRows = $this->sheets->getRows($sheetId, 'Outreach_Log');
+        $creatorRows = $this->safeGetRows($sheetId, 'Creators_CRM');
+        $taskRows = $this->safeGetRows($sheetId, 'Task_Queue');
+        $outreachRows = $this->safeGetRows($sheetId, 'Outreach_Log');
 
         $creators = array_map(fn (array $row) => $this->normalizeCreatorCard($row), $creatorRows);
         $duplicates = $this->detectDuplicateWarnings($creators);
         $duplicateByCreator = [];
+
         foreach ($duplicates as $warning) {
             foreach ($warning['creators'] as $creator) {
                 $duplicateByCreator[$creator['id']] = $warning['risk'];
@@ -30,10 +32,12 @@ class OperatorViewService
 
         $tasks = $this->normalizeTasks($taskRows);
         $openTaskByCreator = [];
+
         foreach ($tasks as $task) {
             if (in_array($task['status'], ['completed', 'skipped'], true)) {
                 continue;
             }
+
             $key = strtolower($task['platform'] . '|' . ltrim($task['handle'], '@'));
             $openTaskByCreator[$key][] = $task;
         }
@@ -47,37 +51,57 @@ class OperatorViewService
         unset($creator);
 
         $triageStates = ['discovered', 'needs_review', 'enriched', 'duplicate_review_needed'];
-        $triageItems = array_values(array_filter($creators, fn (array $creator) => in_array($creator['lifecycleState'], $triageStates, true)));
-        usort($triageItems, fn (array $a, array $b) => ($b['valueScore'] <=> $a['valueScore']) ?: strcmp((string) ($b['addedAt'] ?? ''), (string) ($a['addedAt'] ?? '')));
+        $triageItems = array_values(array_filter(
+            $creators,
+            fn (array $creator) => in_array($creator['lifecycleState'], $triageStates, true)
+        ));
+
+        usort($triageItems, fn (array $a, array $b) =>
+            ($b['valueScore'] <=> $a['valueScore'])
+            ?: strcmp((string) ($b['addedAt'] ?? ''), (string) ($a['addedAt'] ?? ''))
+        );
 
         $readyStates = ['approved_for_outreach', 'queued'];
         $readyQueue = array_values(array_filter($creators, function (array $creator) use ($readyStates) {
             return in_array($creator['lifecycleState'], $readyStates, true)
                 || ($creator['lifecycleState'] === 'enriched' && ($creator['valueScore'] ?? 0) >= 55);
         }));
-        usort($readyQueue, fn (array $a, array $b) => ($b['valueScore'] <=> $a['valueScore']) ?: strcmp((string) ($b['followers'] ?? 0), (string) ($a['followers'] ?? 0)));
+
+        usort($readyQueue, fn (array $a, array $b) =>
+            ($b['valueScore'] <=> $a['valueScore'])
+            ?: (($b['followers'] ?? 0) <=> ($a['followers'] ?? 0))
+        );
 
         $today = now()->toDateString();
-        $tasksDueToday = array_values(array_filter($tasks, fn (array $task) => !in_array($task['status'], ['completed', 'skipped'], true) && str_starts_with((string) ($task['dueDate'] ?? ''), $today)));
-        usort($tasksDueToday, fn (array $a, array $b) => strcmp((string) ($a['dueDate'] ?? ''), (string) ($b['dueDate'] ?? '')));
+        $tasksDueToday = array_values(array_filter($tasks, fn (array $task) =>
+            !in_array($task['status'], ['completed', 'skipped'], true)
+            && str_starts_with((string) ($task['dueDate'] ?? ''), $today)
+        ));
+
+        usort($tasksDueToday, fn (array $a, array $b) =>
+            strcmp((string) ($a['dueDate'] ?? ''), (string) ($b['dueDate'] ?? ''))
+        );
 
         $recentActivity = $this->normalizeRecentActivity($outreachRows);
 
-        $outreachSent = count(array_filter($outreachRows, fn (array $row) => Str::contains(Str::upper((string) ($row['Event_Type'] ?? '')), ['SENT', 'OUTREACH'])));
-        $replies = count(array_filter($outreachRows, fn (array $row) => Str::contains(Str::upper((string) ($row['Event_Type'] ?? '')), ['REPLY', 'ACCEPTED', 'DEAL_WON'])));
+        $outreachSent = count(array_filter($outreachRows, fn (array $row) =>
+            Str::contains(Str::upper((string) ($row['Event_Type'] ?? '')), ['SENT', 'OUTREACH'])
+        ));
 
-        $metrics = [
-            'triageCount' => count($triageItems),
-            'duplicateWarnings' => count($duplicates),
-            'readyForOutreach' => count($readyQueue),
-            'tasksDueToday' => count($tasksDueToday),
-            'outreachSent' => $outreachSent,
-            'repliesReceived' => $replies,
-            'replyRate' => $outreachSent > 0 ? round(($replies / $outreachSent) * 100, 1) : 0,
-        ];
+        $replies = count(array_filter($outreachRows, fn (array $row) =>
+            Str::contains(Str::upper((string) ($row['Event_Type'] ?? '')), ['REPLY', 'ACCEPTED', 'DEAL_WON'])
+        ));
 
         return [
-            'metrics' => $metrics,
+            'metrics' => [
+                'triageCount' => count($triageItems),
+                'duplicateWarnings' => count($duplicates),
+                'readyForOutreach' => count($readyQueue),
+                'tasksDueToday' => count($tasksDueToday),
+                'outreachSent' => $outreachSent,
+                'repliesReceived' => $replies,
+                'replyRate' => $outreachSent > 0 ? round(($replies / $outreachSent) * 100, 1) : 0,
+            ],
             'triageItems' => array_slice($triageItems, 0, 12),
             'duplicateWarnings' => array_slice($duplicates, 0, 8),
             'readyQueue' => array_slice($readyQueue, 0, 12),
@@ -88,7 +112,8 @@ class OperatorViewService
 
     public function buildDecisionSheet(string $sheetId, int $rowNumber): array
     {
-        $creatorRow = collect($this->sheets->getRows($sheetId, 'Creators_CRM'))
+        $creatorRows = $this->safeGetRows($sheetId, 'Creators_CRM');
+        $creatorRow = collect($creatorRows)
             ->first(fn (array $row) => (int) ($row['_row_number'] ?? 0) === $rowNumber);
 
         if (!$creatorRow) {
@@ -96,15 +121,30 @@ class OperatorViewService
         }
 
         $creator = $this->normalizeCreatorCard($creatorRow);
+
         $duplicates = array_values(array_filter(
-            $this->detectDuplicateWarnings([$creator, ...array_map(fn (array $row) => $this->normalizeCreatorCard($row), $this->sheets->getRows($sheetId, 'Creators_CRM'))]),
-            fn (array $warning) => collect($warning['creators'])->contains(fn (array $item) => $item['id'] === $creator['id'])
+            $this->detectDuplicateWarnings([
+                $creator,
+                ...array_map(fn (array $row) => $this->normalizeCreatorCard($row), $creatorRows),
+            ]),
+            fn (array $warning) => collect($warning['creators'])
+                ->contains(fn (array $item) => $item['id'] === $creator['id'])
         ));
 
-        $allTasks = $this->normalizeTasks($this->sheets->getRows($sheetId, 'Task_Queue'));
-        $relatedTasks = array_values(array_filter($allTasks, fn (array $task) => strtolower($task['platform']) === strtolower($creator['platform']) && strtolower(ltrim($task['handle'], '@')) === strtolower(ltrim($creator['handle'], '@'))));
+        $allTasks = $this->normalizeTasks($this->safeGetRows($sheetId, 'Task_Queue'));
+        $relatedTasks = array_values(array_filter(
+            $allTasks,
+            fn (array $task) =>
+                strtolower($task['platform']) === strtolower($creator['platform'])
+                && strtolower(ltrim($task['handle'], '@')) === strtolower(ltrim($creator['handle'], '@'))
+        ));
 
-        $timeline = $this->normalizeRecentActivity($this->sheets->getRows($sheetId, 'Outreach_Log'), $creator['platform'], $creator['handle']);
+        $timeline = $this->normalizeRecentActivity(
+            $this->safeGetRows($sheetId, 'Outreach_Log'),
+            $creator['platform'],
+            $creator['handle']
+        );
+
         array_unshift($timeline, [
             'id' => 'creator-added-' . $creator['id'],
             'type' => 'creator_added',
@@ -167,10 +207,19 @@ class OperatorViewService
                 'duplicateRisk' => [
                     'level' => count($duplicates) > 0 ? ($duplicates[0]['risk'] ?? 'medium') : 'low',
                     'reasons' => count($duplicates) > 0
-                        ? array_values(array_unique(array_filter(array_map(fn (array $warning) => (string) ($warning['reason'] ?? ''), $duplicates))))
+                        ? array_values(array_unique(array_filter(array_map(
+                            fn (array $warning) => (string) ($warning['reason'] ?? ''),
+                            $duplicates
+                        ))))
                         : ['No duplicate warning currently surfaced'],
                     'relatedCreators' => count($duplicates) > 0
-                        ? array_values(array_unique(array_filter(array_merge(...array_map(fn (array $warning) => array_map(fn (array $item) => $item['handle'] . ' (' . $item['platform'] . ')', $warning['creators']), $duplicates)))))
+                        ? array_values(array_unique(array_filter(array_merge(...array_map(
+                            fn (array $warning) => array_map(
+                                fn (array $item) => $item['handle'] . ' (' . $item['platform'] . ')',
+                                $warning['creators']
+                            ),
+                            $duplicates
+                        )))))
                         : [],
                 ],
                 'recommendedNextAction' => $this->recommendedNextAction($creator),
@@ -182,12 +231,30 @@ class OperatorViewService
         ];
     }
 
+    private function safeGetRows(string $sheetId, string $sheetName): array
+    {
+        try {
+            return $this->sheets->getRows($sheetId, $sheetName);
+        } catch (\Throwable $e) {
+            Log::warning('OperatorViewService sheet load failed', [
+                'sheetId' => $sheetId,
+                'sheetName' => $sheetName,
+                'error' => $e->getMessage(),
+            ]);
+
+            return [];
+        }
+    }
+
     private function normalizeCreatorCard(array $row): array
     {
         $platform = Str::lower((string) ($row['Platform'] ?? 'instagram'));
         $enrichmentStatus = $this->normalizeEnrichmentStatus($row);
         $state = $this->lifecycle->normalizeState((string) ($row['Status'] ?? ''), $enrichmentStatus);
-        $score = is_numeric((string) ($row['Value_Score'] ?? '')) ? (float) $row['Value_Score'] : $this->scoring->score($row);
+        $score = is_numeric((string) ($row['Value_Score'] ?? ''))
+            ? (float) $row['Value_Score']
+            : $this->scoring->score($row);
+
         $addedAt = $this->extractTaggedValue((string) ($row['Notes'] ?? ''), 'added_to_crm_at') ?? '';
         $lastContentDate = trim((string) ($row['Last_Content_Date'] ?? ''));
         $lastContentDate = str_starts_with($lastContentDate, '=') ? '' : $lastContentDate;
@@ -229,8 +296,12 @@ class OperatorViewService
                     'freshness' => $this->lifecycle->freshnessLabel($addedAt),
                 ],
                 'status' => [
-                    'source' => Str::contains(Str::lower((string) ($row['Notes'] ?? '')), 'manual_transition=') ? 'human edited' : 'system',
-                    'freshness' => $this->lifecycle->freshnessLabel((string) ($row['Response_Date'] ?? $row['DM_Sent_Date'] ?? '')),
+                    'source' => Str::contains(Str::lower((string) ($row['Notes'] ?? '')), 'manual_transition=')
+                        ? 'human edited'
+                        : 'system',
+                    'freshness' => $this->lifecycle->freshnessLabel(
+                        (string) ($row['Response_Date'] ?? $row['DM_Sent_Date'] ?? '')
+                    ),
                 ],
             ],
         ];
@@ -240,6 +311,7 @@ class OperatorViewService
     {
         $items = array_map(function (array $row) {
             $status = strtoupper(trim((string) ($row['Status'] ?? 'PENDING')));
+
             return [
                 'id' => (string) ($row['Task_ID'] ?? ''),
                 'type' => (string) ($row['Task_Type'] ?? ''),
@@ -262,24 +334,31 @@ class OperatorViewService
             ];
         }, $taskRows);
 
-        usort($items, fn (array $a, array $b) => strcmp((string) ($a['dueDate'] ?? ''), (string) ($b['dueDate'] ?? '')));
+        usort($items, fn (array $a, array $b) =>
+            strcmp((string) ($a['dueDate'] ?? ''), (string) ($b['dueDate'] ?? ''))
+        );
+
         return $items;
     }
 
     private function normalizeRecentActivity(array $rows, ?string $platform = null, ?string $handle = null): array
     {
         $items = [];
+
         foreach ($rows as $index => $row) {
             $rowPlatform = Str::lower((string) ($row['Platform'] ?? ''));
             $rowHandle = (string) ($row['Handle'] ?? '');
+
             if ($platform !== null && $rowPlatform !== Str::lower($platform)) {
                 continue;
             }
+
             if ($handle !== null && strtolower(ltrim($rowHandle, '@')) !== strtolower(ltrim($handle, '@'))) {
                 continue;
             }
 
             $eventType = Str::upper((string) ($row['Event_Type'] ?? 'EVENT'));
+
             $items[] = [
                 'id' => (string) ($row['Event_ID'] ?? ('evt-' . $index)),
                 'type' => Str::lower($eventType),
@@ -292,13 +371,17 @@ class OperatorViewService
             ];
         }
 
-        usort($items, fn (array $a, array $b) => strcmp((string) ($b['timestamp'] ?? ''), (string) ($a['timestamp'] ?? '')));
+        usort($items, fn (array $a, array $b) =>
+            strcmp((string) ($b['timestamp'] ?? ''), (string) ($a['timestamp'] ?? ''))
+        );
+
         return $items;
     }
 
     private function detectDuplicateWarnings(array $creators): array
     {
         $groups = [];
+
         foreach ($creators as $creator) {
             $handleKey = strtolower(ltrim((string) ($creator['handle'] ?? ''), '@'));
             $emailKey = strtolower(trim((string) ($creator['email'] ?? '')));
@@ -316,6 +399,7 @@ class OperatorViewService
         }
 
         $warnings = [];
+
         foreach ($groups as $key => $items) {
             $uniqueIds = array_values(array_unique(array_map(fn (array $item) => $item['id'], $items)));
             if (count($uniqueIds) < 2) {
@@ -327,6 +411,7 @@ class OperatorViewService
                 : (str_starts_with($key, 'handle:') ? 'Shared handle detected' : 'Shared full name detected');
 
             $risk = str_starts_with($key, 'email:') || str_starts_with($key, 'handle:') ? 'high' : 'medium';
+
             $creatorLookup = [];
             foreach ($items as $item) {
                 $creatorLookup[$item['id']] = [
@@ -345,7 +430,10 @@ class OperatorViewService
             ];
         }
 
-        usort($warnings, fn (array $a, array $b) => strcmp((string) ($a['risk'] ?? ''), (string) ($b['risk'] ?? '')));
+        usort($warnings, fn (array $a, array $b) =>
+            strcmp((string) ($a['risk'] ?? ''), (string) ($b['risk'] ?? ''))
+        );
+
         return $warnings;
     }
 
@@ -373,12 +461,15 @@ class OperatorViewService
         $notes = (string) ($row['Notes'] ?? '');
         $sourceTag = Str::lower((string) ($this->extractTaggedValue($notes, 'source') ?? ''));
 
-        if (in_array($rawStatus, ['FAILED', 'ENRICHMENT_FAILED', 'FAILED_ENRICHMENT'], true)
-            || Str::contains(Str::lower($notes), ['enrichment_failed', 'enrichment failed'])) {
+        if (
+            in_array($rawStatus, ['FAILED', 'ENRICHMENT_FAILED', 'FAILED_ENRICHMENT'], true)
+            || Str::contains(Str::lower($notes), ['enrichment_failed', 'enrichment failed'])
+        ) {
             return 'failed';
         }
 
-        $hasEnrichmentData = trim((string) ($row['Followers'] ?? '')) !== ''
+        $hasEnrichmentData =
+            trim((string) ($row['Followers'] ?? '')) !== ''
             || trim((string) ($row['Engagement_Rate_%'] ?? '')) !== ''
             || trim((string) ($row['Contact_Email'] ?? '')) !== '';
 
@@ -400,19 +491,29 @@ class OperatorViewService
 
     private function toInt(mixed $value): ?int
     {
-        if ($value === null || $value === '' || !is_numeric($value)) {
+        if ($value === null || $value === '') {
             return null;
         }
 
-        return (int) $value;
+        $normalized = preg_replace('/[^0-9\-]/', '', (string) $value);
+        if ($normalized === '' || !is_numeric($normalized)) {
+            return null;
+        }
+
+        return (int) $normalized;
     }
 
     private function toFloat(mixed $value): ?float
     {
-        if ($value === null || $value === '' || !is_numeric($value)) {
+        if ($value === null || $value === '') {
             return null;
         }
 
-        return round((float) $value, 2);
+        $normalized = preg_replace('/[^0-9.\-]/', '', (string) $value);
+        if ($normalized === '' || !is_numeric($normalized)) {
+            return null;
+        }
+
+        return round((float) $normalized, 2);
     }
 }
