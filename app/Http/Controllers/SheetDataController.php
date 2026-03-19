@@ -432,18 +432,27 @@ class SheetDataController extends Controller
 
 
     public function operatorView(Request $request)
-    {
-        $validated = $request->validate([
-            'sheetId' => ['nullable', 'string'],
-        ]);
+{
+    $validated = $request->validate([
+        'sheetId' => ['nullable', 'string'],
+    ]);
 
-        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+    $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
 
+    try {
         return response()->json([
             'message' => 'Operator view fetched',
             'data' => $this->operatorView->build($sheetId),
         ]);
+    } catch (\Throwable $e) {
+        report($e);
+
+        return response()->json([
+            'message' => 'Failed to build operator view',
+            'error' => $e->getMessage(),
+        ], 500);
     }
+}
 
     public function creatorDecisionSheet(Request $request, string $id)
     {
