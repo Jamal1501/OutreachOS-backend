@@ -431,15 +431,15 @@ class SheetDataController extends Controller
     }
 
 
-    public function operatorView(Request $request)
+public function operatorView(Request $request)
 {
-    $validated = $request->validate([
-        'sheetId' => ['nullable', 'string'],
-    ]);
-
-    $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
-
     try {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+        ]);
+
+        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+
         return response()->json([
             'message' => 'Operator view fetched',
             'data' => $this->operatorView->build($sheetId),
@@ -450,6 +450,7 @@ class SheetDataController extends Controller
         return response()->json([
             'message' => 'Failed to build operator view',
             'error' => $e->getMessage(),
+            'exception' => class_basename($e),
         ], 500);
     }
 }
