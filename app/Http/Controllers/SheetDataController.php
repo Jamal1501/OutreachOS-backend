@@ -2,9 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\CreatorLifecycleService;
 use App\Services\CreatorMergeService;
 use App\Services\GoogleSheetsService;
 use App\Services\InfluencerScoringService;
+use App\Services\OperatorViewService;
+use App\Services\OutreachLogService;
 use App\Services\TaskQueueService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
@@ -19,6 +22,9 @@ class SheetDataController extends Controller
         private CreatorMergeService $creatorMerge,
         private TaskQueueService $taskQueue,
         private InfluencerScoringService $scoring,
+        private CreatorLifecycleService $lifecycle,
+        private OperatorViewService $operatorView,
+        private OutreachLogService $outreachLog,
     ) {
     }
 
@@ -424,6 +430,97 @@ class SheetDataController extends Controller
         ]);
     }
 
+
+    public function operatorView(Request $request)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+        ]);
+
+        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+
+        return response()->json([
+            'message' => 'Operator view fetched',
+            'data' => $this->operatorView->build($sheetId),
+        ]);
+    }
+
+    public function creatorDecisionSheet(Request $request, string $id)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+        ]);
+
+        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $rowNumber = $this->parseRowNumber($id, 'crm');
+
+        return response()->json([
+            'message' => 'Creator decision sheet fetched',
+            'data' => $this->operatorView->buildDecisionSheet($sheetId, $rowNumber),
+        ]);
+    }
+
+    public function transitionCreator(Request $request, string $id)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+            'toState' => ['required', 'string'],
+            'reason' => ['nullable', 'string'],
+            'notes' => ['nullable', 'string'],
+            'actor' => ['nullable', 'string'],
+        ]);
+
+        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $rowNumber = $this->parseRowNumber($id, 'crm');
+        $creatorRow = collect($this->sheets->getRows($sheetId, 'Creators_CRM'))
+            ->first(fn (array $row) => (int) ($row['_row_number'] ?? 0) === $rowNumber);
+
+        if (!$creatorRow) {
+            throw new RuntimeException('Creator not found');
+        }
+
+        $enrichmentStatus = $this->normalizeEnrichmentStatus($creatorRow);
+        $fromState = $this->lifecycle->normalizeState((string) ($creatorRow['Status'] ?? ''), $enrichmentStatus);
+        $toState = trim((string) $validated['toState']);
+
+        if (!$this->lifecycle->isValidState($toState)) {
+            throw new RuntimeException('Invalid target state');
+        }
+
+        if (!$this->lifecycle->canTransition($fromState, $toState)) {
+            throw new RuntimeException(sprintf('Invalid transition %s -> %s', $fromState, $toState));
+        }
+
+        $updated = $this->lifecycle->applyTransition($creatorRow, $fromState, $toState, $validated);
+        $this->sheets->updateAssocRow($sheetId, 'Creators_CRM', $rowNumber, $updated);
+
+        $eventId = $this->outreachLog->appendEvent($sheetId, [
+            'Platform' => (string) ($creatorRow['Platform'] ?? ''),
+            'Handle' => (string) ($creatorRow['Handle'] ?? ''),
+            'Channel' => (string) ($creatorRow['Preferred_Channel'] ?? ''),
+            'Event_Type' => $this->lifecycle->eventTypeForTransition($fromState, $toState),
+            'Status' => strtoupper($this->lifecycle->sheetStatusForState($toState)),
+            'URL' => (string) ($creatorRow['DM_Link'] ?? ''),
+            'Notes' => trim(sprintf(
+                'transition %s -> %s%s%s',
+                $fromState,
+                $toState,
+                !empty($validated['reason']) ? '; reason=' . $validated['reason'] : '',
+                !empty($validated['notes']) ? '; note=' . str_replace(';', ',', (string) $validated['notes']) : ''
+            )),
+        ]);
+
+        return response()->json([
+            'message' => 'Creator transitioned',
+            'data' => [
+                'creatorId' => 'crm:' . $rowNumber,
+                'fromState' => $fromState,
+                'toState' => $toState,
+                'eventId' => $eventId,
+            ],
+        ]);
+    }
+
     public function dashboardMetrics(Request $request)
     {
         $validated = $request->validate([
@@ -669,15 +766,7 @@ class SheetDataController extends Controller
 
     private function normalizeCreatorStatus(string $status, string $enrichmentStatus = 'pending'): string
     {
-        return match (Str::upper(trim($status))) {
-            'QUEUED' => 'queued',
-            'CONTACTED', 'FOLLOW_REQUEST_SENT', 'FOLLOWED_UP' => 'contacted',
-            'REPLIED' => 'replied',
-            'ACCEPTED' => 'accepted',
-            'DECLINED' => 'declined',
-            'ARCHIVED' => 'archived',
-            default => $enrichmentStatus === 'enriched' ? 'enriched' : 'discovered',
-        };
+        return $this->lifecycle->normalizeState($status, $enrichmentStatus);
     }
 
     private function normalizeEnrichmentStatus(array $row): string
