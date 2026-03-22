@@ -26,6 +26,7 @@ Route::middleware('app.key')->group(function () {
     Route::post('/crm/merge-selected', [SheetDataController::class, 'mergeSelectedQueueToCrm']);
     Route::get('/crm/list', [SheetDataController::class, 'crmList']);
     Route::put('/crm/{id}', [SheetDataController::class, 'updateCreator']);
+    Route::post('/crm/link-profiles', [SheetDataController::class, 'linkProfiles']);
 
     Route::get('/discovery/list', [SheetDataController::class, 'discoveryList']);
     Route::post('/discovery/extract-urls', [SheetDataController::class, 'extractUrls']);
