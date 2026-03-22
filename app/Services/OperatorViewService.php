@@ -259,6 +259,10 @@ class OperatorViewService
         $lastContentDate = trim((string) ($row['Last_Content_Date'] ?? ''));
         $lastContentDate = str_starts_with($lastContentDate, '=') ? '' : $lastContentDate;
 
+        $identityId = $this->extractTaggedValue((string) ($row['Notes'] ?? ''), 'creator_identity_id') ?? '';
+        $linkedProfiles = $this->extractTaggedValue((string) ($row['Notes'] ?? ''), 'linked_profiles') ?? '';
+        $linkedProfileCount = $linkedProfiles !== '' ? count(array_filter(explode(',', $linkedProfiles))) : ($identityId !== '' ? 1 : 0);
+
         return [
             'id' => 'crm:' . (int) ($row['_row_number'] ?? 0),
             'rowNumber' => (int) ($row['_row_number'] ?? 0),
@@ -282,6 +286,8 @@ class OperatorViewService
             'valueTier' => Str::lower($this->scoring->tier($score)),
             'preferredChannel' => (string) ($row['Preferred_Channel'] ?? ''),
             'duplicateRisk' => trim((string) ($row['Duplicate_Flag'] ?? '')) !== '' ? 'medium' : 'low',
+            'creatorIdentityId' => $identityId !== '' ? $identityId : null,
+            'linkedProfileCount' => $linkedProfileCount,
             'evidence' => [
                 'followers' => [
                     'source' => $this->lifecycle->inferEvidenceSource($row, 'followers'),
