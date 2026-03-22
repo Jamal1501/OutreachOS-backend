@@ -243,6 +243,71 @@ class SheetDataController extends Controller
         ]);
     }
 
+
+    public function linkProfiles(Request $request)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+            'creatorIds' => ['required', 'array', 'min:2'],
+            'creatorIds.*' => ['string'],
+            'primaryCreatorId' => ['nullable', 'string'],
+        ]);
+
+        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $rows = $this->sheets->getRows($sheetId, 'Creators_CRM');
+        $rowNumbers = array_map(fn (string $id) => $this->parseRowNumber($id, 'crm'), $validated['creatorIds']);
+        $primaryRowNumber = !empty($validated['primaryCreatorId']) ? $this->parseRowNumber((string) $validated['primaryCreatorId'], 'crm') : $rowNumbers[0];
+
+        $selected = array_values(array_filter($rows, fn (array $row) => in_array((int) ($row['_row_number'] ?? 0), $rowNumbers, true)));
+        if (count($selected) < 2) {
+            throw new RuntimeException('Need at least two creator rows to link profiles');
+        }
+
+        $existingIdentityId = null;
+        foreach ($selected as $row) {
+            $existingIdentityId = $this->extractCreatorIdentityId($row);
+            if ($existingIdentityId) break;
+        }
+        $identityId = $existingIdentityId ?: 'creator_' . Str::lower(Str::random(10));
+
+        $linkedLabels = [];
+        foreach ($selected as $row) {
+            $linkedLabels[] = Str::lower((string) ($row['Platform'] ?? 'instagram')) . ':' . (string) ($row['Handle'] ?? '');
+        }
+        sort($linkedLabels);
+        $linkedValue = implode(',', array_unique($linkedLabels));
+
+        $updates = [];
+        $linked = [];
+        foreach ($selected as $row) {
+            $rowNumber = (int) ($row['_row_number'] ?? 0);
+            $notes = (string) ($row['Notes'] ?? '');
+            $notes = $this->upsertTaggedValue($notes, 'creator_identity_id', $identityId);
+            $notes = $this->upsertTaggedValue($notes, 'linked_profiles', $linkedValue);
+            if ($rowNumber === $primaryRowNumber) {
+                $notes = $this->upsertTaggedValue($notes, 'identity_primary', '1');
+            }
+            $row['Notes'] = $notes;
+            $updates[] = ['rowNumber' => $rowNumber, 'record' => $row];
+            $linked[] = [
+                'id' => 'crm:' . $rowNumber,
+                'handle' => (string) ($row['Handle'] ?? ''),
+                'platform' => Str::lower((string) ($row['Platform'] ?? 'instagram')),
+            ];
+        }
+
+        $this->sheets->batchUpdateAssocRows($sheetId, 'Creators_CRM', $updates);
+
+        return response()->json([
+            'message' => 'Creator profiles linked under one identity',
+            'data' => [
+                'creatorIdentityId' => $identityId,
+                'linked' => $linked,
+                'primaryCreatorId' => 'crm:' . $primaryRowNumber,
+            ],
+        ]);
+    }
+
     public function mergeSelectedQueueToCrm(Request $request)
     {
         $validated = $request->validate([
@@ -751,6 +816,10 @@ public function operatorView(Request $request)
         $score = is_numeric((string) ($row['Value_Score'] ?? '')) ? (float) $row['Value_Score'] : $this->scoring->score($row);
         $addedAt = $this->extractTaggedValue((string) ($row['Notes'] ?? ''), 'added_to_crm_at') ?? '';
 
+        $identityId = $this->extractCreatorIdentityId($row);
+        $linkedProfiles = $this->extractTaggedValue((string) ($row['Notes'] ?? ''), 'linked_profiles') ?? '';
+        $linkedProfileCount = $linkedProfiles !== '' ? count(array_filter(explode(',', $linkedProfiles))) : ($identityId ? 1 : 0);
+
         return [
             'id' => 'crm:' . (int) ($row['_row_number'] ?? 0),
             'rowId' => 'crm:' . (int) ($row['_row_number'] ?? 0),
@@ -771,6 +840,8 @@ public function operatorView(Request $request)
             'valueScore' => (int) round($score),
             'valueTier' => Str::lower($this->scoring->tier($score)),
             'preferredChannel' => (string) ($row['Preferred_Channel'] ?? ''),
+            'creatorIdentityId' => $identityId,
+            'linkedProfileCount' => $linkedProfileCount,
         ];
     }
 
@@ -1070,5 +1141,27 @@ public function operatorView(Request $request)
             return trim($matches[1]);
         }
         return null;
+    }
+
+    private function extractCreatorIdentityId(array $row): ?string
+    {
+        $direct = trim((string) ($row['Creator_Identity_ID'] ?? ''));
+        if ($direct !== '') {
+            return $direct;
+        }
+
+        return $this->extractTaggedValue((string) ($row['Notes'] ?? ''), 'creator_identity_id');
+    }
+
+    private function upsertTaggedValue(string $text, string $key, string $value): string
+    {
+        $value = trim($value);
+        $pattern = '/(?:^|[;|\s])' . preg_quote($key, '/') . '=[^;|]*/';
+        if (preg_match($pattern, $text)) {
+            $updated = preg_replace($pattern, ' ' . $key . '=' . $value, $text, 1);
+            return trim((string) $updated);
+        }
+
+        return trim($text . ' ' . $key . '=' . $value);
     }
 }
