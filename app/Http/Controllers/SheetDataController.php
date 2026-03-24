@@ -8,6 +8,7 @@ use App\Services\GoogleSheetsService;
 use App\Services\InfluencerScoringService;
 use App\Services\OperatorViewService;
 use App\Services\OutreachLogService;
+use App\Services\OperationalMirrorService;
 use App\Services\TaskQueueService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
@@ -25,6 +26,7 @@ class SheetDataController extends Controller
         private CreatorLifecycleService $lifecycle,
         private OperatorViewService $operatorView,
         private OutreachLogService $outreachLog,
+        private OperationalMirrorService $mirror,
     ) {
     }
 
@@ -236,6 +238,7 @@ class SheetDataController extends Controller
         $target['Preferred_Channel'] = trim((string) ($target['Contact_Email'] ?? '')) !== '' ? 'Email' : 'DM';
 
         $this->sheets->updateAssocRow($sheetId, 'Creators_CRM', $rowNumber, $target);
+        $this->mirror->syncCreators($sheetId, [$rowNumber]);
 
         return response()->json([
             'message' => 'Creator updated',
@@ -297,6 +300,7 @@ class SheetDataController extends Controller
         }
 
         $this->sheets->batchUpdateAssocRows($sheetId, 'Creators_CRM', $updates);
+        $this->mirror->syncCreators($sheetId, array_map(fn (array $item) => (int) str_replace('crm:', '', (string) $item['id']), $linked));
 
         return response()->json([
             'message' => 'Creator profiles linked under one identity',
@@ -340,6 +344,8 @@ class SheetDataController extends Controller
                 'limit' => $validated['taskLimit'] ?? 50,
             ]);
         }
+
+        $this->mirror->syncCreators($sheetId);
 
         return response()->json([
             'message' => 'Selected queue rows merged into Creators_CRM',
@@ -396,7 +402,9 @@ class SheetDataController extends Controller
         $this->sheets->appendAssocRows($sheetId, 'Message_Library', [$row], $headers);
 
         $rows = $this->sheets->getRows($sheetId, 'Message_Library');
-        $id = 'msg:' . ((int) ($rows[count($rows) - 1]['_row_number'] ?? 2));
+        $rowNumber = (int) ($rows[count($rows) - 1]['_row_number'] ?? 2);
+        $id = 'msg:' . $rowNumber;
+        $this->mirror->syncMessageTemplates($sheetId, [$rowNumber]);
 
         return response()->json([
             'message' => 'Message template created',
@@ -415,6 +423,7 @@ class SheetDataController extends Controller
         $rowNumber = $this->parseRowNumber($id, 'msg');
         $record = $this->messagePayloadToSheetRecord($validated['template']);
         $this->sheets->updateAssocRow($sheetId, 'Message_Library', $rowNumber, $record);
+        $this->mirror->syncMessageTemplates($sheetId, [$rowNumber]);
 
         return response()->json(['message' => 'Message template updated']);
     }
@@ -428,6 +437,7 @@ class SheetDataController extends Controller
         $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
         $rowNumber = $this->parseRowNumber($id, 'msg');
         $this->sheets->clearAssocRow($sheetId, 'Message_Library', $rowNumber);
+        $this->mirror->deleteMessageTemplateByRowNumber($sheetId, $rowNumber);
 
         return response()->json(['message' => 'Message template deleted']);
     }
@@ -568,6 +578,7 @@ public function operatorView(Request $request)
 
         $updated = $this->lifecycle->applyTransition($creatorRow, $fromState, $toState, $validated);
         $this->sheets->updateAssocRow($sheetId, 'Creators_CRM', $rowNumber, $updated);
+        $this->mirror->syncCreators($sheetId, [$rowNumber]);
 
         $eventId = $this->outreachLog->appendEvent($sheetId, [
             'Platform' => (string) ($creatorRow['Platform'] ?? ''),

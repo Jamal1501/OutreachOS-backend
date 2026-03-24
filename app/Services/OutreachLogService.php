@@ -6,8 +6,10 @@ use Illuminate\Support\Str;
 
 class OutreachLogService
 {
-    public function __construct(private GoogleSheetsService $sheets)
-    {
+    public function __construct(
+        private GoogleSheetsService $sheets,
+        private OperationalMirrorService $mirror,
+    ) {
     }
 
     public function appendEvent(string $sheetId, array $payload): string
@@ -29,6 +31,7 @@ class OutreachLogService
         ];
 
         $this->sheets->appendAssocRows($sheetId, 'Outreach_Log', [$record]);
+        $this->mirror->syncOutreachEvents($sheetId, [$eventId]);
 
         return $eventId;
     }
