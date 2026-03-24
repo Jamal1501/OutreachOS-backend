@@ -6,6 +6,7 @@ use App\Services\ApifyRowMapper;
 use App\Services\CreatorMergeService;
 use App\Services\GoogleSheetsService;
 use App\Services\OutreachLogService;
+use App\Services\OperationalMirrorService;
 use App\Services\TaskQueueService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
@@ -22,6 +23,7 @@ class ApifyController extends Controller
         private CreatorMergeService $creatorMerge,
         private TaskQueueService $taskQueue,
         private OutreachLogService $outreachLog,
+        private OperationalMirrorService $mirror,
     ) {
     }
 
@@ -275,6 +277,8 @@ public function mergeEnrichedToCreators(Request $request)
                 'limit' => $validated['taskLimit'] ?? 50,
             ]);
         }
+
+        $this->mirror->syncCreators($sheetId);
 
         return response()->json([
             'message' => 'Enriched profiles merged into Creators_CRM',

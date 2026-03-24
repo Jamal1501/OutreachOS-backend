@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Task;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -11,6 +12,8 @@ class TaskQueueService
         private GoogleSheetsService $sheets,
         private OutreachLogService $outreachLog,
         private InfluencerScoringService $scoring,
+        private OperationalMirrorService $mirror,
+        private ProjectResolverService $projects,
     ) {
     }
 
@@ -87,6 +90,10 @@ class TaskQueueService
 
         $this->sheets->appendAssocRows($sheetId, 'Task_Queue', $recordsToAppend, $taskHeaders);
 
+        if ($recordsToAppend !== []) {
+            $this->mirror->syncTasks($sheetId, array_map(fn (array $record) => (string) $record['Task_ID'], $recordsToAppend));
+        }
+
         foreach ($logEvents as $event) {
             $this->outreachLog->appendEvent($sheetId, $event);
         }
@@ -129,7 +136,10 @@ class TaskQueueService
         if ($creator && in_array($status, ['COMPLETED', 'DONE'], true)) {
             $creator = $this->applyTaskToCreator($creator, $task);
             $this->sheets->updateAssocRow($sheetId, 'Creators_CRM', (int) $creator['_row_number'], $creator);
+            $this->mirror->syncCreators($sheetId, [(int) ($creator['_row_number'] ?? 0)]);
         }
+
+        $this->mirror->syncTasks($sheetId, [$taskId]);
 
         $eventId = $this->outreachLog->appendEvent($sheetId, [
             'Platform' => (string) ($task['Platform'] ?? ''),
@@ -365,6 +375,43 @@ class TaskQueueService
 
     public function listTasks(string $sheetId): array
     {
+        if ($this->mirror->shouldUseDatabaseReads()) {
+            $project = $this->projects->resolveByWorkbookId($sheetId);
+
+            return Task::query()
+                ->where('project_id', $project->id)
+                ->orderByDesc('created_at')
+                ->get()
+                ->map(fn (Task $task) => [
+                    'taskId' => (string) ($task->external_task_key ?: $task->id),
+                    'taskType' => (string) $task->task_type,
+                    'platform' => strtolower((string) ($task->platform ?: 'instagram')),
+                    'handle' => (string) ($task->handle ?: ''),
+                    'profileUrl' => (string) ($task->open_url ?: ''),
+                    'dmUrl' => (string) ($task->open_url ?: ''),
+                    'status' => match (strtoupper((string) ($task->status ?: 'PENDING'))) {
+                        'DONE', 'COMPLETED' => 'completed',
+                        'SKIPPED' => 'skipped',
+                        'IN_PROGRESS' => 'in_progress',
+                        'SNOOZED' => 'snoozed',
+                        default => 'pending',
+                    },
+                    'priority' => match (strtoupper((string) ($task->priority ?: 'LOW'))) {
+                        'URGENT' => 'urgent',
+                        'HIGH' => 'high',
+                        'MEDIUM' => 'medium',
+                        default => 'low',
+                    },
+                    'dueDate' => optional($task->due_at)?->toDateTimeString() ?? '',
+                    'createdAt' => optional($task->created_at)?->toDateTimeString() ?? '',
+                    'completedAt' => optional($task->completed_at)?->toDateTimeString() ?? '',
+                    'messageText' => (string) ($task->message_draft ?: ''),
+                    'notes' => (string) ($task->notes ?: ''),
+                ])
+                ->values()
+                ->all();
+        }
+
         $rows = $this->sheets->getRows($sheetId, 'Task_Queue');
 
         usort($rows, function (array $a, array $b) {

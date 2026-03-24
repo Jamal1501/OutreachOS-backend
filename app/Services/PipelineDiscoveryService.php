@@ -2,21 +2,23 @@
 
 namespace App\Services;
 
+use App\Contracts\DiscoveryProvider;
+use App\Contracts\EnrichmentProvider;
+use App\Models\DiscoveryItem;
+use App\Models\DiscoveryRun;
+use App\Models\EnrichmentJob;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
-use RuntimeException;
 
 class PipelineDiscoveryService
 {
-    private const TERMINAL_RUN_STATUSES = ['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT', 'TIMED_OUT'];
-    private const DEFAULT_POLL_SECONDS = 5;
-    private const DEFAULT_TIMEOUT_SECONDS = 300;
-
     public function __construct(
         private ApifyRowMapper $rowMapper,
         private GoogleSheetsService $sheets,
+        private DiscoveryProvider $discoveryProvider,
+        private EnrichmentProvider $enrichmentProvider,
+        private ProjectResolverService $projects,
     ) {
     }
 
@@ -34,11 +36,13 @@ class PipelineDiscoveryService
             'failedStep' => null,
             'error' => null,
             'request' => $payload,
+            'projectId' => $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId((string) $payload['sheetId'])->id : null,
             'createdAt' => now()->toDateTimeString(),
             'updatedAt' => now()->toDateTimeString(),
         ];
 
         $this->writeJobState($jobId, $state);
+        $this->syncJobToDatabase($state);
 
         return $state;
     }
@@ -58,10 +62,11 @@ class PipelineDiscoveryService
     {
         $sheetId = $payload['sheetId'];
         $platform = $payload['platform'];
-        $hashtags = array_values(array_unique(array_filter(array_map(fn ($v) => $this->normalizeHashtag((string) $v), $payload['hashtags'] ?? []))));
+        $hashtags = array_values(array_unique(array_filter(array_map(fn ($value) => $this->normalizeHashtag((string) $value), $payload['hashtags'] ?? []))));
         $discoveryLimit = (int) ($payload['discoveryLimit'] ?? 50);
         $enrichmentLimit = (int) ($payload['enrichmentLimit'] ?? 20);
         $dedupeAgainstCRM = (bool) ($payload['dedupeAgainstCRM'] ?? true);
+        $projectId = $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId($sheetId)->id : null;
 
         $stepResults = [];
 
@@ -69,21 +74,22 @@ class PipelineDiscoveryService
             $this->updateJob($jobId, [
                 'status' => 'running',
                 'currentStep' => 'discovery_scrape',
+                'projectId' => $projectId,
             ]);
 
-            $discovery = $this->startActorRun(
-                $this->discoveryActorKey($platform),
-                $this->discoveryInput($platform, $hashtags, $discoveryLimit)
-            );
-            $discoveryRun = $this->pollRun($discovery['runId']);
-            $discoveryItems = $this->fetchDatasetItems($discoveryRun['defaultDatasetId']);
+            $discovery = $this->discoveryProvider->discover($platform, $hashtags, $discoveryLimit);
+            $discoveryItems = $discovery->items;
             $stepResults[] = [
                 'step' => 'discovery_scrape',
                 'status' => 'completed',
-                'runId' => $discovery['runId'],
-                'itemCount' => count($discoveryItems),
+                'provider' => $discovery->provider,
+                'runId' => $discovery->runId,
+                'datasetId' => $discovery->datasetId,
+                'itemCount' => $discovery->itemCount(),
             ];
             $this->completeStep($jobId, 'discovery_scrape', end($stepResults));
+            $this->persistDiscoveryProviderResult($jobId, $projectId, $platform, $hashtags, $discoveryLimit, $enrichmentLimit, $dedupeAgainstCRM, $discovery);
+            $this->persistDiscoveryItems($jobId, $projectId, $platform, $discoveryItems);
 
             $this->updateJob($jobId, ['currentStep' => 'import_posts']);
             $rawSheet = $this->rawSheetForPlatform($platform);
@@ -110,6 +116,7 @@ class PipelineDiscoveryService
                 'uniqueProfiles' => count($profiles),
             ];
             $this->completeStep($jobId, 'extract_urls', end($stepResults));
+            $this->markDiscoveryProfilesPromoted($jobId, $projectId, array_column($profiles, 'profileUrl'));
 
             if (count($profiles) === 0) {
                 $final = [
@@ -120,6 +127,7 @@ class PipelineDiscoveryService
                     'totalCreators' => 0,
                     'failedStep' => null,
                 ];
+
                 $this->updateJob($jobId, [
                     'status' => 'completed',
                     'currentStep' => null,
@@ -129,23 +137,28 @@ class PipelineDiscoveryService
                     'failedStep' => null,
                     'result' => $final,
                 ]);
+
                 return $final;
             }
 
-            $this->updateJob($jobId, ['currentStep' => 'enrichment_scrape']);
-            $enrichment = $this->startActorRun(
-                $this->enrichmentActorKey($platform),
-                $this->enrichmentInput($platform, array_column($profiles, 'profileUrl'), $hashtags, $enrichmentLimit)
-            );
-            $enrichmentRun = $this->pollRun($enrichment['runId']);
-            $enrichmentItems = $this->fetchDatasetItems($enrichmentRun['defaultDatasetId']);
+            $enrichmentJobId = $this->startEnrichmentJob($jobId, $projectId, $platform, array_column($profiles, 'profileUrl'));
+            $this->updateJob($jobId, [
+                'currentStep' => 'enrichment_scrape',
+                'enrichmentJobId' => $enrichmentJobId,
+            ]);
+
+            $enrichment = $this->enrichmentProvider->enrich($platform, array_column($profiles, 'profileUrl'), $hashtags, $enrichmentLimit);
+            $enrichmentItems = $enrichment->items;
             $stepResults[] = [
                 'step' => 'enrichment_scrape',
                 'status' => 'completed',
-                'runId' => $enrichment['runId'],
-                'itemCount' => count($enrichmentItems),
+                'provider' => $enrichment->provider,
+                'runId' => $enrichment->runId,
+                'datasetId' => $enrichment->datasetId,
+                'itemCount' => $enrichment->itemCount(),
             ];
             $this->completeStep($jobId, 'enrichment_scrape', end($stepResults));
+            $this->finishEnrichmentJob($enrichmentJobId, $enrichment);
 
             $this->updateJob($jobId, ['currentStep' => 'import_profiles']);
             $enrichedSheet = $this->enrichedSheetForPlatform($platform);
@@ -179,17 +192,23 @@ class PipelineDiscoveryService
             ]);
 
             return $final;
-        } catch (\Throwable $e) {
+        } catch (\Throwable $exception) {
             Log::error('Pipeline discovery job failed', [
                 'jobId' => $jobId,
-                'message' => $e->getMessage(),
+                'message' => $exception->getMessage(),
             ]);
 
-            $failedStep = $this->getJobState($jobId)['currentStep'] ?? null;
+            $state = $this->getJobState($jobId) ?? [];
+            $failedStep = $state['currentStep'] ?? null;
+
+            if (!empty($state['enrichmentJobId'])) {
+                $this->failEnrichmentJob((string) $state['enrichmentJobId'], $exception->getMessage());
+            }
+
             $this->updateJob($jobId, [
                 'status' => 'failed',
                 'failedStep' => $failedStep,
-                'error' => $e->getMessage(),
+                'error' => $exception->getMessage(),
                 'steps' => $stepResults,
                 'currentStep' => $failedStep,
                 'result' => [
@@ -202,7 +221,7 @@ class PipelineDiscoveryService
                 ],
             ]);
 
-            throw $e;
+            throw $exception;
         }
     }
 
@@ -229,6 +248,7 @@ class PipelineDiscoveryService
             'updatedAt' => now()->toDateTimeString(),
         ]);
         $this->writeJobState($jobId, $state);
+        $this->syncJobToDatabase($state);
     }
 
     private function writeJobState(string $jobId, array $state): void
@@ -246,93 +266,192 @@ class PipelineDiscoveryService
         return storage_path('app/private/pipeline_jobs/' . $jobId . '.json');
     }
 
-    private function startActorRun(string $actorKey, array $input): array
+    private function pipelineSyncEnabled(): bool
     {
-        $token = (string) config('services.apify.token');
-        $actorId = (string) config('services.apify.actors.' . $actorKey);
-
-        if ($token === '' || $actorId === '') {
-            throw new RuntimeException('Missing Apify config for actor: ' . $actorKey);
-        }
-
-        $response = Http::withToken($token)
-            ->acceptJson()
-            ->timeout(90)
-            ->post("https://api.apify.com/v2/acts/{$actorId}/runs", $input);
-
-        if (!$response->successful()) {
-            throw new RuntimeException('Failed to start Apify actor: ' . $response->body());
-        }
-
-        $data = $response->json('data') ?? [];
-        $runId = (string) ($data['id'] ?? '');
-        if ($runId === '') {
-            throw new RuntimeException('Apify run ID missing in response');
-        }
-
-        return [
-            'runId' => $runId,
-            'datasetId' => (string) ($data['defaultDatasetId'] ?? ''),
-        ];
+        return config('outreach.operational_db.mode', 'dual') !== 'off'
+            && config('outreach.sync.pipeline', true);
     }
 
-    private function pollRun(string $runId): array
+    private function syncJobToDatabase(array $state): void
     {
-        $token = (string) config('services.apify.token');
-        if ($token === '') {
-            throw new RuntimeException('Missing APIFY_API_TOKEN');
+        if (!$this->pipelineSyncEnabled() || empty($state['projectId']) || empty($state['jobId'])) {
+            return;
         }
 
-        $deadline = time() + self::DEFAULT_TIMEOUT_SECONDS;
-        do {
-            $response = Http::withToken($token)
-                ->acceptJson()
-                ->timeout(30)
-                ->get("https://api.apify.com/v2/actor-runs/{$runId}");
+        $run = DiscoveryRun::query()->find((string) $state['jobId']);
+        if (!$run) {
+            $run = new DiscoveryRun();
+            $run->id = (string) $state['jobId'];
+        }
 
-            if (!$response->successful()) {
-                throw new RuntimeException('Failed to poll Apify run: ' . $response->body());
-            }
-
-            $run = $response->json('data') ?? [];
-            $status = strtoupper((string) ($run['status'] ?? ''));
-            if (in_array($status, self::TERMINAL_RUN_STATUSES, true)) {
-                if ($status !== 'SUCCEEDED') {
-                    throw new RuntimeException('Apify run ended with status ' . $status);
-                }
-                return $run;
-            }
-
-            sleep(self::DEFAULT_POLL_SECONDS);
-        } while (time() < $deadline);
-
-        throw new RuntimeException('Timed out while waiting for Apify run ' . $runId);
+        $run->project_id = (int) $state['projectId'];
+        $run->platform = (string) Arr::get($state, 'request.platform', $run->platform ?: 'instagram');
+        $run->provider = (string) Arr::get($state, 'provider', $run->provider ?: config('outreach.providers.discovery', 'apify'));
+        $run->status = (string) ($state['status'] ?? $run->status ?: 'running');
+        $run->current_step = $state['currentStep'] ?? null;
+        $run->hashtags = Arr::get($state, 'request.hashtags', []);
+        $run->discovery_limit = (int) Arr::get($state, 'request.discoveryLimit', 50);
+        $run->enrichment_limit = (int) Arr::get($state, 'request.enrichmentLimit', 20);
+        $run->dedupe_against_crm = (bool) Arr::get($state, 'request.dedupeAgainstCRM', true);
+        $run->request_payload = $state['request'] ?? null;
+        $run->result_payload = $state['result'] ?? ['steps' => $state['steps'] ?? []];
+        $run->error_message = $state['error'] ?? null;
+        $run->started_at = $run->started_at ?: now();
+        if (($state['status'] ?? null) === 'completed' || ($state['status'] ?? null) === 'failed') {
+            $run->finished_at = now();
+        }
+        $run->save();
     }
 
-    private function fetchDatasetItems(string $datasetId): array
+    private function persistDiscoveryProviderResult(
+        string $jobId,
+        ?int $projectId,
+        string $platform,
+        array $hashtags,
+        int $discoveryLimit,
+        int $enrichmentLimit,
+        bool $dedupeAgainstCrm,
+        object $discovery,
+    ): void {
+        if (!$this->pipelineSyncEnabled() || !$projectId) {
+            return;
+        }
+
+        $run = DiscoveryRun::query()->find($jobId);
+        if (!$run) {
+            return;
+        }
+
+        $run->platform = $platform;
+        $run->provider = (string) ($discovery->provider ?? config('outreach.providers.discovery', 'apify'));
+        $run->provider_run_id = $discovery->runId ?? null;
+        $run->provider_dataset_id = $discovery->datasetId ?? null;
+        $run->hashtags = $hashtags;
+        $run->discovery_limit = $discoveryLimit;
+        $run->enrichment_limit = $enrichmentLimit;
+        $run->dedupe_against_crm = $dedupeAgainstCrm;
+        $run->save();
+    }
+
+    private function persistDiscoveryItems(string $jobId, ?int $projectId, string $platform, array $items): void
     {
-        $token = (string) config('services.apify.token');
-        if ($token === '') {
-            throw new RuntimeException('Missing APIFY_API_TOKEN');
-        }
-        if ($datasetId === '') {
-            return [];
+        if (!$this->pipelineSyncEnabled() || !$projectId) {
+            return;
         }
 
-        $response = Http::withToken($token)
-            ->acceptJson()
-            ->timeout(90)
-            ->get("https://api.apify.com/v2/datasets/{$datasetId}/items", [
-                'clean' => 'true',
-                'format' => 'json',
-            ]);
+        foreach ($items as $item) {
+            $username = trim((string) ($platform === 'instagram'
+                ? Arr::get($item, 'ownerUsername', Arr::get($item, 'owner.username', Arr::get($item, 'username', '')))
+                : Arr::get($item, 'authorMeta.name', Arr::get($item, 'author.username', Arr::get($item, 'username', '')))));
+            $profileUrl = $this->profileUrlFor($platform, $username, $item);
+            $postUrl = trim((string) ($platform === 'instagram'
+                ? Arr::get($item, 'url', Arr::get($item, 'postUrl', ''))
+                : Arr::get($item, 'webVideoUrl', Arr::get($item, 'url', ''))));
+            $caption = trim((string) Arr::get($item, 'caption', Arr::get($item, 'text', '')));
+            $hashtags = $this->matchedHashtagsForItem($item, []);
+            $duplicateKey = strtolower($platform . '|' . ($username !== '' ? ltrim($this->normalizeHandle($username), '@') : $postUrl));
 
-        if (!$response->successful()) {
-            throw new RuntimeException('Failed to fetch dataset items: ' . $response->body());
+            if ($profileUrl === '' && $postUrl === '' && $caption === '') {
+                continue;
+            }
+
+            DiscoveryItem::updateOrCreate(
+                [
+                    'project_id' => $projectId,
+                    'discovery_run_id' => $jobId,
+                    'platform' => $platform,
+                    'post_url' => $postUrl !== '' ? $postUrl : ('payload:' . md5(json_encode($item))),
+                ],
+                [
+                    'external_post_id' => (string) Arr::get($item, 'id', Arr::get($item, 'postId', '')) ?: null,
+                    'handle' => $this->normalizeHandle($username) ?: null,
+                    'username' => $username !== '' ? ltrim($username, '@') : null,
+                    'full_name' => $this->nullableString((string) Arr::get($item, 'ownerFullName', Arr::get($item, 'fullName', ''))),
+                    'profile_url' => $profileUrl ?: null,
+                    'caption' => $caption ?: null,
+                    'hashtags' => $hashtags,
+                    'metrics' => array_filter([
+                        'likes' => $this->nullableInt(Arr::get($item, 'likesCount', Arr::get($item, 'diggCount'))),
+                        'comments' => $this->nullableInt(Arr::get($item, 'commentsCount', Arr::get($item, 'commentCount'))),
+                        'views' => $this->nullableInt(Arr::get($item, 'playCount')),
+                        'shares' => $this->nullableInt(Arr::get($item, 'shareCount')),
+                    ], fn ($value) => $value !== null),
+                    'duplicate_key' => $duplicateKey,
+                    'raw_payload' => $item,
+                    'discovered_at' => now(),
+                ],
+            );
+        }
+    }
+
+    private function markDiscoveryProfilesPromoted(string $jobId, ?int $projectId, array $profileUrls): void
+    {
+        if (!$this->pipelineSyncEnabled() || !$projectId || $profileUrls === []) {
+            return;
         }
 
-        $items = json_decode($response->body(), true);
-        return is_array($items) ? $items : [];
+        DiscoveryItem::query()
+            ->where('project_id', $projectId)
+            ->where('discovery_run_id', $jobId)
+            ->whereIn('profile_url', array_values(array_filter($profileUrls)))
+            ->update(['promoted_to_enrichment_at' => now()]);
+    }
+
+    private function startEnrichmentJob(string $jobId, ?int $projectId, string $platform, array $inputUrls): ?string
+    {
+        if (!$this->pipelineSyncEnabled() || !$projectId) {
+            return null;
+        }
+
+        $job = new EnrichmentJob();
+        $job->project_id = $projectId;
+        $job->discovery_run_id = $jobId;
+        $job->platform = $platform;
+        $job->provider = (string) config('outreach.providers.enrichment', 'apify');
+        $job->status = 'running';
+        $job->input_urls = array_values(array_filter($inputUrls));
+        $job->request_payload = ['profile_urls' => array_values(array_filter($inputUrls))];
+        $job->started_at = now();
+        $job->save();
+
+        return $job->id;
+    }
+
+    private function finishEnrichmentJob(?string $enrichmentJobId, object $enrichment): void
+    {
+        if (!$this->pipelineSyncEnabled() || !$enrichmentJobId) {
+            return;
+        }
+
+        $job = EnrichmentJob::query()->find($enrichmentJobId);
+        if (!$job) {
+            return;
+        }
+
+        $job->provider = (string) ($enrichment->provider ?? $job->provider);
+        $job->provider_run_id = $enrichment->runId ?? null;
+        $job->provider_dataset_id = $enrichment->datasetId ?? null;
+        $job->status = 'completed';
+        $job->result_payload = ['item_count' => $enrichment->itemCount()];
+        $job->finished_at = now();
+        $job->save();
+    }
+
+    private function failEnrichmentJob(?string $enrichmentJobId, string $message): void
+    {
+        if (!$this->pipelineSyncEnabled() || !$enrichmentJobId) {
+            return;
+        }
+
+        $job = EnrichmentJob::query()->find($enrichmentJobId);
+        if (!$job) {
+            return;
+        }
+
+        $job->status = 'failed';
+        $job->error_message = $message;
+        $job->finished_at = now();
+        $job->save();
     }
 
     private function appendRowsIfAny(string $sheetId, string $sheetName, array $rows): int
@@ -503,16 +622,6 @@ class PipelineDiscoveryService
         ];
     }
 
-    private function discoveryActorKey(string $platform): string
-    {
-        return $platform === 'instagram' ? 'instagram_discovery' : 'tiktok_discovery';
-    }
-
-    private function enrichmentActorKey(string $platform): string
-    {
-        return $platform === 'instagram' ? 'instagram_profile' : 'tiktok_profile';
-    }
-
     private function rawSheetForPlatform(string $platform): string
     {
         return $platform === 'instagram' ? 'Instagram_Posts_Raw' : 'TikTok_Posts_Raw';
@@ -523,57 +632,14 @@ class PipelineDiscoveryService
         return $platform === 'instagram' ? 'Instagram_Profile_Enriched' : 'TikTok_Profile_Enriched';
     }
 
-    private function discoveryInput(string $platform, array $hashtags, int $limit): array
-    {
-        return [
-            'hashtags' => $hashtags,
-            'keywordSearch' => false,
-            'resultsLimit' => $limit,
-            'resultsType' => $platform === 'instagram' ? 'reels' : 'reels',
-        ];
-    }
-
-    private function enrichmentInput(string $platform, array $urls, array $hashtags, int $limit): array
-    {
-        if ($platform === 'instagram') {
-            return [
-                'addParentData' => false,
-                'directUrls' => array_values($urls),
-                'onlyPostsNewerThan' => '100 days',
-                'resultsLimit' => max(1, min($limit, count($urls))),
-                'resultsType' => 'details',
-                'search' => $hashtags[0] ?? '',
-                'searchLimit' => max(1, min($limit, count($urls))),
-                'searchType' => 'hashtag',
-            ];
-        }
-
-        $profiles = array_values(array_filter(array_map(function (string $url) {
-            if (preg_match('~tiktok\.com/@([^/?#]+)~i', $url, $m)) {
-                return $m[1];
-            }
-            return null;
-        }, $urls)));
-
-        return [
-            'profiles' => $profiles,
-            'excludePinnedPosts' => false,
-            'shouldDownloadAvatars' => false,
-            'shouldDownloadCovers' => false,
-            'shouldDownloadSlideshowImages' => false,
-            'shouldDownloadSubtitles' => false,
-            'shouldDownloadVideos' => false,
-        ];
-    }
-
     private function profileUrlFor(string $platform, string $username, array $item): string
     {
         $candidate = trim((string) Arr::get($item, 'profileUrl', Arr::get($item, 'profile_url', Arr::get($item, 'inputUrl', Arr::get($item, 'input_url', Arr::get($item, 'url', ''))))));
 
         if ($platform === 'instagram') {
             if ($candidate !== '' && str_contains(strtolower($candidate), 'instagram.com/')) {
-                if (preg_match('~instagram\.com/([^/?#]+)/?~i', $candidate, $m) && !in_array(strtolower($m[1]), ['p', 'reel', 'reels', 'tv', 'stories', 'explore'], true)) {
-                    return 'https://www.instagram.com/' . trim($m[1]) . '/';
+                if (preg_match('~instagram\.com/([^/?#]+)/?~i', $candidate, $matches) && !in_array(strtolower($matches[1]), ['p', 'reel', 'reels', 'tv', 'stories', 'explore'], true)) {
+                    return 'https://www.instagram.com/' . trim($matches[1]) . '/';
                 }
             }
             $username = trim($username, '@/ ');
@@ -581,8 +647,8 @@ class PipelineDiscoveryService
         }
 
         if ($candidate !== '' && str_contains(strtolower($candidate), 'tiktok.com/@')) {
-            if (preg_match('~tiktok\.com/@([^/?#]+)~i', $candidate, $m)) {
-                return 'https://www.tiktok.com/@' . trim($m[1]);
+            if (preg_match('~tiktok\.com/@([^/?#]+)~i', $candidate, $matches)) {
+                return 'https://www.tiktok.com/@' . trim($matches[1]);
             }
         }
         $username = trim($username, '@/ ');
