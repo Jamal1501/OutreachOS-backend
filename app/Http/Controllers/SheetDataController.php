@@ -329,17 +329,19 @@ class SheetDataController extends Controller
         $sourceSheet = $this->enrichedSheetForPlatform($platform);
 
         $queueRows = $this->sheets->getRows($sheetId, $queueSheet);
-        $selectedQueueRowNumbers = array_map(fn (string $id) => $this->parseQueueId($id, $platform), $validated['queueIds']);
-        $selectedLookup = array_fill_keys($selectedQueueRowNumbers, true);
-        $selectedQueueRows = array_values(array_filter($queueRows, fn (array $row) => isset($selectedLookup[(int) ($row['_row_number'] ?? 0)])));
-
         $sourceRows = $this->sheets->getRows($sheetId, $sourceSheet);
-        $sourceRowNumbers = $this->matchQueueRowsToEnrichedRowNumbers($platform, $selectedQueueRows, $sourceRows);
+
+        $selection = $this->resolveSelectedMergeTargets($platform, $validated['queueIds'], $queueRows, $sourceRows);
+        $selectedQueueRowNumbers = $selection['selectedQueueRowNumbers'];
+        $selectedQueueRows = $selection['selectedQueueRows'];
+        $sourceRowNumbers = $selection['sourceRowNumbers'];
 
         $result = $this->creatorMerge->mergeSelectedFromEnrichedSheet($sheetId, $sourceSheet, $sourceRowNumbers);
         $result['selectedQueueCount'] = count($selectedQueueRows);
         $result['selectedQueueRowNumbers'] = $selectedQueueRowNumbers;
         $result['matchedSourceRowNumbers'] = $sourceRowNumbers;
+        $result['selectionMode'] = $selection['selectionMode'];
+        $result['resolvedBy'] = $selection['resolvedBy'];
 
         $affectedRowNumbers = array_values(array_unique(array_filter(
             array_map('intval', (array) ($result['affectedRowNumbers'] ?? [])),
@@ -1030,25 +1032,6 @@ public function operatorView(Request $request)
         ])));
     }
 
-    private function matchesDiscoverySearch(array $item, string $search): bool
-    {
-        return $this->matchesTextSearch($search, [
-            $item['authorHandle'] ?? '',
-            $item['caption'] ?? '',
-            $item['postUrl'] ?? '',
-        ]);
-    }
-
-    private function matchesTextSearch(string $search, array $values): bool
-    {
-        foreach ($values as $value) {
-            if (Str::contains(Str::lower((string) $value), $search)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private function matchesDateRange(string $dateValue, string $from, string $to): bool
     {
         if ($from === '' && $to === '') {
@@ -1092,19 +1075,134 @@ public function operatorView(Request $request)
         return [$parts[0], (int) $parts[1]];
     }
 
-    private function parseQueueId(string $id, string $platform): int
+    private function resolveSelectedMergeTargets(string $platform, array $selectors, array $queueRows, array $sourceRows): array
+    {
+        $maxQueueRowNumber = 1;
+        foreach ($queueRows as $row) {
+            $maxQueueRowNumber = max($maxQueueRowNumber, (int) ($row['_row_number'] ?? 1));
+        }
+
+        $selectedQueueRowNumbers = [];
+        $unresolvedSelectors = [];
+
+        foreach ($selectors as $selector) {
+            $resolvedQueueRow = $this->parseQueueSelector((string) $selector, $platform, $maxQueueRowNumber);
+            if ($resolvedQueueRow !== null) {
+                $selectedQueueRowNumbers[] = $resolvedQueueRow;
+                continue;
+            }
+
+            $unresolvedSelectors[] = (string) $selector;
+        }
+
+        $selectedQueueRowNumbers = array_values(array_unique(array_filter(array_map('intval', $selectedQueueRowNumbers), fn (int $row) => $row > 1)));
+        $selectedLookup = array_fill_keys($selectedQueueRowNumbers, true);
+        $selectedQueueRows = array_values(array_filter($queueRows, fn (array $row) => isset($selectedLookup[(int) ($row['_row_number'] ?? 0)])));
+
+        $sourceRowNumbers = $this->matchQueueRowsToEnrichedRowNumbers($platform, $selectedQueueRows, $sourceRows);
+        $resolvedBy = $selectedQueueRows !== [] ? ['queue_rows'] : [];
+
+        if ($unresolvedSelectors !== []) {
+            $fallbackSourceRows = $this->matchSelectorsToEnrichedRowNumbers($platform, $unresolvedSelectors, $sourceRows);
+            if ($fallbackSourceRows !== []) {
+                $sourceRowNumbers = array_values(array_unique(array_merge($sourceRowNumbers, $fallbackSourceRows)));
+                $resolvedBy[] = 'source_selectors';
+            }
+        }
+
+        return [
+            'selectionMode' => $selectedQueueRows !== [] ? 'queue_or_mixed' : ($unresolvedSelectors !== [] ? 'source_selector' : 'empty'),
+            'resolvedBy' => $resolvedBy,
+            'selectedQueueRowNumbers' => $selectedQueueRowNumbers,
+            'selectedQueueRows' => $selectedQueueRows,
+            'sourceRowNumbers' => $sourceRowNumbers,
+        ];
+    }
+
+    private function parseQueueSelector(string $id, string $platform, int $maxQueueRowNumber): ?int
     {
         $prefix = $platform . ':queue:';
         if (str_starts_with($id, $prefix)) {
             $value = substr($id, strlen($prefix));
             if (is_numeric($value)) {
-                return (int) $value;
+                $rowNumber = (int) $value;
+                return $rowNumber > 1 ? $rowNumber : null;
+            }
+            return null;
+        }
+
+        if (is_numeric($id)) {
+            $rowNumber = (int) $id;
+            if ($rowNumber > 1 && $rowNumber <= $maxQueueRowNumber) {
+                return $rowNumber;
             }
         }
-        if (is_numeric($id)) {
-            return (int) $id;
+
+        return null;
+    }
+
+    private function matchSelectorsToEnrichedRowNumbers(string $platform, array $selectors, array $sourceRows): array
+    {
+        $lookup = [];
+        foreach ($sourceRows as $row) {
+            $rowNumber = (int) ($row['_row_number'] ?? 0);
+            if ($rowNumber <= 1) {
+                continue;
+            }
+            foreach ($this->enrichedSelectorKeys($platform, $row) as $key) {
+                $lookup[$key] = $rowNumber;
+            }
         }
-        throw new RuntimeException('Invalid queue row id');
+
+        $rowNumbers = [];
+        foreach ($selectors as $selector) {
+            foreach ($this->selectorLookupKeys($platform, (string) $selector) as $key) {
+                if (isset($lookup[$key])) {
+                    $rowNumbers[] = (int) $lookup[$key];
+                    break;
+                }
+            }
+        }
+
+        return array_values(array_unique(array_filter($rowNumbers)));
+    }
+
+    private function selectorLookupKeys(string $platform, string $selector): array
+    {
+        $selector = trim($selector);
+        if ($selector === '') {
+            return [];
+        }
+
+        $keys = [strtolower($selector)];
+
+        $urlPrefix = $platform . ':source-url:';
+        if (str_starts_with($selector, $urlPrefix)) {
+            $decoded = rawurldecode(substr($selector, strlen($urlPrefix)));
+            $decoded = rtrim(strtolower(trim($decoded)), '/');
+            $keys[] = $decoded;
+        }
+
+        $idPrefix = $platform . ':source-id:';
+        if (str_starts_with($selector, $idPrefix)) {
+            $idValue = trim(substr($selector, strlen($idPrefix)));
+            if ($idValue !== '') {
+                $keys[] = strtolower($idValue);
+            }
+        }
+
+        return array_values(array_unique(array_filter($keys)));
+    }
+
+    private function enrichedSelectorKeys(string $platform, array $row): array
+    {
+        return array_values(array_unique(array_filter([
+            strtolower(trim((string) ($row['apify_profile_id'] ?? $row['id'] ?? ''))),
+            strtolower(rtrim(trim((string) ($row['profile_url'] ?? '')), '/')),
+            strtolower(rtrim(trim((string) ($row['input_url'] ?? '')), '/')),
+            strtolower($this->normalizeHandle((string) ($row['handle'] ?? $row['username'] ?? ''))),
+            strtolower(trim((string) ($row['username'] ?? ''))),
+        ])));
     }
 
     private function parseRowNumber(string $id, string $prefix): int
