@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Creator;
 use App\Models\CreatorProfile;
 use App\Models\Task;
 use App\Models\OutreachEvent;
@@ -18,6 +19,7 @@ use App\Services\ProjectResolverService;
 use App\Services\TaskQueueService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use RuntimeException;
@@ -236,6 +238,58 @@ class SheetDataController extends Controller
         ]);
 
         $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $payload = $validated['creator'];
+        $dbProfile = $this->resolveCreatorProfileForRoute($sheetId, $id);
+
+        if ($dbProfile) {
+            $dbProfile->loadMissing('creator');
+            $creator = $dbProfile->creator;
+            if (!$creator) {
+                return response()->json(['error' => 'Creator not found'], 404);
+            }
+
+            if (array_key_exists('niche', $payload)) {
+                $creator->niche_category = trim((string) $payload['niche']) ?: null;
+            }
+            if (array_key_exists('notes', $payload)) {
+                $creator->notes = (string) $payload['notes'];
+            }
+            if (array_key_exists('email', $payload)) {
+                $creator->primary_email = trim((string) $payload['email']) ?: null;
+            }
+            if (array_key_exists('fullName', $payload)) {
+                $creator->display_name = trim((string) $payload['fullName']) ?: null;
+            }
+            if (array_key_exists('status', $payload)) {
+                $incomingStatus = trim((string) $payload['status']);
+                $normalizedStatus = $this->lifecycle->isValidState($incomingStatus)
+                    ? $incomingStatus
+                    : $this->lifecycle->normalizeState($incomingStatus, 'enriched');
+                $dbProfile->lifecycle_state = $normalizedStatus;
+                $dbProfile->status = $this->lifecycle->sheetStatusForState($normalizedStatus);
+            }
+
+            $sheetRecord = $this->sheetRecordFromProfile($dbProfile);
+            $score = $this->scoring->score($sheetRecord);
+            $dbProfile->value_score = (int) round($score);
+            $dbProfile->value_bar = $this->scoring->bar($score);
+            $dbProfile->preferred_channel = filled($creator->primary_email) ? 'Email' : 'DM';
+            $dbProfile->last_synced_at = now();
+
+            $creator->save();
+            $dbProfile->save();
+
+            $freshProfile = $dbProfile->fresh('creator');
+            $sheetSync = $this->syncCreatorProfileToSheet($sheetId, $freshProfile);
+
+            return response()->json([
+                'message' => 'Creator updated',
+                'item' => $this->buildCreatorListItemFromProfile($freshProfile),
+                'source' => 'database',
+                'sheetSync' => $sheetSync,
+            ]);
+        }
+
         $rowNumber = $this->parseRowNumber($id, 'crm');
         $rows = $this->sheets->getRows($sheetId, 'Creators_CRM');
         $target = collect($rows)->first(fn (array $row) => (int) ($row['_row_number'] ?? 0) === $rowNumber);
@@ -244,7 +298,6 @@ class SheetDataController extends Controller
             return response()->json(['error' => 'Creator not found'], 404);
         }
 
-        $payload = $validated['creator'];
         foreach (['niche', 'status', 'notes', 'email', 'fullName'] as $field) {
             if (!array_key_exists($field, $payload)) {
                 continue;
@@ -269,6 +322,7 @@ class SheetDataController extends Controller
         return response()->json([
             'message' => 'Creator updated',
             'item' => $this->normalizeCreatorRow($target),
+            'source' => 'google_sheets',
         ]);
     }
 
@@ -283,8 +337,98 @@ class SheetDataController extends Controller
         ]);
 
         $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $project = $this->projects->findByWorkbookId($sheetId);
+
+        if ($project) {
+            $profiles = collect($validated['creatorIds'])
+                ->map(fn (string $creatorId) => $this->resolveCreatorProfileForRoute($sheetId, $creatorId))
+                ->filter()
+                ->values();
+
+            if ($profiles->count() >= 2) {
+                $primaryProfile = $validated['primaryCreatorId']
+                    ? $this->resolveCreatorProfileForRoute($sheetId, (string) $validated['primaryCreatorId'])
+                    : null;
+                if (!$primaryProfile || !$profiles->contains(fn (CreatorProfile $profile) => $profile->id === $primaryProfile->id)) {
+                    $primaryProfile = $profiles->first();
+                }
+
+                $primaryCreator = $primaryProfile?->creator;
+                if (!$primaryCreator) {
+                    throw new RuntimeException('Primary creator not found');
+                }
+
+                $identityId = trim((string) ($primaryCreator->external_identity_key ?: ''));
+                if ($identityId === '') {
+                    $identityId = 'creator_' . Str::lower(Str::random(10));
+                    $primaryCreator->external_identity_key = $identityId;
+                }
+
+                foreach ($profiles as $profile) {
+                    $creator = $profile->creator;
+                    if ($creator && $creator->id !== $primaryCreator->id) {
+                        $primaryCreator->display_name = $primaryCreator->display_name ?: $creator->display_name;
+                        $primaryCreator->primary_email = $primaryCreator->primary_email ?: $creator->primary_email;
+                        $primaryCreator->country = $primaryCreator->country ?: $creator->country;
+                        $primaryCreator->city = $primaryCreator->city ?: $creator->city;
+                        $primaryCreator->primary_language = $primaryCreator->primary_language ?: $creator->primary_language;
+                        $primaryCreator->niche_category = $primaryCreator->niche_category ?: $creator->niche_category;
+                        $primaryCreator->notes = $this->mergeCreatorNotes((string) $primaryCreator->notes, (string) $creator->notes);
+                    }
+                }
+                $primaryCreator->save();
+
+                foreach ($profiles as $profile) {
+                    $profile->creator_id = $primaryCreator->id;
+                    $meta = is_array($profile->source_metadata) ? $profile->source_metadata : [];
+                    $meta['creator_identity_id'] = $identityId;
+                    $profile->source_metadata = $meta;
+                    $profile->save();
+                }
+
+                Creator::query()
+                    ->where('project_id', $project->id)
+                    ->where('id', '!=', $primaryCreator->id)
+                    ->whereDoesntHave('profiles')
+                    ->delete();
+
+                $linkedLabels = $profiles
+                    ->map(fn (CreatorProfile $profile) => strtolower((string) $profile->platform) . ':' . (string) $profile->handle)
+                    ->unique()
+                    ->sort()
+                    ->values()
+                    ->all();
+
+                $sheetSync = [];
+                foreach ($profiles as $profile) {
+                    $sheetSync[] = $this->syncLinkedProfileMetadataToSheet($sheetId, $profile->fresh('creator'), $identityId, $linkedLabels, $primaryProfile && $profile->id === $primaryProfile->id);
+                }
+
+                $linked = $profiles->map(function (CreatorProfile $profile) {
+                    $rowNumber = $this->extractSourceRowNumberFromProfile($profile);
+                    $id = $rowNumber > 0 ? 'crm:' . $rowNumber : 'crmdb:' . $profile->id;
+                    return [
+                        'id' => $id,
+                        'handle' => (string) ($profile->handle ?? ''),
+                        'platform' => Str::lower((string) ($profile->platform ?? 'instagram')),
+                    ];
+                })->values()->all();
+
+                return response()->json([
+                    'message' => 'Creator profiles linked under one identity',
+                    'data' => [
+                        'creatorIdentityId' => $identityId,
+                        'linked' => $linked,
+                        'primaryCreatorId' => $this->extractSourceRowNumberFromProfile($primaryProfile) > 0 ? 'crm:' . $this->extractSourceRowNumberFromProfile($primaryProfile) : 'crmdb:' . $primaryProfile->id,
+                    ],
+                    'source' => 'database',
+                    'sheetSync' => $sheetSync,
+                ]);
+            }
+        }
+
         $rows = $this->sheets->getRows($sheetId, 'Creators_CRM');
-        $rowNumbers = array_map(fn (string $id) => $this->parseRowNumber($id, 'crm'), $validated['creatorIds']);
+        $rowNumbers = array_map(fn (string $creatorId) => $this->parseRowNumber($creatorId, 'crm'), $validated['creatorIds']);
         $primaryRowNumber = !empty($validated['primaryCreatorId']) ? $this->parseRowNumber((string) $validated['primaryCreatorId'], 'crm') : $rowNumbers[0];
 
         $selected = array_values(array_filter($rows, fn (array $row) => in_array((int) ($row['_row_number'] ?? 0), $rowNumbers, true)));
@@ -335,6 +479,7 @@ class SheetDataController extends Controller
                 'linked' => $linked,
                 'primaryCreatorId' => 'crm:' . $primaryRowNumber,
             ],
+            'source' => 'google_sheets',
         ]);
     }
 
@@ -630,6 +775,63 @@ public function operatorView(Request $request)
         ]);
 
         $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $toState = trim((string) $validated['toState']);
+        $dbProfile = $this->resolveCreatorProfileForRoute($sheetId, $id);
+
+        if ($dbProfile) {
+            $dbProfile->loadMissing('creator');
+            $currentState = $this->lifecycle->normalizeState((string) ($dbProfile->lifecycle_state ?: $dbProfile->status ?: ''), 'enriched');
+
+            if (!$this->lifecycle->isValidState($toState)) {
+                throw new RuntimeException('Invalid target state');
+            }
+
+            if (!$this->lifecycle->canTransition($currentState, $toState)) {
+                throw new RuntimeException(sprintf('Invalid transition %s -> %s', $currentState, $toState));
+            }
+
+            $sheetRecord = $this->sheetRecordFromProfile($dbProfile);
+            $updatedRecord = $this->lifecycle->applyTransition($sheetRecord, $currentState, $toState, $validated);
+            $this->applySheetRecordToProfile($dbProfile, $updatedRecord);
+            if ($dbProfile->creator) {
+                $dbProfile->creator->save();
+            }
+            $dbProfile->save();
+
+            $freshProfile = $dbProfile->fresh('creator');
+            $sheetSync = $this->syncCreatorProfileToSheet($sheetId, $freshProfile);
+
+            $eventId = $this->outreachLog->appendEvent($sheetId, [
+                'creator_profile_id' => $freshProfile->id,
+                'Platform' => (string) ($freshProfile->platform ?? ''),
+                'Handle' => (string) ($freshProfile->handle ?? ''),
+                'Channel' => (string) ($freshProfile->preferred_channel ?? ''),
+                'Event_Type' => $this->lifecycle->eventTypeForTransition($currentState, $toState),
+                'Status' => strtoupper($this->lifecycle->sheetStatusForState($toState)),
+                'URL' => (string) ($freshProfile->dm_link ?: $freshProfile->profile_url ?: ''),
+                'Notes' => trim(sprintf(
+                    'transition %s -> %s%s%s',
+                    $currentState,
+                    $toState,
+                    !empty($validated['reason']) ? '; reason=' . $validated['reason'] : '',
+                    !empty($validated['notes']) ? '; note=' . str_replace(';', ',', (string) $validated['notes']) : ''
+                )),
+            ]);
+
+            $rowNumber = $this->extractSourceRowNumberFromProfile($freshProfile);
+            return response()->json([
+                'message' => 'Creator transitioned',
+                'data' => [
+                    'creatorId' => $rowNumber > 0 ? 'crm:' . $rowNumber : 'crmdb:' . $freshProfile->id,
+                    'fromState' => $currentState,
+                    'toState' => $toState,
+                    'eventId' => $eventId,
+                ],
+                'source' => 'database',
+                'sheetSync' => $sheetSync,
+            ]);
+        }
+
         $rowNumber = $this->parseRowNumber($id, 'crm');
         $creatorRow = collect($this->sheets->getRows($sheetId, 'Creators_CRM'))
             ->first(fn (array $row) => (int) ($row['_row_number'] ?? 0) === $rowNumber);
@@ -640,7 +842,6 @@ public function operatorView(Request $request)
 
         $enrichmentStatus = $this->normalizeEnrichmentStatus($creatorRow);
         $fromState = $this->lifecycle->normalizeState((string) ($creatorRow['Status'] ?? ''), $enrichmentStatus);
-        $toState = trim((string) $validated['toState']);
 
         if (!$this->lifecycle->isValidState($toState)) {
             throw new RuntimeException('Invalid target state');
@@ -678,8 +879,10 @@ public function operatorView(Request $request)
                 'toState' => $toState,
                 'eventId' => $eventId,
             ],
+            'source' => 'google_sheets',
         ]);
     }
+
 
     public function dashboardMetrics(Request $request)
     {
@@ -910,6 +1113,254 @@ public function operatorView(Request $request)
                 'psychologicalTrigger' => (string) ($template->psychological_trigger ?: ''),
             ];
         })->values()->all();
+    }
+
+
+    private function resolveCreatorProfileForRoute(string $sheetId, string $id): ?CreatorProfile
+    {
+        if (!$this->mirror->enabled()) {
+            return null;
+        }
+
+        $project = $this->projects->findByWorkbookId($sheetId);
+        if (!$project) {
+            return null;
+        }
+
+        $id = trim($id);
+        if ($id === '') {
+            return null;
+        }
+
+        if (Str::startsWith($id, 'crm:')) {
+            $rowNumber = (int) substr($id, 4);
+            if ($rowNumber > 0) {
+                return CreatorProfile::query()
+                    ->with('creator')
+                    ->where('project_id', $project->id)
+                    ->where(function ($query) use ($rowNumber) {
+                        $query->where('source_reference', 'Creators_CRM:' . $rowNumber)
+                            ->orWhere('source_metadata->sheet_row_number', $rowNumber);
+                    })
+                    ->first();
+            }
+        }
+
+        if (Str::startsWith($id, 'crmdb:')) {
+            $candidate = substr($id, 6);
+            return CreatorProfile::query()->with('creator')->where('project_id', $project->id)->where('id', $candidate)->first();
+        }
+
+        if (Str::startsWith($id, 'profile:')) {
+            $candidate = substr($id, 8);
+            return CreatorProfile::query()->with('creator')->where('project_id', $project->id)->where('id', $candidate)->first();
+        }
+
+        if ($this->isUuid($id)) {
+            return CreatorProfile::query()->with('creator')->where('project_id', $project->id)->where('id', $id)->first();
+        }
+
+        return null;
+    }
+
+    private function buildCreatorListItemFromProfile(CreatorProfile $profile): array
+    {
+        $creator = $profile->creator;
+        $rowNumber = $this->extractSourceRowNumberFromProfile($profile);
+        $id = $rowNumber > 0 ? 'crm:' . $rowNumber : 'crmdb:' . $profile->id;
+        $score = (float) ($profile->value_score ?? 0);
+        $status = trim((string) ($profile->lifecycle_state ?: $profile->status ?: 'discovered'));
+        $enrichmentStatus = ($profile->followers_count !== null || $profile->engagement_rate_pct !== null || filled(optional($creator)->primary_email))
+            ? 'enriched'
+            : 'pending';
+
+        return [
+            'id' => $id,
+            'rowId' => $id,
+            'platform' => strtolower((string) ($profile->platform ?: 'instagram')),
+            'handle' => (string) ($profile->handle ?: ''),
+            'fullName' => (string) (optional($creator)->display_name ?: ''),
+            'followers' => $profile->followers_count,
+            'engagementRate' => $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null,
+            'email' => (string) (optional($creator)->primary_email ?: ''),
+            'status' => $status,
+            'enrichmentStatus' => $enrichmentStatus,
+            'profileUrl' => (string) ($profile->profile_url ?: ''),
+            'dmUrl' => (string) ($profile->dm_link ?: $profile->profile_url ?: ''),
+            'niche' => (string) (optional($creator)->niche_category ?: ''),
+            'lastContactDate' => optional($profile->dm_sent_at)?->toDateTimeString() ?? '',
+            'notes' => (string) (optional($creator)->notes ?: ''),
+            'addedAt' => optional($profile->created_at)?->toDateTimeString() ?? '',
+            'valueScore' => (int) round($score),
+            'valueTier' => Str::lower($this->scoring->tier($score)),
+            'preferredChannel' => (string) ($profile->preferred_channel ?: ''),
+            'creatorIdentityId' => (string) (optional($creator)->external_identity_key ?: ''),
+            'linkedProfileCount' => $creator ? $creator->profiles()->count() : 1,
+        ];
+    }
+
+    private function sheetRecordFromProfile(CreatorProfile $profile): array
+    {
+        $creator = $profile->creator;
+        $status = trim((string) ($profile->status ?: $this->lifecycle->sheetStatusForState((string) ($profile->lifecycle_state ?: 'discovered'))));
+        $metadata = is_array($profile->source_metadata) ? $profile->source_metadata : [];
+
+        return [
+            'Platform' => strtolower((string) ($profile->platform ?: 'instagram')),
+            'Handle' => (string) ($profile->handle ?: ''),
+            'Name' => (string) ($creator?->display_name ?: ''),
+            'DM_Link' => (string) ($profile->dm_link ?: $profile->profile_url ?: ''),
+            'Followers' => $profile->followers_count !== null ? (string) $profile->followers_count : '',
+            'Engagement_Rate_%' => $profile->engagement_rate_pct !== null ? (string) $profile->engagement_rate_pct : '',
+            'Contact_Email' => (string) ($creator?->primary_email ?: ''),
+            'Niche_Category' => (string) ($creator?->niche_category ?: ''),
+            'Status' => $status,
+            'Value_Score' => $profile->value_score !== null ? (string) $profile->value_score : '',
+            'Value_Bar' => (string) ($profile->value_bar ?: ''),
+            'Preferred_Channel' => (string) ($profile->preferred_channel ?: ''),
+            'Last_Content_Date' => optional($profile->last_content_at)?->toDateTimeString() ?? '',
+            'Duplicate_Flag' => (string) ($profile->duplicate_flag ?: ''),
+            'Accepted_(Y/N)' => $profile->accepted_flag ? 'Y' : 'N',
+            'Follow_Up_Needed_(Y/N)' => $profile->follow_up_needed ? 'Y' : 'N',
+            'DM_Sent_Date' => optional($profile->dm_sent_at)?->toDateString() ?? '',
+            'Response_Date' => optional($profile->responded_at)?->toDateString() ?? '',
+            'Notes' => (string) ($creator?->notes ?: ''),
+            'Angle_Assigned' => (string) ($metadata['angle_assigned'] ?? ''),
+            'Commission_Model' => (string) ($metadata['commission_model'] ?? ''),
+            'Reaction_Video_Link' => (string) ($metadata['reaction_video_link'] ?? ''),
+        ];
+    }
+
+    private function applySheetRecordToProfile(CreatorProfile $profile, array $record): void
+    {
+        $creator = $profile->creator;
+        if (!$creator) {
+            return;
+        }
+
+        $creator->display_name = trim((string) ($record['Name'] ?? '')) ?: null;
+        $creator->primary_email = trim((string) ($record['Contact_Email'] ?? '')) ?: null;
+        $creator->niche_category = trim((string) ($record['Niche_Category'] ?? '')) ?: null;
+        $creator->notes = (string) ($record['Notes'] ?? '');
+
+        $profile->profile_url = trim((string) ($record['DM_Link'] ?? '')) ?: $profile->profile_url;
+        $profile->dm_link = trim((string) ($record['DM_Link'] ?? '')) ?: $profile->dm_link;
+        $profile->status = trim((string) ($record['Status'] ?? $profile->status ?: 'DISCOVERED'));
+        $profile->lifecycle_state = $this->lifecycle->normalizeState((string) ($record['Status'] ?? ''), 'enriched');
+        $profile->preferred_channel = trim((string) ($record['Preferred_Channel'] ?? '')) ?: null;
+        $profile->value_score = $this->sanitizeMetric($record['Value_Score'] ?? null);
+        $profile->value_bar = trim((string) ($record['Value_Bar'] ?? '')) ?: null;
+        $profile->followers_count = $this->sanitizeMetric($record['Followers'] ?? null);
+        $profile->engagement_rate_pct = $this->sanitizeFloat($record['Engagement_Rate_%'] ?? null);
+        $profile->last_content_at = trim((string) ($record['Last_Content_Date'] ?? '')) !== '' ? $record['Last_Content_Date'] : $profile->last_content_at;
+        $profile->duplicate_flag = trim((string) ($record['Duplicate_Flag'] ?? '')) ?: null;
+        $profile->accepted_flag = Str::upper(trim((string) ($record['Accepted_(Y/N)'] ?? 'N'))) === 'Y';
+        $profile->follow_up_needed = Str::upper(trim((string) ($record['Follow_Up_Needed_(Y/N)'] ?? 'N'))) === 'Y';
+        $profile->dm_sent_at = trim((string) ($record['DM_Sent_Date'] ?? '')) !== '' ? $record['DM_Sent_Date'] : $profile->dm_sent_at;
+        $profile->responded_at = trim((string) ($record['Response_Date'] ?? '')) !== '' ? $record['Response_Date'] : $profile->responded_at;
+        $profile->last_synced_at = now();
+    }
+
+    private function syncCreatorProfileToSheet(string $sheetId, CreatorProfile $profile): array
+    {
+        $rowNumber = $this->extractSourceRowNumberFromProfile($profile);
+        if ($rowNumber <= 0) {
+            return ['synced' => false, 'reason' => 'no_sheet_row'];
+        }
+
+        try {
+            $sheetRow = collect($this->sheets->getRows($sheetId, 'Creators_CRM'))
+                ->first(fn (array $row) => (int) ($row['_row_number'] ?? 0) === $rowNumber);
+            if (!$sheetRow) {
+                return ['synced' => false, 'reason' => 'sheet_row_missing'];
+            }
+
+            $record = $this->sheetRecordFromProfile($profile->loadMissing('creator'));
+            foreach ($record as $key => $value) {
+                $sheetRow[$key] = $value;
+            }
+            $this->sheets->updateAssocRow($sheetId, 'Creators_CRM', $rowNumber, $sheetRow);
+
+            return ['synced' => true, 'rowNumber' => $rowNumber];
+        } catch (\Throwable $e) {
+            Log::warning('Creators_CRM sheet sync failed after database creator update', [
+                'sheet_id' => $sheetId,
+                'profile_id' => $profile->id,
+                'row_number' => $rowNumber,
+                'error' => $e->getMessage(),
+            ]);
+
+            return ['synced' => false, 'reason' => 'sheet_sync_failed', 'error' => $e->getMessage()];
+        }
+    }
+
+    private function syncLinkedProfileMetadataToSheet(string $sheetId, CreatorProfile $profile, string $identityId, array $linkedLabels, bool $isPrimary): array
+    {
+        $rowNumber = $this->extractSourceRowNumberFromProfile($profile);
+        if ($rowNumber <= 0) {
+            return ['synced' => false, 'reason' => 'no_sheet_row'];
+        }
+
+        try {
+            $sheetRow = collect($this->sheets->getRows($sheetId, 'Creators_CRM'))
+                ->first(fn (array $row) => (int) ($row['_row_number'] ?? 0) === $rowNumber);
+            if (!$sheetRow) {
+                return ['synced' => false, 'reason' => 'sheet_row_missing'];
+            }
+
+            $notes = (string) ($sheetRow['Notes'] ?? '');
+            $notes = $this->upsertTaggedValue($notes, 'creator_identity_id', $identityId);
+            $notes = $this->upsertTaggedValue($notes, 'linked_profiles', implode(',', $linkedLabels));
+            if ($isPrimary) {
+                $notes = $this->upsertTaggedValue($notes, 'identity_primary', '1');
+            }
+            $sheetRow['Notes'] = $notes;
+            $this->sheets->updateAssocRow($sheetId, 'Creators_CRM', $rowNumber, $sheetRow);
+
+            return ['synced' => true, 'rowNumber' => $rowNumber];
+        } catch (\Throwable $e) {
+            Log::warning('Creators_CRM sheet sync failed after database link profiles', [
+                'sheet_id' => $sheetId,
+                'profile_id' => $profile->id,
+                'row_number' => $rowNumber,
+                'error' => $e->getMessage(),
+            ]);
+
+            return ['synced' => false, 'reason' => 'sheet_sync_failed', 'error' => $e->getMessage()];
+        }
+    }
+
+    private function extractSourceRowNumberFromProfile(CreatorProfile $profile): int
+    {
+        $metaRow = (int) (($profile->source_metadata['sheet_row_number'] ?? 0) ?: 0);
+        if ($metaRow > 0) {
+            return $metaRow;
+        }
+
+        $sourceReference = (string) ($profile->source_reference ?? '');
+        if (Str::startsWith($sourceReference, 'Creators_CRM:')) {
+            return max(0, (int) substr($sourceReference, strlen('Creators_CRM:')));
+        }
+
+        return 0;
+    }
+
+    private function mergeCreatorNotes(string $primaryNotes, string $secondaryNotes): string
+    {
+        $primaryNotes = trim($primaryNotes);
+        $secondaryNotes = trim($secondaryNotes);
+        if ($secondaryNotes === '' || Str::contains($primaryNotes, $secondaryNotes)) {
+            return $primaryNotes;
+        }
+        if ($primaryNotes === '') {
+            return $secondaryNotes;
+        }
+        return trim($primaryNotes . ' | ' . $secondaryNotes, ' |');
+    }
+
+    private function isUuid(string $value): bool
+    {
+        return (bool) preg_match('/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/', trim($value));
     }
 
     private function resolveSheetId(?string $sheetId): string
