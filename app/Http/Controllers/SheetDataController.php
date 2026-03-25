@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\CreatorProfile;
+use App\Models\MessageTemplate;
 use App\Services\CreatorLifecycleService;
 use App\Services\CreatorMergeService;
 use App\Services\GoogleSheetsService;
@@ -9,6 +11,7 @@ use App\Services\InfluencerScoringService;
 use App\Services\OperatorViewService;
 use App\Services\OutreachLogService;
 use App\Services\OperationalMirrorService;
+use App\Services\ProjectResolverService;
 use App\Services\TaskQueueService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
@@ -27,6 +30,7 @@ class SheetDataController extends Controller
         private OperatorViewService $operatorView,
         private OutreachLogService $outreachLog,
         private OperationalMirrorService $mirror,
+        private ProjectResolverService $projects,
     ) {
     }
 
@@ -159,6 +163,25 @@ class SheetDataController extends Controller
         $addedTo = trim((string) ($validated['added_to'] ?? ''));
         $limit = (int) ($validated['limit'] ?? 200);
         $offset = (int) ($validated['offset'] ?? 0);
+
+        $dbItems = $this->loadCreatorsFromDatabase($sheetId, [
+            'search' => $search,
+            'platform' => $platform,
+            'status' => $status,
+            'niche' => $niche,
+            'added_from' => $addedFrom,
+            'added_to' => $addedTo,
+            'limit' => $limit,
+            'offset' => $offset,
+        ]);
+
+        if ($dbItems !== null) {
+            return response()->json([
+                'message' => 'Creators fetched',
+                'items' => $dbItems['items'],
+                'total' => $dbItems['total'],
+            ]);
+        }
 
         $items = [];
         foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
@@ -391,6 +414,19 @@ class SheetDataController extends Controller
         $platform = Str::lower(trim((string) ($validated['platform'] ?? '')));
         $stage = Str::lower(trim((string) ($validated['stage'] ?? '')));
         $niche = Str::lower(trim((string) ($validated['niche'] ?? '')));
+
+        $dbItems = $this->loadMessageTemplatesFromDatabase($sheetId, [
+            'platform' => $platform,
+            'stage' => $stage,
+            'niche' => $niche,
+        ]);
+
+        if ($dbItems !== null) {
+            return response()->json([
+                'message' => 'Message templates fetched',
+                'items' => $dbItems,
+            ]);
+        }
 
         $items = [];
         foreach ($this->sheets->getRows($sheetId, 'Message_Library') as $row) {
@@ -670,6 +706,154 @@ public function operatorView(Request $request)
             'message' => 'Dashboard metrics fetched',
             'metrics' => $metrics,
         ]);
+    }
+
+    private function loadCreatorsFromDatabase(string $sheetId, array $filters): ?array
+    {
+        if (!$this->mirror->enabled()) {
+            return null;
+        }
+
+        $project = $this->projects->findByWorkbookId($sheetId);
+        if (!$project) {
+            return null;
+        }
+
+        $query = CreatorProfile::query()
+            ->with(['creator:id,display_name,primary_email,country,city,primary_language,niche_category,notes'])
+            ->where('project_id', $project->id);
+
+        if (($filters['platform'] ?? '') !== '') {
+            $query->where('platform', $filters['platform']);
+        }
+
+        if (($filters['status'] ?? '') !== '') {
+            $query->where('lifecycle_state', $filters['status']);
+        }
+
+        if (($filters['niche'] ?? '') !== '') {
+            $query->whereHas('creator', fn ($q) => $q->whereRaw("LOWER(COALESCE(niche_category, '')) = ?", [$filters['niche']]));
+        }
+
+        if (($filters['added_from'] ?? '') !== '') {
+            $query->where('created_at', '>=', $filters['added_from'] . ' 00:00:00');
+        }
+
+        if (($filters['added_to'] ?? '') !== '') {
+            $query->where('created_at', '<=', $filters['added_to'] . ' 23:59:59');
+        }
+
+        if (($filters['search'] ?? '') !== '') {
+            $searchLike = '%' . $filters['search'] . '%';
+            $query->where(function ($q) use ($searchLike) {
+                $q->whereRaw('LOWER(handle) LIKE ?', [$searchLike])
+                    ->orWhereRaw("LOWER(COALESCE(username, '')) LIKE ?", [$searchLike])
+                    ->orWhereHas('creator', function ($creatorQuery) use ($searchLike) {
+                        $creatorQuery->whereRaw("LOWER(COALESCE(display_name, '')) LIKE ?", [$searchLike])
+                            ->orWhereRaw("LOWER(COALESCE(primary_email, '')) LIKE ?", [$searchLike])
+                            ->orWhereRaw("LOWER(COALESCE(niche_category, '')) LIKE ?", [$searchLike]);
+                    });
+            });
+        }
+
+        $total = (clone $query)->count();
+        if ($total === 0) {
+            return null;
+        }
+
+        $profiles = $query
+            ->orderByDesc('created_at')
+            ->offset((int) ($filters['offset'] ?? 0))
+            ->limit((int) ($filters['limit'] ?? 200))
+            ->get();
+
+        $creatorIds = $profiles->pluck('creator_id')->filter()->unique()->values();
+        $counts = CreatorProfile::query()
+            ->selectRaw('creator_id, COUNT(*) as aggregate_count')
+            ->whereIn('creator_id', $creatorIds)
+            ->groupBy('creator_id')
+            ->pluck('aggregate_count', 'creator_id');
+
+        $items = $profiles->map(function (CreatorProfile $profile) use ($counts) {
+            $creator = $profile->creator;
+            $addedAt = optional($profile->created_at)?->toDateTimeString() ?? '';
+            $score = (float) ($profile->value_score ?? 0);
+            $status = trim((string) ($profile->lifecycle_state ?: $profile->status ?: 'discovered'));
+            $rowNumber = (int) (($profile->source_metadata['sheet_row_number'] ?? 0));
+            $id = $rowNumber > 1 ? 'crm:' . $rowNumber : 'crmdb:' . $profile->id;
+            $enrichmentStatus = ($profile->followers_count !== null || $profile->engagement_rate_pct !== null || filled(optional($creator)->primary_email))
+                ? 'enriched'
+                : 'pending';
+
+            return [
+                'id' => $id,
+                'rowId' => $id,
+                'platform' => strtolower((string) ($profile->platform ?: 'instagram')),
+                'handle' => (string) ($profile->handle ?: ''),
+                'fullName' => (string) (optional($creator)->display_name ?: ''),
+                'followers' => $profile->followers_count,
+                'engagementRate' => $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null,
+                'email' => (string) (optional($creator)->primary_email ?: ''),
+                'status' => $status,
+                'enrichmentStatus' => $enrichmentStatus,
+                'profileUrl' => (string) ($profile->profile_url ?: ''),
+                'dmUrl' => (string) ($profile->dm_link ?: $profile->profile_url ?: ''),
+                'niche' => (string) (optional($creator)->niche_category ?: ''),
+                'lastContactDate' => optional($profile->dm_sent_at)?->toDateTimeString() ?? '',
+                'notes' => (string) (optional($creator)->notes ?: ''),
+                'addedAt' => $addedAt,
+                'valueScore' => (int) round($score),
+                'valueTier' => Str::lower($this->scoring->tier($score)),
+                'preferredChannel' => (string) ($profile->preferred_channel ?: ''),
+                'creatorIdentityId' => (string) ($creator?->id ?: ''),
+                'linkedProfileCount' => (int) ($counts[$profile->creator_id] ?? 1),
+            ];
+        })->values()->all();
+
+        return ['items' => $items, 'total' => $total];
+    }
+
+    private function loadMessageTemplatesFromDatabase(string $sheetId, array $filters): ?array
+    {
+        if (!$this->mirror->enabled()) {
+            return null;
+        }
+
+        $project = $this->projects->findByWorkbookId($sheetId);
+        if (!$project) {
+            return null;
+        }
+
+        $query = MessageTemplate::query()->where('project_id', $project->id);
+
+        if (($filters['platform'] ?? '') !== '') {
+            $query->whereRaw('LOWER(platform) = ?', [$filters['platform']]);
+        }
+        if (($filters['stage'] ?? '') !== '') {
+            $query->whereRaw('LOWER(stage) = ?', [$filters['stage']]);
+        }
+        if (($filters['niche'] ?? '') !== '') {
+            $query->whereRaw("LOWER(COALESCE(niche, '')) = ?", [$filters['niche']]);
+        }
+
+        $rows = $query->orderByDesc('created_at')->get();
+        if ($rows->isEmpty()) {
+            return null;
+        }
+
+        return $rows->map(function (MessageTemplate $template) {
+            $rowNumber = (int) (($template->metadata['source_row_number'] ?? 0));
+            return [
+                'id' => $rowNumber > 1 ? 'msg:' . $rowNumber : 'msgdb:' . $template->id,
+                'angleId' => (string) $template->angle_id,
+                'platform' => strtolower((string) ($template->platform ?: 'instagram')),
+                'niche' => (string) ($template->niche ?: ''),
+                'stage' => (string) ($template->stage ?: 'cold_invite'),
+                'copy' => (string) ($template->copy ?: ''),
+                'notes' => (string) ($template->notes ?: ''),
+                'psychologicalTrigger' => (string) ($template->psychological_trigger ?: ''),
+            ];
+        })->values()->all();
     }
 
     private function resolveSheetId(?string $sheetId): string
