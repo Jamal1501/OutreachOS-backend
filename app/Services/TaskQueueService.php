@@ -649,13 +649,18 @@ class TaskQueueService
         $targetRowNumbers = array_key_exists('rowNumbers', $options)
             ? array_values(array_unique(array_filter(array_map('intval', (array) ($options['rowNumbers'] ?? [])), fn (int $rowNumber) => $rowNumber > 1)))
             : null;
+        $targetProfileIds = array_key_exists('profileIds', $options)
+            ? array_values(array_unique(array_filter(array_map('strval', (array) ($options['profileIds'] ?? [])), fn (string $id) => trim($id) !== '')))
+            : null;
 
         $profilesQuery = CreatorProfile::query()
             ->with('creator')
             ->where('project_id', $project->id)
             ->orderBy('created_at');
 
-        if (is_array($targetRowNumbers)) {
+        if (is_array($targetProfileIds) && $targetProfileIds !== []) {
+            $profilesQuery->whereIn('id', $targetProfileIds);
+        } elseif (is_array($targetRowNumbers)) {
             $profilesQuery->where(function ($query) use ($targetRowNumbers) {
                 foreach ($targetRowNumbers as $rowNumber) {
                     $query->orWhere('source_reference', 'Creators_CRM:' . $rowNumber)
@@ -784,6 +789,7 @@ class TaskQueueService
             'skipped_ineligible' => $skippedIneligible,
             'taskSheet' => 'Task_Queue',
             'sourceRowNumbers' => $targetRowNumbers,
+            'sourceProfileIds' => $targetProfileIds,
             'source' => 'database',
         ];
     }
