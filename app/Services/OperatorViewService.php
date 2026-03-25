@@ -2,6 +2,10 @@
 
 namespace App\Services;
 
+use App\Models\CreatorProfile;
+use App\Models\OutreachEvent;
+use App\Models\Task;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -11,11 +15,17 @@ class OperatorViewService
         private GoogleSheetsService $sheets,
         private InfluencerScoringService $scoring,
         private CreatorLifecycleService $lifecycle,
+        private ProjectResolverService $projects,
     ) {
     }
 
     public function build(string $sheetId): array
     {
+        $project = $this->projects->findByWorkbookId($sheetId);
+        if ($project && CreatorProfile::query()->where('project_id', $project->id)->exists()) {
+            return $this->buildFromDatabase($project->id);
+        }
+
         $creatorRows = $this->safeGetRows($sheetId, 'Creators_CRM');
         $taskRows = $this->safeGetRows($sheetId, 'Task_Queue');
         $outreachRows = $this->safeGetRows($sheetId, 'Outreach_Log');
@@ -112,6 +122,11 @@ class OperatorViewService
 
     public function buildDecisionSheet(string $sheetId, int $rowNumber): array
     {
+        $project = $this->projects->findByWorkbookId($sheetId);
+        if ($project && CreatorProfile::query()->where('project_id', $project->id)->exists()) {
+            return $this->buildDecisionSheetFromDatabase($project->id, $rowNumber);
+        }
+
         $creatorRows = $this->safeGetRows($sheetId, 'Creators_CRM');
         $creatorRow = collect($creatorRows)
             ->first(fn (array $row) => (int) ($row['_row_number'] ?? 0) === $rowNumber);
@@ -155,6 +170,144 @@ class OperatorViewService
             'platform' => $creator['platform'],
         ]);
 
+        return $this->buildDecisionPayload($creator, $duplicates, $relatedTasks, $timeline);
+    }
+
+    private function buildFromDatabase(int $projectId): array
+    {
+        $profiles = CreatorProfile::query()
+            ->with('creator')
+            ->where('project_id', $projectId)
+            ->get();
+
+        $creators = $profiles->map(fn (CreatorProfile $profile) => $this->normalizeCreatorProfileCard($profile))->values()->all();
+        $duplicates = $this->detectDuplicateWarnings($creators);
+        $duplicateByCreator = [];
+
+        foreach ($duplicates as $warning) {
+            foreach ($warning['creators'] as $creator) {
+                $duplicateByCreator[$creator['id']] = $warning['risk'];
+            }
+        }
+
+        $tasks = $this->normalizeDbTasks(Task::query()->where('project_id', $projectId)->orderBy('due_at')->get()->all());
+        $openTaskByCreator = [];
+        foreach ($tasks as $task) {
+            if (in_array($task['status'], ['completed', 'skipped'], true)) {
+                continue;
+            }
+            $key = strtolower($task['platform'] . '|' . ltrim($task['handle'], '@'));
+            $openTaskByCreator[$key][] = $task;
+        }
+
+        foreach ($creators as &$creator) {
+            $taskKey = strtolower($creator['platform'] . '|' . ltrim($creator['handle'], '@'));
+            $creator['duplicateRisk'] = $duplicateByCreator[$creator['id']] ?? 'low';
+            $creator['openTaskCount'] = count($openTaskByCreator[$taskKey] ?? []);
+            $creator['recommendedNextAction'] = $this->recommendedNextAction($creator);
+        }
+        unset($creator);
+
+        $triageStates = ['discovered', 'needs_review', 'enriched', 'duplicate_review_needed'];
+        $triageItems = array_values(array_filter($creators, fn (array $creator) => in_array($creator['lifecycleState'], $triageStates, true)));
+        usort($triageItems, fn (array $a, array $b) => ($b['valueScore'] <=> $a['valueScore']) ?: strcmp((string) ($b['addedAt'] ?? ''), (string) ($a['addedAt'] ?? '')));
+
+        $readyStates = ['approved_for_outreach', 'queued'];
+        $readyQueue = array_values(array_filter($creators, function (array $creator) use ($readyStates) {
+            return in_array($creator['lifecycleState'], $readyStates, true)
+                || ($creator['lifecycleState'] === 'enriched' && ($creator['valueScore'] ?? 0) >= 55);
+        }));
+        usort($readyQueue, fn (array $a, array $b) => ($b['valueScore'] <=> $a['valueScore']) ?: (($b['followers'] ?? 0) <=> ($a['followers'] ?? 0)));
+
+        $today = now()->toDateString();
+        $tasksDueToday = array_values(array_filter($tasks, fn (array $task) => !in_array($task['status'], ['completed', 'skipped'], true) && str_starts_with((string) ($task['dueDate'] ?? ''), $today)));
+        usort($tasksDueToday, fn (array $a, array $b) => strcmp((string) ($a['dueDate'] ?? ''), (string) ($b['dueDate'] ?? '')));
+
+        $recentActivity = $this->normalizeDbRecentActivity(
+            OutreachEvent::query()->where('project_id', $projectId)->orderByDesc('sent_at')->limit(100)->get()->all()
+        );
+
+        $outreachEvents = OutreachEvent::query()->where('project_id', $projectId)->get();
+        $outreachSent = $outreachEvents->filter(fn (OutreachEvent $event) => Str::contains(Str::upper((string) $event->event_type), ['SENT', 'OUTREACH']))->count();
+        $replies = $outreachEvents->filter(fn (OutreachEvent $event) => Str::contains(Str::upper((string) $event->event_type), ['REPLY', 'ACCEPTED', 'DEAL_WON']))->count();
+
+        return [
+            'metrics' => [
+                'triageCount' => count($triageItems),
+                'duplicateWarnings' => count($duplicates),
+                'readyForOutreach' => count($readyQueue),
+                'tasksDueToday' => count($tasksDueToday),
+                'outreachSent' => $outreachSent,
+                'repliesReceived' => $replies,
+                'replyRate' => $outreachSent > 0 ? round(($replies / $outreachSent) * 100, 1) : 0,
+            ],
+            'triageItems' => array_slice($triageItems, 0, 12),
+            'duplicateWarnings' => array_slice($duplicates, 0, 8),
+            'readyQueue' => array_slice($readyQueue, 0, 12),
+            'tasksDueToday' => array_slice($tasksDueToday, 0, 12),
+            'recentActivity' => array_slice($recentActivity, 0, 12),
+        ];
+    }
+
+    private function buildDecisionSheetFromDatabase(int $projectId, int $rowNumber): array
+    {
+        $profile = CreatorProfile::query()
+            ->with('creator')
+            ->where('project_id', $projectId)
+            ->where(function (Builder $query) use ($rowNumber) {
+                $query->where('source_reference', 'Creators_CRM:' . $rowNumber)
+                    ->orWhere('source_metadata->sheet_row_number', $rowNumber);
+            })
+            ->first();
+
+        if (!$profile) {
+            throw new \RuntimeException('Creator not found');
+        }
+
+        $creator = $this->normalizeCreatorProfileCard($profile);
+        $allCreators = CreatorProfile::query()->with('creator')->where('project_id', $projectId)->get()->map(fn (CreatorProfile $item) => $this->normalizeCreatorProfileCard($item))->values()->all();
+        $duplicates = array_values(array_filter(
+            $this->detectDuplicateWarnings($allCreators),
+            fn (array $warning) => collect($warning['creators'])->contains(fn (array $item) => $item['id'] === $creator['id'])
+        ));
+
+        $relatedTasks = $this->normalizeDbTasks(
+            Task::query()
+                ->where('project_id', $projectId)
+                ->where('platform', strtolower($creator['platform']))
+                ->where('handle', $creator['handle'])
+                ->orderByDesc('created_at')
+                ->get()
+                ->all()
+        );
+
+        $timeline = $this->normalizeDbRecentActivity(
+            OutreachEvent::query()
+                ->where('project_id', $projectId)
+                ->where('platform', strtolower($creator['platform']))
+                ->where('handle', $creator['handle'])
+                ->orderByDesc('sent_at')
+                ->get()
+                ->all(),
+            $creator['platform'],
+            $creator['handle']
+        );
+
+        array_unshift($timeline, [
+            'id' => 'creator-added-' . $creator['id'],
+            'type' => 'creator_added',
+            'title' => 'Creator added to CRM',
+            'description' => $creator['addedAt'] ? 'Added at ' . $creator['addedAt'] : 'Added to CRM',
+            'timestamp' => (string) ($creator['addedAt'] ?? ''),
+            'handle' => $creator['handle'],
+            'platform' => $creator['platform'],
+        ]);
+
+        return $this->buildDecisionPayload($creator, $duplicates, $relatedTasks, $timeline);
+    }
+
+    private function buildDecisionPayload(array $creator, array $duplicates, array $relatedTasks, array $timeline): array
+    {
         $hardDisqualifiers = [];
         if (($creator['duplicateRisk'] ?? 'low') === 'high' || count($duplicates) > 0) {
             $hardDisqualifiers[] = 'Duplicate risk needs operator review';
@@ -207,19 +360,10 @@ class OperatorViewService
                 'duplicateRisk' => [
                     'level' => count($duplicates) > 0 ? ($duplicates[0]['risk'] ?? 'medium') : 'low',
                     'reasons' => count($duplicates) > 0
-                        ? array_values(array_unique(array_filter(array_map(
-                            fn (array $warning) => (string) ($warning['reason'] ?? ''),
-                            $duplicates
-                        ))))
+                        ? array_values(array_unique(array_filter(array_map(fn (array $warning) => (string) ($warning['reason'] ?? ''), $duplicates))))
                         : ['No duplicate warning currently surfaced'],
                     'relatedCreators' => count($duplicates) > 0
-                        ? array_values(array_unique(array_filter(array_merge(...array_map(
-                            fn (array $warning) => array_map(
-                                fn (array $item) => $item['handle'] . ' (' . $item['platform'] . ')',
-                                $warning['creators']
-                            ),
-                            $duplicates
-                        )))))
+                        ? array_values(array_unique(array_filter(array_merge(...array_map(fn (array $warning) => array_map(fn (array $item) => $item['handle'] . ' (' . $item['platform'] . ')', $warning['creators']), $duplicates)))))
                         : [],
                 ],
                 'recommendedNextAction' => $this->recommendedNextAction($creator),
@@ -311,6 +455,123 @@ class OperatorViewService
                 ],
             ],
         ];
+    }
+
+    private function normalizeCreatorProfileCard(CreatorProfile $profile): array
+    {
+        $creator = $profile->creator;
+        $state = $profile->lifecycle_state ?: $this->lifecycle->normalizeState((string) ($profile->status ?: ''), 'enriched');
+        $sourceRowNumber = (int) (($profile->source_metadata['sheet_row_number'] ?? 0) ?: 0);
+        $addedAt = optional($profile->created_at)?->toDateTimeString() ?? '';
+
+        return [
+            'id' => $sourceRowNumber > 0 ? 'crm:' . $sourceRowNumber : 'profile:' . $profile->id,
+            'platform' => strtolower((string) ($profile->platform ?: 'instagram')),
+            'handle' => (string) ($profile->handle ?: ''),
+            'fullName' => (string) ($creator?->display_name ?: $profile->username ?: ''),
+            'followers' => (int) ($profile->followers_count ?? 0),
+            'engagementRate' => $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null,
+            'email' => (string) ($creator?->primary_email ?: ''),
+            'profileUrl' => (string) ($profile->profile_url ?: $profile->dm_link ?: ''),
+            'status' => $state,
+            'lifecycleState' => $state,
+            'enrichmentStatus' => 'enriched',
+            'niche' => (string) ($creator?->niche_category ?: ''),
+            'lastContactDate' => optional($profile->dm_sent_at)?->toDateTimeString() ?? '',
+            'responseDate' => optional($profile->responded_at)?->toDateTimeString() ?? '',
+            'lastContentDate' => optional($profile->last_content_at)?->toDateTimeString() ?? '',
+            'notes' => (string) ($creator?->notes ?: ''),
+            'addedAt' => $addedAt,
+            'valueScore' => (int) ($profile->value_score ?? 0),
+            'valueTier' => Str::lower($this->scoring->tier((float) ($profile->value_score ?? 0))),
+            'preferredChannel' => (string) ($profile->preferred_channel ?: ''),
+            'duplicateRisk' => $profile->duplicate_flag ? 'medium' : 'low',
+            'creatorIdentityId' => (string) ($creator?->external_identity_key ?: ''),
+            'linkedProfileCount' => $creator ? $creator->profiles()->count() : 1,
+            'openTaskCount' => 0,
+            'evidence' => [
+                'followers' => [
+                    'source' => (string) ($profile->source_provider ?: 'database'),
+                    'freshness' => $this->lifecycle->freshnessLabel($addedAt),
+                ],
+                'engagementRate' => [
+                    'source' => (string) ($profile->source_provider ?: 'database'),
+                    'freshness' => $this->lifecycle->freshnessLabel($addedAt),
+                ],
+                'email' => [
+                    'source' => $creator?->primary_email ? 'database' : 'unknown',
+                    'freshness' => $this->lifecycle->freshnessLabel($addedAt),
+                ],
+                'status' => [
+                    'source' => 'database',
+                    'freshness' => $this->lifecycle->freshnessLabel(optional($profile->updated_at)?->toDateTimeString() ?? $addedAt),
+                ],
+            ],
+        ];
+    }
+
+    private function normalizeDbTasks(array $tasks): array
+    {
+        $items = array_map(function (Task $task) {
+            $status = strtoupper(trim((string) ($task->status ?: 'PENDING')));
+
+            return [
+                'id' => (string) ($task->external_task_key ?: $task->id),
+                'type' => (string) $task->task_type,
+                'platform' => Str::lower((string) ($task->platform ?: 'instagram')),
+                'handle' => (string) ($task->handle ?: ''),
+                'status' => match ($status) {
+                    'DONE', 'COMPLETED' => 'completed',
+                    'SKIPPED' => 'skipped',
+                    'IN_PROGRESS' => 'in_progress',
+                    'SNOOZED' => 'snoozed',
+                    default => 'pending',
+                },
+                'priority' => Str::lower((string) ($task->priority ?: 'medium')),
+                'dueDate' => optional($task->due_at)?->toDateTimeString() ?? '',
+                'createdAt' => optional($task->created_at)?->toDateTimeString() ?? '',
+                'completedAt' => optional($task->completed_at)?->toDateTimeString() ?? '',
+                'messageText' => (string) ($task->message_draft ?: ''),
+                'profileUrl' => (string) ($task->open_url ?: ''),
+                'notes' => (string) ($task->notes ?: ''),
+            ];
+        }, $tasks);
+
+        usort($items, fn (array $a, array $b) => strcmp((string) ($a['dueDate'] ?? ''), (string) ($b['dueDate'] ?? '')));
+        return $items;
+    }
+
+    private function normalizeDbRecentActivity(array $events, ?string $platform = null, ?string $handle = null): array
+    {
+        $items = [];
+
+        foreach ($events as $event) {
+            if (!$event instanceof OutreachEvent) {
+                continue;
+            }
+            $rowPlatform = Str::lower((string) ($event->platform ?: ''));
+            $rowHandle = (string) ($event->handle ?: '');
+            if ($platform !== null && $rowPlatform !== Str::lower($platform)) {
+                continue;
+            }
+            if ($handle !== null && strtolower(ltrim($rowHandle, '@')) !== strtolower(ltrim($handle, '@'))) {
+                continue;
+            }
+            $eventType = Str::upper((string) ($event->event_type ?: 'EVENT'));
+            $items[] = [
+                'id' => (string) ($event->external_event_key ?: $event->id),
+                'type' => Str::lower($eventType),
+                'title' => str_replace('_', ' ', Str::headline($eventType)),
+                'description' => (string) ($event->notes ?: ''),
+                'timestamp' => optional($event->sent_at)?->toDateTimeString() ?? optional($event->created_at)?->toDateTimeString() ?? '',
+                'handle' => $rowHandle,
+                'platform' => $rowPlatform,
+                'status' => (string) ($event->status ?: ''),
+            ];
+        }
+
+        usort($items, fn (array $a, array $b) => strcmp((string) ($b['timestamp'] ?? ''), (string) ($a['timestamp'] ?? '')));
+        return $items;
     }
 
     private function normalizeTasks(array $taskRows): array
