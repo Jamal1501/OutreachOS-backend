@@ -11,6 +11,8 @@ use RuntimeException;
 
 class GoogleSheetsService
 {
+    private array $valuesCache = [];
+
     public function getHeaders(string $sheetId, string $sheetName): array
     {
         $rows = $this->getValues($sheetId, "{$sheetName}!1:1");
@@ -58,6 +60,8 @@ class GoogleSheetsService
         }, $rows);
 
         $body = new ValueRange(['values' => $cleanRows]);
+
+        $this->invalidateSheetCache($sheetId, $sheetName);
 
         $this->service()->spreadsheets_values->append(
             $sheetId,
@@ -123,6 +127,8 @@ class GoogleSheetsService
             return 0;
         }
 
+        $this->invalidateSheetCache($sheetId, $sheetName);
+
         $this->service()->spreadsheets_values->batchUpdate(
             $sheetId,
             new BatchUpdateValuesRequest([
@@ -151,6 +157,8 @@ class GoogleSheetsService
         $body = new ValueRange(['values' => [$row]]);
         $lastColumn = $this->columnLetter(count($row));
 
+        $this->invalidateSheetCache($sheetId, $sheetName);
+
         $this->service()->spreadsheets_values->update(
             $sheetId,
             "{$sheetName}!A{$rowNumber}:{$lastColumn}{$rowNumber}",
@@ -174,9 +182,26 @@ class GoogleSheetsService
 
     private function getValues(string $sheetId, string $range): array
     {
+        $cacheKey = $sheetId . '::' . $range;
+
+        if (array_key_exists($cacheKey, $this->valuesCache)) {
+            return $this->valuesCache[$cacheKey];
+        }
+
         $response = $this->service()->spreadsheets_values->get($sheetId, $range);
 
-        return $response->getValues() ?? [];
+        return $this->valuesCache[$cacheKey] = ($response->getValues() ?? []);
+    }
+
+    private function invalidateSheetCache(string $sheetId, string $sheetName): void
+    {
+        $prefix = $sheetId . '::' . $sheetName . '!';
+
+        foreach (array_keys($this->valuesCache) as $cacheKey) {
+            if (str_starts_with($cacheKey, $prefix)) {
+                unset($this->valuesCache[$cacheKey]);
+            }
+        }
     }
 
     private function recordToRow(array $record, array $headers): array
