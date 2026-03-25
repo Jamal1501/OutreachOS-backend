@@ -338,17 +338,35 @@ class SheetDataController extends Controller
 
         $result = $this->creatorMerge->mergeSelectedFromEnrichedSheet($sheetId, $sourceSheet, $sourceRowNumbers);
         $result['selectedQueueCount'] = count($selectedQueueRows);
+        $result['selectedQueueRowNumbers'] = $selectedQueueRowNumbers;
+        $result['matchedSourceRowNumbers'] = $sourceRowNumbers;
 
-        $this->mirror->syncCreators($sheetId);
+        $affectedRowNumbers = array_values(array_unique(array_filter(
+            array_map('intval', (array) ($result['affectedRowNumbers'] ?? [])),
+            fn (int $rowNumber) => $rowNumber > 1
+        )));
+
+        if ($affectedRowNumbers !== []) {
+            $this->mirror->syncCreators($sheetId, $affectedRowNumbers);
+        }
 
         if (($validated['createTasks'] ?? false) === true) {
-            try {
-                $result['taskGeneration'] = $this->taskQueue->generateInitialTasks($sheetId, [
-                    'limit' => $validated['taskLimit'] ?? 50,
-                ]);
-            } catch (\Throwable $e) {
-                report($e);
-                $result['taskGenerationError'] = $e->getMessage();
+            if ($affectedRowNumbers === []) {
+                $result['taskGeneration'] = [
+                    'created' => 0,
+                    'taskSheet' => 'Task_Queue',
+                    'sourceRowNumbers' => [],
+                ];
+            } else {
+                try {
+                    $result['taskGeneration'] = $this->taskQueue->generateInitialTasks($sheetId, [
+                        'limit' => $validated['taskLimit'] ?? 50,
+                        'rowNumbers' => $affectedRowNumbers,
+                    ]);
+                } catch (\Throwable $e) {
+                    report($e);
+                    $result['taskGenerationError'] = $e->getMessage();
+                }
             }
         }
 
