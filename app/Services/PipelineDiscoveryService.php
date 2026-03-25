@@ -563,6 +563,7 @@ class PipelineDiscoveryService
 
         return [
             'id' => (string) (Arr::get($item, 'id', $username ?: md5($profileUrl))),
+            'mergeRef' => 'instagram:source-url:' . rawurlencode(rtrim(strtolower($profileUrl), '/')),
             'platform' => 'instagram',
             'handle' => $this->normalizeHandle($username),
             'fullName' => $this->nullableString(Arr::get($item, 'fullName', Arr::get($item, 'ownerFullName'))),
@@ -605,6 +606,7 @@ class PipelineDiscoveryService
 
         return [
             'id' => (string) (Arr::get($item, 'id', $username ?: md5($profileUrl))),
+            'mergeRef' => 'instagram:source-url:' . rawurlencode(rtrim(strtolower($profileUrl), '/')),
             'platform' => 'tiktok',
             'handle' => $this->normalizeHandle($username),
             'fullName' => $this->nullableString(Arr::get($item, 'nickname', Arr::get($item, 'authorMeta.nickName'))),
