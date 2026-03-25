@@ -173,11 +173,24 @@ class OutreachLogService
             return null;
         }
 
-        return MessageTemplate::query()
+        $query = MessageTemplate::query()
             ->where('project_id', $projectId)
-            ->where(function ($query) use ($templateId) {
-                $query->where('angle_id', $templateId)->orWhere('id', $templateId);
-            })
-            ->first();
+            ->where('angle_id', $templateId);
+
+        if ($this->isUuid($templateId)) {
+            $query->orWhere(function ($nested) use ($projectId, $templateId) {
+                $nested->where('project_id', $projectId)->where('id', $templateId);
+            });
+        }
+
+        return $query->first();
     }
+    private function isUuid(string $value): bool
+    {
+        return (bool) preg_match(
+            '/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/',
+            trim($value)
+        );
+    }
+
 }
