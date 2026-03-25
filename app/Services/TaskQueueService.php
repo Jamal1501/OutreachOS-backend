@@ -224,12 +224,17 @@ class TaskQueueService
         if (array_key_exists('template_id', $payload) && $payload['template_id'] !== null) {
             $templateId = trim((string) $payload['template_id']);
             if ($templateId !== '') {
-                $template = MessageTemplate::query()
+                $templateQuery = MessageTemplate::query()
                     ->where('project_id', $project->id)
-                    ->where(function ($query) use ($templateId) {
-                        $query->where('angle_id', $templateId)->orWhere('id', $templateId);
-                    })
-                    ->first();
+                    ->where('angle_id', $templateId);
+
+                if ($this->isUuid($templateId)) {
+                    $templateQuery->orWhere(function ($query) use ($project, $templateId) {
+                        $query->where('project_id', $project->id)->where('id', $templateId);
+                    });
+                }
+
+                $template = $templateQuery->first();
                 $task->message_template_id = $template?->id;
             }
         }
@@ -911,4 +916,12 @@ class TaskQueueService
             default => 'LOW',
         };
     }
+    private function isUuid(string $value): bool
+    {
+        return (bool) preg_match(
+            '/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/',
+            trim($value)
+        );
+    }
+
 }
