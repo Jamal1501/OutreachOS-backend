@@ -1723,6 +1723,40 @@ public function operatorView(Request $request)
         ])));
     }
 
+
+    private function matchesDiscoverySearch(array $item, string $search): bool
+    {
+        return $this->matchesTextSearch($search, [
+            $item['authorHandle'] ?? '',
+            $item['authorUrl'] ?? '',
+            $item['caption'] ?? '',
+            $item['postUrl'] ?? '',
+            $item['platform'] ?? '',
+            data_get($item, 'raw.ownerFullName', ''),
+            data_get($item, 'raw.ownerUsername', ''),
+            data_get($item, 'raw.authorMeta.name', ''),
+            data_get($item, 'raw.authorMeta.nickName', ''),
+            implode(' ', (array) data_get($item, 'raw.hashtags', [])),
+        ]);
+    }
+
+    private function matchesTextSearch(string $needle, array $haystacks): bool
+    {
+        $needle = Str::lower(trim($needle));
+        if ($needle === '') {
+            return true;
+        }
+
+        foreach ($haystacks as $haystack) {
+            $text = Str::lower(trim((string) $haystack));
+            if ($text !== '' && str_contains($text, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function matchesDateRange(string $dateValue, string $from, string $to): bool
     {
         if ($from === '' && $to === '') {
