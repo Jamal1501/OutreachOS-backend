@@ -3,6 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Models\CreatorProfile;
+use App\Models\Task;
+use App\Models\OutreachEvent;
+use App\Models\DiscoveryItem;
 use App\Models\MessageTemplate;
 use App\Services\CreatorLifecycleService;
 use App\Services\CreatorMergeService;
@@ -675,6 +678,54 @@ public function operatorView(Request $request)
         ]);
 
         $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $project = $this->projects->findByWorkbookId($sheetId);
+
+        if ($project && CreatorProfile::query()->where('project_id', $project->id)->exists()) {
+            $today = now()->toDateString();
+            $metrics = [
+                'creatorsDiscovered' => DiscoveryItem::query()
+                    ->where('project_id', $project->id)
+                    ->distinct()
+                    ->count('creator_key'),
+                'creatorsEnriched' => CreatorProfile::query()->where('project_id', $project->id)->count(),
+                'readyForOutreach' => CreatorProfile::query()
+                    ->where('project_id', $project->id)
+                    ->where(function ($query) {
+                        $query->whereIn('lifecycle_state', ['approved_for_outreach', 'queued'])
+                            ->orWhere(function ($nested) {
+                                $nested->where('lifecycle_state', 'enriched')->where('value_score', '>=', 55);
+                            });
+                    })
+                    ->count(),
+                'tasksDueToday' => Task::query()
+                    ->where('project_id', $project->id)
+                    ->whereDate('due_at', $today)
+                    ->whereNotIn('status', ['DONE', 'COMPLETED', 'SKIPPED'])
+                    ->count(),
+                'outreachSent' => OutreachEvent::query()
+                    ->where('project_id', $project->id)
+                    ->where(function ($query) {
+                        $query->where('event_type', 'ILIKE', '%SENT%')
+                            ->orWhere('event_type', 'ILIKE', '%OUTREACH%');
+                    })
+                    ->count(),
+                'repliesReceived' => OutreachEvent::query()
+                    ->where('project_id', $project->id)
+                    ->where(function ($query) {
+                        $query->where('event_type', 'ILIKE', '%REPLY%')
+                            ->orWhere('event_type', 'ILIKE', '%ACCEPTED%')
+                            ->orWhere('event_type', 'ILIKE', '%DEAL_WON%');
+                    })
+                    ->count(),
+                'scrapeSpend' => 0,
+            ];
+
+            return response()->json([
+                'message' => 'Dashboard metrics fetched',
+                'metrics' => $metrics,
+            ]);
+        }
+
         $creatorRows = $this->sheets->getRows($sheetId, 'Creators_CRM');
         $creators = array_map(fn (array $row) => $this->normalizeCreatorRow($row), $creatorRows);
         $tasks = $this->sheets->getRows($sheetId, 'Task_Queue');
