@@ -26,8 +26,8 @@ class CreatorLifecycleService
 
     private const TRANSITIONS = [
         'discovered' => ['needs_review', 'enriched', 'duplicate_review_needed', 'approved_for_outreach', 'archived'],
-        'needs_review' => ['enriched', 'duplicate_review_needed', 'approved_for_outreach', 'archived'],
-        'enriched' => ['duplicate_review_needed', 'approved_for_outreach', 'archived'],
+        'needs_review' => ['enriched', 'duplicate_review_needed', 'approved_for_outreach', 'queued', 'contacted', 'archived'],
+        'enriched' => ['duplicate_review_needed', 'approved_for_outreach', 'queued', 'contacted', 'archived'],
         'duplicate_review_needed' => ['needs_review', 'approved_for_outreach', 'archived'],
         'approved_for_outreach' => ['queued', 'contacted', 'archived'],
         'queued' => ['contacted', 'archived'],
