@@ -21,6 +21,17 @@ class TaskQueueService
     {
         $limit = max(1, (int) ($options['limit'] ?? 50));
         $crmRows = $this->sheets->getRows($sheetId, 'Creators_CRM');
+        $targetRowNumbers = array_key_exists('rowNumbers', $options)
+            ? array_values(array_unique(array_filter(array_map('intval', (array) ($options['rowNumbers'] ?? [])), fn (int $rowNumber) => $rowNumber > 1)))
+            : null;
+        if (is_array($targetRowNumbers)) {
+            $rowLookup = array_fill_keys($targetRowNumbers, true);
+            $crmRows = array_values(array_filter(
+                $crmRows,
+                fn (array $creator) => isset($rowLookup[(int) ($creator['_row_number'] ?? 0)])
+            ));
+            usort($crmRows, fn (array $a, array $b) => ((int) ($a['_row_number'] ?? 0)) <=> ((int) ($b['_row_number'] ?? 0)));
+        }
         $taskHeaders = $this->sheets->getHeaders($sheetId, 'Task_Queue');
         $openTasks = $this->sheets->getRows($sheetId, 'Task_Queue');
         $messageLibrary = $this->sheets->getRows($sheetId, 'Message_Library');
@@ -101,6 +112,7 @@ class TaskQueueService
         return [
             'created' => $created,
             'taskSheet' => 'Task_Queue',
+            'sourceRowNumbers' => $targetRowNumbers,
         ];
     }
 
