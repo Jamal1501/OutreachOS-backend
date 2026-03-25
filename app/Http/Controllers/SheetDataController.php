@@ -373,24 +373,34 @@ class SheetDataController extends Controller
             array_map('intval', (array) ($result['affectedRowNumbers'] ?? [])),
             fn (int $rowNumber) => $rowNumber > 1
         )));
+        $affectedProfileIds = array_values(array_unique(array_filter(
+            array_map('strval', (array) ($result['affectedProfileIds'] ?? [])),
+            fn (string $profileId) => trim($profileId) !== ''
+        )));
 
-        if ($affectedRowNumbers !== []) {
+        if ($affectedProfileIds === [] && $affectedRowNumbers !== []) {
             $this->mirror->syncCreators($sheetId, $affectedRowNumbers);
         }
 
         if (($validated['createTasks'] ?? false) === true) {
-            if ($affectedRowNumbers === []) {
+            if ($affectedProfileIds === [] && $affectedRowNumbers === []) {
                 $result['taskGeneration'] = [
                     'created' => 0,
                     'taskSheet' => 'Task_Queue',
                     'sourceRowNumbers' => [],
+                    'sourceProfileIds' => [],
                 ];
             } else {
                 try {
-                    $result['taskGeneration'] = $this->taskQueue->generateInitialTasks($sheetId, [
+                    $taskOptions = [
                         'limit' => $validated['taskLimit'] ?? 50,
-                        'rowNumbers' => $affectedRowNumbers,
-                    ]);
+                    ];
+                    if ($affectedProfileIds !== []) {
+                        $taskOptions['profileIds'] = $affectedProfileIds;
+                    } else {
+                        $taskOptions['rowNumbers'] = $affectedRowNumbers;
+                    }
+                    $result['taskGeneration'] = $this->taskQueue->generateInitialTasks($sheetId, $taskOptions);
                 } catch (\Throwable $e) {
                     report($e);
                     $result['taskGenerationError'] = $e->getMessage();
