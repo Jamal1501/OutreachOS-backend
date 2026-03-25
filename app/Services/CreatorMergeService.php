@@ -64,6 +64,9 @@ class CreatorMergeService
         $created = 0;
         $skipped = 0;
         $unmatched = [];
+        $affectedRowNumbers = [];
+        $createdRowNumbers = [];
+        $updatedRowNumbers = [];
         $nextRowNumber = $maxRowNumber + 1;
 
         foreach ($sourceRows as $sourceRow) {
@@ -94,13 +97,18 @@ class CreatorMergeService
 
                 $crmIndex[$key] = array_merge($existing, $merged);
                 $updated++;
+                $affectedRowNumbers[] = $rowNumber;
+                $updatedRowNumbers[] = $rowNumber;
                 continue;
             }
 
-            $record = $this->applyCreatorDerivedFields($creator, $nextRowNumber, $sourceRow);
+            $rowNumber = $nextRowNumber;
+            $record = $this->applyCreatorDerivedFields($creator, $rowNumber, $sourceRow);
             $newRecords[] = $record;
-            $crmIndex[$key] = array_merge($record, ['_row_number' => $nextRowNumber]);
+            $crmIndex[$key] = array_merge($record, ['_row_number' => $rowNumber]);
             $created++;
+            $affectedRowNumbers[] = $rowNumber;
+            $createdRowNumbers[] = $rowNumber;
             $nextRowNumber++;
         }
 
@@ -116,12 +124,22 @@ class CreatorMergeService
             $this->sheets->appendAssocRows($sheetId, 'Merge_Unmatched', $unmatched);
         }
 
+        $affectedRowNumbers = array_values(array_unique(array_filter(array_map('intval', $affectedRowNumbers), fn (int $rowNumber) => $rowNumber > 1)));
+        sort($affectedRowNumbers);
+        $createdRowNumbers = array_values(array_unique(array_filter(array_map('intval', $createdRowNumbers), fn (int $rowNumber) => $rowNumber > 1)));
+        sort($createdRowNumbers);
+        $updatedRowNumbers = array_values(array_unique(array_filter(array_map('intval', $updatedRowNumbers), fn (int $rowNumber) => $rowNumber > 1)));
+        sort($updatedRowNumbers);
+
         return [
             'sourceSheet' => $sourceSheet,
             'processed' => count($sourceRows),
             'created' => $created,
             'updated' => $updated,
             'skipped' => $skipped,
+            'affectedRowNumbers' => $affectedRowNumbers,
+            'createdRowNumbers' => $createdRowNumbers,
+            'updatedRowNumbers' => $updatedRowNumbers,
         ];
     }
 
