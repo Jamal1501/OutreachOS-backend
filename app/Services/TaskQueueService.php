@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use App\Models\CreatorProfile;
+use App\Models\MessageTemplate;
 use App\Models\Task;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -19,6 +21,13 @@ class TaskQueueService
 
     public function generateInitialTasks(string $sheetId, array $options = []): array
     {
+        if ($this->mirror->enabled()) {
+            $dbResult = $this->generateInitialTasksFromDatabase($sheetId, $options);
+            if ($dbResult !== null) {
+                return $dbResult;
+            }
+        }
+
         $limit = max(1, (int) ($options['limit'] ?? 50));
         $crmRows = $this->sheets->getRows($sheetId, 'Creators_CRM');
         $targetRowNumbers = array_key_exists('rowNumbers', $options)
@@ -113,6 +122,7 @@ class TaskQueueService
             'created' => $created,
             'taskSheet' => 'Task_Queue',
             'sourceRowNumbers' => $targetRowNumbers,
+            'source' => 'google_sheets',
         ];
     }
 
@@ -387,41 +397,11 @@ class TaskQueueService
 
     public function listTasks(string $sheetId): array
     {
-        if ($this->mirror->shouldUseDatabaseReads()) {
-            $project = $this->projects->resolveByWorkbookId($sheetId);
-
-            return Task::query()
-                ->where('project_id', $project->id)
-                ->orderByDesc('created_at')
-                ->get()
-                ->map(fn (Task $task) => [
-                    'taskId' => (string) ($task->external_task_key ?: $task->id),
-                    'taskType' => (string) $task->task_type,
-                    'platform' => strtolower((string) ($task->platform ?: 'instagram')),
-                    'handle' => (string) ($task->handle ?: ''),
-                    'profileUrl' => (string) ($task->open_url ?: ''),
-                    'dmUrl' => (string) ($task->open_url ?: ''),
-                    'status' => match (strtoupper((string) ($task->status ?: 'PENDING'))) {
-                        'DONE', 'COMPLETED' => 'completed',
-                        'SKIPPED' => 'skipped',
-                        'IN_PROGRESS' => 'in_progress',
-                        'SNOOZED' => 'snoozed',
-                        default => 'pending',
-                    },
-                    'priority' => match (strtoupper((string) ($task->priority ?: 'LOW'))) {
-                        'URGENT' => 'urgent',
-                        'HIGH' => 'high',
-                        'MEDIUM' => 'medium',
-                        default => 'low',
-                    },
-                    'dueDate' => optional($task->due_at)?->toDateTimeString() ?? '',
-                    'createdAt' => optional($task->created_at)?->toDateTimeString() ?? '',
-                    'completedAt' => optional($task->completed_at)?->toDateTimeString() ?? '',
-                    'messageText' => (string) ($task->message_draft ?: ''),
-                    'notes' => (string) ($task->notes ?: ''),
-                ])
-                ->values()
-                ->all();
+        if ($this->mirror->enabled()) {
+            $dbTasks = $this->listTasksFromDatabase($sheetId);
+            if ($dbTasks !== null) {
+                return $dbTasks;
+            }
         }
 
         $rows = $this->sheets->getRows($sheetId, 'Task_Queue');
@@ -461,5 +441,273 @@ class TaskQueueService
                 'notes' => (string) ($row['Notes'] ?? ''),
             ];
         }, $rows);
+    }
+
+    private function generateInitialTasksFromDatabase(string $sheetId, array $options = []): ?array
+    {
+        $project = $this->projects->findByWorkbookId($sheetId);
+        if (!$project) {
+            return null;
+        }
+
+        $limit = max(1, (int) ($options['limit'] ?? 50));
+        $targetRowNumbers = array_key_exists('rowNumbers', $options)
+            ? array_values(array_unique(array_filter(array_map('intval', (array) ($options['rowNumbers'] ?? [])), fn (int $rowNumber) => $rowNumber > 1)))
+            : null;
+
+        $profilesQuery = CreatorProfile::query()
+            ->with('creator')
+            ->where('project_id', $project->id)
+            ->orderBy('created_at');
+
+        if (is_array($targetRowNumbers)) {
+            $profilesQuery->where(function ($query) use ($targetRowNumbers) {
+                foreach ($targetRowNumbers as $rowNumber) {
+                    $query->orWhere('source_reference', 'Creators_CRM:' . $rowNumber)
+                        ->orWhere('source_metadata->sheet_row_number', $rowNumber);
+                }
+            });
+        }
+
+        $profiles = $profilesQuery->get();
+        if ($profiles->isEmpty()) {
+            return null;
+        }
+
+        $openTaskKeys = Task::query()
+            ->where('project_id', $project->id)
+            ->whereNotIn('status', ['DONE', 'COMPLETED', 'SKIPPED'])
+            ->get(['platform', 'handle', 'task_type'])
+            ->map(fn (Task $task) => $this->taskUniqKey((string) $task->platform, (string) $task->handle, (string) $task->task_type))
+            ->flip()
+            ->all();
+
+        $templates = MessageTemplate::query()->where('project_id', $project->id)->get()->all();
+        $taskHeaders = $this->sheets->getHeaders($sheetId, 'Task_Queue');
+        $recordsToAppend = [];
+        $createdTaskIds = [];
+        $logEvents = [];
+        $created = 0;
+
+        foreach ($profiles as $profile) {
+            if ($created >= $limit) {
+                break;
+            }
+
+            $taskType = $this->determineInitialTaskTypeFromProfile($profile);
+            if ($taskType === null) {
+                continue;
+            }
+
+            $taskKey = $this->taskUniqKey((string) $profile->platform, (string) $profile->handle, $taskType);
+            if (isset($openTaskKeys[$taskKey])) {
+                continue;
+            }
+
+            $template = $this->pickTemplateFromDatabase($templates, (string) $profile->platform, $taskType);
+            $taskId = (string) Str::uuid();
+            $messageDraft = $this->buildMessageDraftFromProfile($template, $profile, $taskType);
+            $priority = $this->priorityFromProfile($profile);
+            $openUrl = (string) ($profile->dm_link ?: $profile->profile_url ?: '');
+
+            Task::create([
+                'project_id' => $project->id,
+                'creator_profile_id' => $profile->id,
+                'message_template_id' => $template?->id,
+                'external_task_key' => $taskId,
+                'platform' => strtolower((string) $profile->platform),
+                'handle' => (string) $profile->handle,
+                'task_type' => $taskType,
+                'priority' => $priority,
+                'status' => 'PENDING',
+                'due_at' => now(),
+                'open_url' => $openUrl,
+                'message_draft' => $messageDraft,
+                'source_provider' => 'database',
+                'source_reference' => 'creator_profile:' . $profile->id,
+                'notes' => 'Auto-generated from creator_profiles',
+                'metadata' => [
+                    'creator_profile_id' => $profile->id,
+                    'source_sheet_row_number' => $profile->source_metadata['sheet_row_number'] ?? null,
+                ],
+            ]);
+
+            $recordsToAppend[] = [
+                'Task_ID' => $taskId,
+                'Platform' => strtolower((string) $profile->platform),
+                'Handle' => (string) $profile->handle,
+                'Task_Type' => $taskType,
+                'Priority' => $priority,
+                'Status' => 'PENDING',
+                'Due_At' => now()->toDateTimeString(),
+                'Open_URL' => $openUrl,
+                'Message_Draft' => $messageDraft,
+                'Template_ID' => (string) ($template?->angle_id ?: ''),
+                'Created_At' => now()->toDateTimeString(),
+                'Completed_At' => '',
+                'Notes' => 'Auto-generated from creator_profiles',
+            ];
+            $logEvents[] = [
+                'Platform' => strtolower((string) $profile->platform),
+                'Handle' => (string) $profile->handle,
+                'Channel' => $this->channelFromTaskType($taskType, [
+                    'Platform' => strtolower((string) $profile->platform),
+                    'Preferred_Channel' => (string) ($profile->preferred_channel ?: ''),
+                ]),
+                'Event_Type' => 'TASK_CREATED',
+                'Template_ID' => (string) ($template?->angle_id ?: ''),
+                'Status' => 'PENDING',
+                'URL' => $openUrl,
+                'Notes' => $taskType,
+            ];
+            $openTaskKeys[$taskKey] = true;
+            $createdTaskIds[] = $taskId;
+            $created++;
+        }
+
+        if ($recordsToAppend !== []) {
+            $this->sheets->appendAssocRows($sheetId, 'Task_Queue', $recordsToAppend, $taskHeaders);
+            $this->mirror->syncTasks($sheetId, $createdTaskIds);
+        }
+
+        if ($logEvents !== []) {
+            $this->outreachLog->appendEvents($sheetId, $logEvents);
+        }
+
+        return [
+            'created' => $created,
+            'taskSheet' => 'Task_Queue',
+            'sourceRowNumbers' => $targetRowNumbers,
+            'source' => 'database',
+        ];
+    }
+
+    private function listTasksFromDatabase(string $sheetId): ?array
+    {
+        $project = $this->projects->findByWorkbookId($sheetId);
+        if (!$project) {
+            return null;
+        }
+
+        $tasks = Task::query()->where('project_id', $project->id)->orderByDesc('created_at')->get();
+        if ($tasks->isEmpty()) {
+            return null;
+        }
+
+        return $tasks->map(fn (Task $task) => [
+            'taskId' => (string) ($task->external_task_key ?: $task->id),
+            'taskType' => (string) $task->task_type,
+            'platform' => strtolower((string) ($task->platform ?: 'instagram')),
+            'handle' => (string) ($task->handle ?: ''),
+            'profileUrl' => (string) ($task->open_url ?: ''),
+            'dmUrl' => (string) ($task->open_url ?: ''),
+            'status' => match (strtoupper((string) ($task->status ?: 'PENDING'))) {
+                'DONE', 'COMPLETED' => 'completed',
+                'SKIPPED' => 'skipped',
+                'IN_PROGRESS' => 'in_progress',
+                'SNOOZED' => 'snoozed',
+                default => 'pending',
+            },
+            'priority' => match (strtoupper((string) ($task->priority ?: 'LOW'))) {
+                'URGENT' => 'urgent',
+                'HIGH' => 'high',
+                'MEDIUM' => 'medium',
+                default => 'low',
+            },
+            'dueDate' => optional($task->due_at)?->toDateTimeString() ?? '',
+            'createdAt' => optional($task->created_at)?->toDateTimeString() ?? '',
+            'completedAt' => optional($task->completed_at)?->toDateTimeString() ?? '',
+            'messageText' => (string) ($task->message_draft ?: ''),
+            'notes' => (string) ($task->notes ?: ''),
+        ])->values()->all();
+    }
+
+    private function determineInitialTaskTypeFromProfile(CreatorProfile $profile): ?string
+    {
+        $status = strtoupper(trim((string) ($profile->status ?: '')));
+        $accepted = (bool) $profile->accepted_flag;
+        $preferredChannel = strtoupper(trim((string) ($profile->preferred_channel ?: 'DM')));
+        $hasEmail = filled(optional($profile->creator)->primary_email);
+        $dmSent = $profile->dm_sent_at !== null;
+        $responseDate = $profile->responded_at !== null;
+        $followUpNeeded = (bool) $profile->follow_up_needed;
+
+        if ($accepted && !$dmSent) {
+            return 'DM_INVITE';
+        }
+        if ($dmSent && !$responseDate && $followUpNeeded) {
+            return 'DM_FOLLOWUP';
+        }
+        if (in_array($status, ['', 'NEW', 'ENRICHED', 'DISCOVERED'], true)) {
+            if ($preferredChannel === 'EMAIL' && $hasEmail) {
+                return 'EMAIL_SEND';
+            }
+            return 'FOLLOW_REQUEST';
+        }
+
+        return null;
+    }
+
+    private function pickTemplateFromDatabase(array $templates, string $platform, string $taskType): ?MessageTemplate
+    {
+        if ($templates === []) {
+            return null;
+        }
+
+        $targetPlatform = $taskType === 'EMAIL_SEND' ? 'email' : strtolower(trim($platform));
+        $targetStage = match ($taskType) {
+            'DM_FOLLOWUP' => 'follow_up',
+            'CONFIRM_ACCEPTED' => 'after_accept',
+            default => 'cold_invite',
+        };
+
+        usort($templates, function (MessageTemplate $a, MessageTemplate $b) use ($targetPlatform, $targetStage, $platform, $taskType) {
+            $scoreTemplate = function (MessageTemplate $template) use ($targetPlatform, $targetStage, $platform, $taskType) {
+                $score = 0;
+                $templatePlatform = strtolower(trim((string) ($template->platform ?: '')));
+                $templateStage = strtolower(trim((string) ($template->stage ?: 'cold_invite')));
+                if ($templatePlatform === $targetPlatform) {
+                    $score += 4;
+                } elseif ($targetPlatform !== 'email' && $templatePlatform === strtolower(trim($platform))) {
+                    $score += 2;
+                }
+                if ($templateStage === $targetStage) {
+                    $score += 3;
+                }
+                if ($taskType === 'FOLLOW_REQUEST' && $templateStage === 'cold_invite') {
+                    $score += 1;
+                }
+                return $score;
+            };
+
+            return $scoreTemplate($b) <=> $scoreTemplate($a);
+        });
+
+        return $templates[0] ?? null;
+    }
+
+    private function buildMessageDraftFromProfile(?MessageTemplate $template, CreatorProfile $profile, string $taskType): string
+    {
+        $defaultBase = match ($taskType) {
+            'EMAIL_SEND' => 'Hey {{name}}, I think your content could be a strong fit for a partnership.',
+            'DM_FOLLOWUP' => 'Hey {{handle}}, just following up in case you missed my last message.',
+            default => 'Hey {{handle}}, loved your content.',
+        };
+
+        $base = (string) ($template?->copy ?: $defaultBase);
+        $handle = ltrim((string) ($profile->handle ?: ''), '@');
+        $name = (string) (optional($profile->creator)->display_name ?: 'there');
+
+        return str_replace(['{{handle}}', '{{name}}'], [$handle, $name], $base);
+    }
+
+    private function priorityFromProfile(CreatorProfile $profile): string
+    {
+        $score = (float) ($profile->value_score ?? 0);
+        return match ($this->scoring->tier($score)) {
+            'HIGH' => 'HIGH',
+            'MEDIUM' => 'MEDIUM',
+            default => 'LOW',
+        };
     }
 }
