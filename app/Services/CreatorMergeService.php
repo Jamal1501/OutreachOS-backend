@@ -2,6 +2,10 @@
 
 namespace App\Services;
 
+use App\Models\Creator;
+use App\Models\CreatorProfile;
+use App\Models\Project;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -15,6 +19,7 @@ class CreatorMergeService
     public function __construct(
         private GoogleSheetsService $sheets,
         private InfluencerScoringService $scoring,
+        private ProjectResolverService $projects,
     ) {
     }
 
@@ -46,6 +51,15 @@ class CreatorMergeService
     }
 
     private function mergeSourceRows(string $sheetId, string $sourceSheet, array $sourceRows): array
+    {
+        if ($this->shouldUseDatabaseFirstMerge()) {
+            return $this->mergeSourceRowsDatabaseFirst($sheetId, $sourceSheet, $sourceRows);
+        }
+
+        return $this->mergeSourceRowsLegacy($sheetId, $sourceSheet, $sourceRows);
+    }
+
+    private function mergeSourceRowsLegacy(string $sheetId, string $sourceSheet, array $sourceRows): array
     {
         $crmHeaders = $this->sheets->getHeaders($sheetId, 'Creators_CRM');
         $crmRows = $this->sheets->getRows($sheetId, 'Creators_CRM');
@@ -141,6 +155,356 @@ class CreatorMergeService
             'createdRowNumbers' => $createdRowNumbers,
             'updatedRowNumbers' => $updatedRowNumbers,
         ];
+    }
+
+    private function mergeSourceRowsDatabaseFirst(string $sheetId, string $sourceSheet, array $sourceRows): array
+    {
+        $project = $this->projects->resolveByWorkbookId($sheetId);
+
+        $result = DB::transaction(function () use ($project, $sourceSheet, $sourceRows) {
+            $created = 0;
+            $updated = 0;
+            $skipped = 0;
+            $affectedProfileIds = [];
+            $affectedProfiles = [];
+
+            foreach ($sourceRows as $sourceRow) {
+                $creatorRecord = $this->sourceRowToCreatorRecord($sourceSheet, $sourceRow);
+                $handle = $this->normalizeHandle((string) ($creatorRecord['Handle'] ?? ''));
+                $platform = strtolower(trim((string) ($creatorRecord['Platform'] ?? '')));
+
+                if ($platform === '' || $handle === '') {
+                    $skipped++;
+                    continue;
+                }
+
+                $profileUrl = trim((string) ($creatorRecord['DM_Link'] ?? ''));
+                $profile = CreatorProfile::query()
+                    ->where('project_id', $project->id)
+                    ->where('platform', $platform)
+                    ->where(function ($query) use ($handle, $profileUrl) {
+                        $query->where('handle', $handle);
+                        if ($profileUrl !== '') {
+                            $query->orWhere('profile_url', $profileUrl)
+                                ->orWhere('dm_link', $profileUrl);
+                        }
+                    })
+                    ->first();
+
+                $isNewProfile = !$profile;
+                $creator = $this->resolveDatabaseCreator($project, $creatorRecord, $sourceRow, $profile);
+
+                if (!$profile) {
+                    $profile = new CreatorProfile();
+                    $profile->project_id = $project->id;
+                    $profile->platform = $platform;
+                    $profile->handle = $handle;
+                }
+
+                $this->fillDatabaseProfile($profile, $creator, $creatorRecord, $sourceRow);
+                $profile->save();
+
+                $affectedProfileIds[] = $profile->id;
+                $affectedProfiles[] = [
+                    'profile_id' => $profile->id,
+                    'creator_id' => $creator->id,
+                    'creator_record' => $creatorRecord,
+                    'source_row' => $sourceRow,
+                ];
+
+                if ($isNewProfile) {
+                    $created++;
+                } else {
+                    $updated++;
+                }
+            }
+
+            return [
+                'sourceSheet' => $sourceSheet,
+                'processed' => count($sourceRows),
+                'created' => $created,
+                'updated' => $updated,
+                'skipped' => $skipped,
+                'affectedProfileIds' => array_values(array_unique($affectedProfileIds)),
+                'affectedProfiles' => $affectedProfiles,
+            ];
+        });
+
+        $sheetSync = $this->syncMergedProfilesToCrmSheet($sheetId, $project, $result['affectedProfiles']);
+
+        return [
+            'sourceSheet' => $sourceSheet,
+            'processed' => $result['processed'],
+            'created' => $result['created'],
+            'updated' => $result['updated'],
+            'skipped' => $result['skipped'],
+            'affectedProfileIds' => $result['affectedProfileIds'],
+            'affectedRowNumbers' => $sheetSync['affectedRowNumbers'],
+            'createdRowNumbers' => $sheetSync['createdRowNumbers'],
+            'updatedRowNumbers' => $sheetSync['updatedRowNumbers'],
+            'dbFirst' => true,
+            'sheetSync' => $sheetSync,
+        ];
+    }
+
+    private function shouldUseDatabaseFirstMerge(): bool
+    {
+        return config('outreach.operational_db.mode', 'dual') !== 'off';
+    }
+
+    private function resolveDatabaseCreator(Project $project, array $creatorRecord, array $sourceRow, ?CreatorProfile $existingProfile): Creator
+    {
+        $identityKey = $this->databaseCreatorIdentityKey($creatorRecord, $sourceRow);
+        $creator = null;
+
+        if ($existingProfile?->creator_id) {
+            $creator = Creator::query()->find($existingProfile->creator_id);
+        }
+
+        if (!$creator) {
+            $creator = Creator::query()
+                ->where('project_id', $project->id)
+                ->where('external_identity_key', $identityKey)
+                ->first();
+        }
+
+        $email = trim((string) ($creatorRecord['Contact_Email'] ?? ''));
+        if (!$creator && $email !== '') {
+            $creator = Creator::query()
+                ->where('project_id', $project->id)
+                ->where('primary_email', $email)
+                ->first();
+        }
+
+        if (!$creator) {
+            $creator = new Creator();
+            $creator->project_id = $project->id;
+            $creator->external_identity_key = $identityKey;
+        }
+
+        $incomingNotes = trim((string) ($creatorRecord['Notes'] ?? ''));
+        $creator->display_name = trim((string) ($creatorRecord['Name'] ?? '')) !== ''
+            ? trim((string) ($creatorRecord['Name'] ?? ''))
+            : ($creator->display_name ?: ltrim((string) ($creatorRecord['Handle'] ?? ''), '@'));
+        $creator->primary_email = $email !== '' ? $email : $creator->primary_email;
+        $creator->country = trim((string) ($creatorRecord['Country'] ?? '')) ?: $creator->country;
+        $creator->city = trim((string) ($creatorRecord['City'] ?? '')) ?: $creator->city;
+        $creator->primary_language = trim((string) ($creatorRecord['Primary_Language'] ?? '')) ?: $creator->primary_language;
+        $creator->niche_category = trim((string) ($creatorRecord['Niche_Category'] ?? '')) ?: $creator->niche_category;
+        $creator->notes = $this->appendNote((string) ($creator->notes ?? ''), $incomingNotes);
+        $metadata = is_array($creator->metadata) ? $creator->metadata : [];
+        $metadata['last_merged_from'] = ($sourceRow['_row_number'] ?? null) ? 'enriched:' . (int) $sourceRow['_row_number'] : 'enriched';
+        $metadata['last_merged_at'] = now()->toDateTimeString();
+        $creator->metadata = $metadata;
+        $creator->save();
+
+        return $creator;
+    }
+
+    private function fillDatabaseProfile(CreatorProfile $profile, Creator $creator, array $creatorRecord, array $sourceRow): void
+    {
+        $existingStatus = strtoupper(trim((string) ($profile->status ?? '')));
+        $incomingStatus = trim((string) ($creatorRecord['Status'] ?? 'NEW')) ?: 'NEW';
+        $profile->creator_id = $creator->id;
+        $profile->username = ltrim($this->normalizeHandle((string) ($creatorRecord['Handle'] ?? '')), '@');
+        $profile->profile_url = trim((string) ($creatorRecord['DM_Link'] ?? '')) ?: ($profile->profile_url ?: null);
+        $profile->dm_link = trim((string) ($creatorRecord['DM_Link'] ?? '')) ?: ($profile->dm_link ?: null);
+        $profile->status = $existingStatus !== '' && !in_array($existingStatus, ['NEW', 'DISCOVERED', 'ENRICHED'], true)
+            ? $profile->status
+            : $incomingStatus;
+        $profile->lifecycle_state = strtolower(str_replace(' ', '_', trim((string) ($profile->status ?: $incomingStatus))));
+        $profile->followers_count = is_numeric((string) ($creatorRecord['Followers'] ?? '')) ? (int) round((float) $creatorRecord['Followers']) : $profile->followers_count;
+        $profile->engagement_rate_pct = is_numeric((string) ($creatorRecord['Engagement_Rate_%'] ?? '')) ? (float) $creatorRecord['Engagement_Rate_%'] : $profile->engagement_rate_pct;
+        $profile->preferred_channel = trim((string) ($creatorRecord['Preferred_Channel'] ?? '')) ?: ($profile->preferred_channel ?: null);
+        $profile->value_score = (int) round($this->scoring->score($creatorRecord, $sourceRow));
+        $profile->value_bar = $this->scoring->bar((float) $profile->value_score);
+        $profile->duplicate_flag = $profile->duplicate_flag ?: null;
+        $profile->source_provider = 'database';
+        $profile->source_reference = $profile->source_reference ?: ('creator_profile:' . ($profile->id ?: 'pending'));
+        $metadata = is_array($profile->source_metadata) ? $profile->source_metadata : [];
+        $metadata['merged_from_source_sheet'] = $sourceRow['_row_number'] ?? null;
+        $metadata['merged_from_platform'] = strtolower(trim((string) ($creatorRecord['Platform'] ?? '')));
+        $metadata['commission_model'] = trim((string) ($creatorRecord['Commission_Model'] ?? '')) ?: ($metadata['commission_model'] ?? null);
+        $metadata['reaction_video_link'] = trim((string) ($creatorRecord['Reaction_Video_Link'] ?? '')) ?: ($metadata['reaction_video_link'] ?? null);
+        $profile->source_metadata = $metadata;
+        $profile->last_synced_at = now();
+    }
+
+    private function syncMergedProfilesToCrmSheet(string $sheetId, Project $project, array $affectedProfiles): array
+    {
+        if ($affectedProfiles === []) {
+            return [
+                'updated' => 0,
+                'appended' => 0,
+                'affectedRowNumbers' => [],
+                'createdRowNumbers' => [],
+                'updatedRowNumbers' => [],
+                'warnings' => [],
+            ];
+        }
+
+        try {
+            $crmHeaders = $this->sheets->getHeaders($sheetId, 'Creators_CRM');
+            $crmRows = $this->sheets->getRows($sheetId, 'Creators_CRM');
+            $crmByKey = [];
+            $maxRowNumber = 1;
+            foreach ($crmRows as $row) {
+                $crmByKey[$this->crmKey((string) ($row['Platform'] ?? ''), (string) ($row['Handle'] ?? ''))] = $row;
+                $maxRowNumber = max($maxRowNumber, (int) ($row['_row_number'] ?? 1));
+            }
+
+            $updates = [];
+            $newRecords = [];
+            $newProfileIds = [];
+            $affectedRowNumbers = [];
+            $createdRowNumbers = [];
+            $updatedRowNumbers = [];
+            $nextRowNumber = $maxRowNumber + 1;
+
+            foreach ($affectedProfiles as $item) {
+                $profile = CreatorProfile::query()->with('creator')->find($item['profile_id']);
+                if (!$profile || !$profile->creator) {
+                    continue;
+                }
+
+                $existingRowNumber = $this->extractSheetRowNumber($profile);
+                if ($existingRowNumber <= 1) {
+                    $existing = $crmByKey[$this->crmKey($this->displayPlatform((string) $profile->platform), (string) $profile->handle)] ?? null;
+                    $existingRowNumber = (int) ($existing['_row_number'] ?? 0);
+                }
+
+                $rowNumber = $existingRowNumber > 1 ? $existingRowNumber : $nextRowNumber;
+                $record = $this->databaseProfileToCrmRecord($profile, $item['creator_record'], $item['source_row'], $rowNumber);
+
+                if ($existingRowNumber > 1) {
+                    $updates[] = ['rowNumber' => $rowNumber, 'record' => $record];
+                    $updatedRowNumbers[] = $rowNumber;
+                } else {
+                    $newRecords[] = $record;
+                    $newProfileIds[] = $profile->id;
+                    $createdRowNumbers[] = $rowNumber;
+                    $nextRowNumber++;
+                }
+
+                $affectedRowNumbers[] = $rowNumber;
+            }
+
+            if ($updates !== []) {
+                $this->sheets->batchUpdateAssocRows($sheetId, 'Creators_CRM', $updates, $crmHeaders);
+            }
+            if ($newRecords !== []) {
+                $this->sheets->appendAssocRows($sheetId, 'Creators_CRM', $newRecords, $crmHeaders);
+            }
+
+            $assignedRows = array_merge($updatedRowNumbers, $createdRowNumbers);
+            $assignedProfileIds = array_merge(array_map(fn ($u) => null, $updatedRowNumbers), $newProfileIds);
+            if ($newProfileIds !== []) {
+                foreach (array_values($newProfileIds) as $idx => $profileId) {
+                    $rowNumber = $createdRowNumbers[$idx] ?? null;
+                    if (!$rowNumber) {
+                        continue;
+                    }
+                    $profile = CreatorProfile::query()->find($profileId);
+                    if (!$profile) {
+                        continue;
+                    }
+                    $metadata = is_array($profile->source_metadata) ? $profile->source_metadata : [];
+                    $metadata['sheet_row_number'] = $rowNumber;
+                    $metadata['last_sheet_sync_at'] = now()->toDateTimeString();
+                    $profile->source_provider = 'database';
+                    $profile->source_reference = 'Creators_CRM:' . $rowNumber;
+                    $profile->source_metadata = $metadata;
+                    $profile->last_synced_at = now();
+                    $profile->save();
+                }
+            }
+
+            return [
+                'updated' => count($updates),
+                'appended' => count($newRecords),
+                'affectedRowNumbers' => array_values(array_unique(array_filter(array_map('intval', $affectedRowNumbers), fn (int $row) => $row > 1))),
+                'createdRowNumbers' => array_values(array_unique(array_filter(array_map('intval', $createdRowNumbers), fn (int $row) => $row > 1))),
+                'updatedRowNumbers' => array_values(array_unique(array_filter(array_map('intval', $updatedRowNumbers), fn (int $row) => $row > 1))),
+                'warnings' => [],
+            ];
+        } catch (\Throwable $e) {
+            report($e);
+            return [
+                'updated' => 0,
+                'appended' => 0,
+                'affectedRowNumbers' => [],
+                'createdRowNumbers' => [],
+                'updatedRowNumbers' => [],
+                'warnings' => [$e->getMessage()],
+            ];
+        }
+    }
+
+    private function extractSheetRowNumber(CreatorProfile $profile): int
+    {
+        if (preg_match('/Creators_CRM:(\d+)/', (string) ($profile->source_reference ?? ''), $m)) {
+            return (int) $m[1];
+        }
+
+        return (int) (($profile->source_metadata['sheet_row_number'] ?? 0));
+    }
+
+    private function databaseProfileToCrmRecord(CreatorProfile $profile, array $creatorRecord, ?array $sourceRow, int $rowNumber): array
+    {
+        $creator = $profile->creator;
+        $record = [
+            'Platform' => $this->displayPlatform((string) $profile->platform),
+            'Handle' => (string) $profile->handle,
+            'Name' => (string) ($creator?->display_name ?: ($creatorRecord['Name'] ?? '')),
+            'Followers' => $profile->followers_count ?? '',
+            'Engagement_Rate_%' => $profile->engagement_rate_pct ?? '',
+            'Country' => (string) ($creator?->country ?: ($creatorRecord['Country'] ?? '')),
+            'City' => (string) ($creator?->city ?: ($creatorRecord['City'] ?? '')),
+            'Primary_Language' => (string) ($creator?->primary_language ?: ($creatorRecord['Primary_Language'] ?? '')),
+            'Niche_Category' => (string) ($creator?->niche_category ?: ($creatorRecord['Niche_Category'] ?? '')),
+            'Angle_Assigned' => (string) (($profile->source_metadata['angle_assigned'] ?? '') ?: ($creatorRecord['Angle_Assigned'] ?? '')),
+            'Contact_Email' => (string) ($creator?->primary_email ?: ($creatorRecord['Contact_Email'] ?? '')),
+            'DM_Link' => (string) ($profile->dm_link ?: $profile->profile_url ?: ($creatorRecord['DM_Link'] ?? '')),
+            'Status' => (string) ($profile->status ?: ($creatorRecord['Status'] ?? 'NEW')),
+            'DM_Sent_Date' => optional($profile->dm_sent_at)?->toDateTimeString() ?? '',
+            'Response_Date' => optional($profile->responded_at)?->toDateTimeString() ?? '',
+            'Accepted_(Y/N)' => $profile->accepted_flag ? 'Y' : 'N',
+            'Commission_Model' => (string) (($profile->source_metadata['commission_model'] ?? '') ?: ($creatorRecord['Commission_Model'] ?? '')),
+            'Unique_Tracking_Code' => (string) (($profile->source_metadata['unique_tracking_code'] ?? '') ?: ($creatorRecord['Unique_Tracking_Code'] ?? '')),
+            'Reaction_Video_Link' => (string) (($profile->source_metadata['reaction_video_link'] ?? '') ?: ($creatorRecord['Reaction_Video_Link'] ?? '')),
+            'PDF_Sales' => (string) (($profile->source_metadata['pdf_sales'] ?? '') ?: ($creatorRecord['PDF_Sales'] ?? 0)),
+            'Product_Sales' => (string) (($profile->source_metadata['product_sales'] ?? '') ?: ($creatorRecord['Product_Sales'] ?? 0)),
+            'Total_Revenue' => (string) (($profile->source_metadata['total_revenue'] ?? '') ?: ($creatorRecord['Total_Revenue'] ?? 0)),
+            'Follow_Up_Needed_(Y/N)' => $profile->follow_up_needed ? 'Y' : 'N',
+            'Notes' => (string) ($creator?->notes ?: ($creatorRecord['Notes'] ?? '')),
+        ];
+
+        return $this->applyCreatorDerivedFields($record, $rowNumber, $sourceRow);
+    }
+
+    private function displayPlatform(string $platform): string
+    {
+        return strtolower($platform) === 'instagram' ? 'Instagram' : (strtolower($platform) === 'tiktok' ? 'TikTok' : ucfirst($platform));
+    }
+
+    private function databaseCreatorIdentityKey(array $creatorRecord, array $sourceRow): string
+    {
+        $email = strtolower(trim((string) ($creatorRecord['Contact_Email'] ?? '')));
+        if ($email !== '') {
+            return 'email:' . $email;
+        }
+
+        $name = strtolower(trim((string) ($creatorRecord['Name'] ?? '')));
+        if ($name !== '') {
+            return 'name:' . $name;
+        }
+
+        $externalId = strtolower(trim((string) ($sourceRow['id'] ?? '')));
+        if ($externalId !== '') {
+            return 'source:' . $externalId;
+        }
+
+        return 'profile:' . strtolower(trim((string) ($creatorRecord['Platform'] ?? ''))) . '|' . strtolower($this->normalizeHandle((string) ($creatorRecord['Handle'] ?? '')));
     }
 
     private function sourceRowToCreatorRecord(string $sourceSheet, array $sourceRow): array
