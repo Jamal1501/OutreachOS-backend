@@ -339,13 +339,18 @@ class SheetDataController extends Controller
         $result = $this->creatorMerge->mergeSelectedFromEnrichedSheet($sheetId, $sourceSheet, $sourceRowNumbers);
         $result['selectedQueueCount'] = count($selectedQueueRows);
 
-        if (($validated['createTasks'] ?? false) === true) {
-            $result['taskGeneration'] = $this->taskQueue->generateInitialTasks($sheetId, [
-                'limit' => $validated['taskLimit'] ?? 50,
-            ]);
-        }
-
         $this->mirror->syncCreators($sheetId);
+
+        if (($validated['createTasks'] ?? false) === true) {
+            try {
+                $result['taskGeneration'] = $this->taskQueue->generateInitialTasks($sheetId, [
+                    'limit' => $validated['taskLimit'] ?? 50,
+                ]);
+            } catch (\Throwable $e) {
+                report($e);
+                $result['taskGenerationError'] = $e->getMessage();
+            }
+        }
 
         return response()->json([
             'message' => 'Selected queue rows merged into Creators_CRM',
