@@ -7,6 +7,16 @@ use RuntimeException;
 
 class ProjectResolverService
 {
+    public function findByWorkbookId(string $sheetId): ?Project
+    {
+        $sheetId = trim($sheetId);
+        if ($sheetId === '') {
+            return null;
+        }
+
+        return Project::where('workbook_id', $sheetId)->first();
+    }
+
     public function resolveByWorkbookId(string $sheetId, ?string $projectName = null): Project
     {
         $sheetId = trim($sheetId);
