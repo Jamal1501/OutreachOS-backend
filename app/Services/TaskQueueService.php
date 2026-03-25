@@ -94,8 +94,8 @@ class TaskQueueService
             $this->mirror->syncTasks($sheetId, array_map(fn (array $record) => (string) $record['Task_ID'], $recordsToAppend));
         }
 
-        foreach ($logEvents as $event) {
-            $this->outreachLog->appendEvent($sheetId, $event);
+        if ($logEvents !== []) {
+            $this->outreachLog->appendEvents($sheetId, $logEvents);
         }
 
         return [
