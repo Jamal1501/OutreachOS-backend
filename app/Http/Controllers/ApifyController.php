@@ -272,13 +272,18 @@ public function mergeEnrichedToCreators(Request $request)
         $sheetId = $validated['sheetId'] ?: (string) config('services.google.default_sheet_id');
         $result = $this->creatorMerge->mergeFromEnrichedSheet($sheetId, $validated['sourceSheet']);
 
-        if (($validated['createTasks'] ?? false) === true) {
-            $result['taskGeneration'] = $this->taskQueue->generateInitialTasks($sheetId, [
-                'limit' => $validated['taskLimit'] ?? 50,
-            ]);
-        }
-
         $this->mirror->syncCreators($sheetId);
+
+        if (($validated['createTasks'] ?? false) === true) {
+            try {
+                $result['taskGeneration'] = $this->taskQueue->generateInitialTasks($sheetId, [
+                    'limit' => $validated['taskLimit'] ?? 50,
+                ]);
+            } catch (\Throwable $e) {
+                report($e);
+                $result['taskGenerationError'] = $e->getMessage();
+            }
+        }
 
         return response()->json([
             'message' => 'Enriched profiles merged into Creators_CRM',
