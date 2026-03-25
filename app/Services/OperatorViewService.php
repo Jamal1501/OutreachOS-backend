@@ -460,7 +460,8 @@ class OperatorViewService
     private function normalizeCreatorProfileCard(CreatorProfile $profile): array
     {
         $creator = $profile->creator;
-        $state = $profile->lifecycle_state ?: $this->lifecycle->normalizeState((string) ($profile->status ?: ''), 'enriched');
+        $rawState = (string) ($profile->lifecycle_state ?: $profile->status ?: '');
+        $state = $this->lifecycle->normalizeState($rawState, 'enriched');
         $sourceRowNumber = (int) (($profile->source_metadata['sheet_row_number'] ?? 0) ?: 0);
         $addedAt = optional($profile->created_at)?->toDateTimeString() ?? '';
 
