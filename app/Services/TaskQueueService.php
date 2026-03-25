@@ -5,6 +5,8 @@ namespace App\Services;
 use App\Models\CreatorProfile;
 use App\Models\MessageTemplate;
 use App\Models\Task;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -56,6 +58,9 @@ class TaskQueueService
         $recordsToAppend = [];
         $logEvents = [];
         $created = 0;
+        $eligible = 0;
+        $skippedExisting = 0;
+        $skippedIneligible = 0;
 
         foreach ($crmRows as $creator) {
             if ($created >= $limit) {
@@ -64,11 +69,14 @@ class TaskQueueService
 
             $taskType = $this->determineInitialTaskType($creator);
             if ($taskType === null) {
+                $skippedIneligible++;
                 continue;
             }
 
+            $eligible++;
             $taskKey = $this->taskUniqKey($creator['Platform'] ?? '', $creator['Handle'] ?? '', $taskType);
             if (isset($existingTaskKeys[$taskKey])) {
+                $skippedExisting++;
                 continue;
             }
 
@@ -95,6 +103,7 @@ class TaskQueueService
 
             $recordsToAppend[] = $record;
             $logEvents[] = [
+                'Task_ID' => $taskId,
                 'Platform' => $record['Platform'],
                 'Handle' => $record['Handle'],
                 'Channel' => $this->channelFromTaskType($taskType, $creator),
@@ -108,9 +117,8 @@ class TaskQueueService
             $created++;
         }
 
-        $this->sheets->appendAssocRows($sheetId, 'Task_Queue', $recordsToAppend, $taskHeaders);
-
         if ($recordsToAppend !== []) {
+            $this->sheets->appendAssocRows($sheetId, 'Task_Queue', $recordsToAppend, $taskHeaders);
             $this->mirror->syncTasks($sheetId, array_map(fn (array $record) => (string) $record['Task_ID'], $recordsToAppend));
         }
 
@@ -120,6 +128,9 @@ class TaskQueueService
 
         return [
             'created' => $created,
+            'eligible' => $eligible,
+            'skipped_existing' => $skippedExisting,
+            'skipped_ineligible' => $skippedIneligible,
             'taskSheet' => 'Task_Queue',
             'sourceRowNumbers' => $targetRowNumbers,
             'source' => 'google_sheets',
@@ -128,6 +139,13 @@ class TaskQueueService
 
     public function completeTask(string $sheetId, string $taskId, array $payload = []): array
     {
+        if ($this->mirror->enabled()) {
+            $dbResult = $this->completeTaskInDatabase($sheetId, $taskId, $payload);
+            if ($dbResult !== null) {
+                return $dbResult;
+            }
+        }
+
         $task = $this->sheets->findFirstRowBy($sheetId, 'Task_Queue', 'Task_ID', $taskId);
 
         if (!$task) {
@@ -164,6 +182,7 @@ class TaskQueueService
         $this->mirror->syncTasks($sheetId, [$taskId]);
 
         $eventId = $this->outreachLog->appendEvent($sheetId, [
+            'Task_ID' => $taskId,
             'Platform' => (string) ($task['Platform'] ?? ''),
             'Handle' => (string) ($task['Handle'] ?? ''),
             'Channel' => $this->channelFromTaskType((string) ($task['Task_Type'] ?? ''), $creator ?? []),
@@ -179,7 +198,178 @@ class TaskQueueService
             'taskId' => $taskId,
             'eventId' => $eventId,
             'status' => $task['Status'],
+            'source' => 'google_sheets',
         ];
+    }
+
+    private function completeTaskInDatabase(string $sheetId, string $taskId, array $payload = []): ?array
+    {
+        $project = $this->projects->findByWorkbookId($sheetId);
+        if (!$project) {
+            return null;
+        }
+
+        $task = Task::query()
+            ->where('project_id', $project->id)
+            ->where(function ($query) use ($taskId) {
+                $query->where('external_task_key', $taskId)->orWhere('id', $taskId);
+            })
+            ->with(['creatorProfile.creator', 'messageTemplate'])
+            ->first();
+
+        if (!$task) {
+            return null;
+        }
+
+        if (array_key_exists('template_id', $payload) && $payload['template_id'] !== null) {
+            $templateId = trim((string) $payload['template_id']);
+            if ($templateId !== '') {
+                $template = MessageTemplate::query()
+                    ->where('project_id', $project->id)
+                    ->where(function ($query) use ($templateId) {
+                        $query->where('angle_id', $templateId)->orWhere('id', $templateId);
+                    })
+                    ->first();
+                $task->message_template_id = $template?->id;
+            }
+        }
+
+        if (array_key_exists('message_draft', $payload) && $payload['message_draft'] !== null) {
+            $task->message_draft = (string) $payload['message_draft'];
+        }
+
+        $status = strtoupper(trim((string) ($payload['status'] ?? 'COMPLETED')));
+        $existingNotes = trim((string) ($task->notes ?? ''));
+        $newNotes = trim((string) ($payload['notes'] ?? ''));
+
+        $task->status = $status;
+        $task->completed_at = in_array($status, ['COMPLETED', 'DONE', 'SKIPPED'], true) ? now() : null;
+        $task->notes = trim($existingNotes . ($newNotes !== '' ? ' ' . $newNotes : ''));
+        $task->save();
+
+        $profile = $task->creatorProfile;
+        if ($profile && in_array($status, ['COMPLETED', 'DONE'], true)) {
+            $this->applyTaskToCreatorProfile($profile, $task);
+            $profile->save();
+        }
+
+        $sheetSync = ['task' => false, 'creator' => false];
+        $taskRowNumber = $this->extractSheetRowNumber((string) ($task->source_reference ?? ''), 'Task_Queue');
+        if ($taskRowNumber > 0) {
+            try {
+                $taskRow = $this->sheets->findFirstRowBy($sheetId, 'Task_Queue', 'Task_ID', (string) ($task->external_task_key ?: $taskId));
+                if ($taskRow) {
+                    if ($task->messageTemplate) {
+                        $taskRow['Template_ID'] = (string) ($task->messageTemplate->angle_id ?: '');
+                    }
+                    $taskRow['Message_Draft'] = (string) ($task->message_draft ?? '');
+                    $taskRow['Status'] = $status;
+                    $taskRow['Completed_At'] = $task->completed_at?->toDateTimeString() ?? '';
+                    $taskRow['Notes'] = (string) ($task->notes ?? '');
+                    $this->sheets->updateAssocRow($sheetId, 'Task_Queue', (int) $taskRow['_row_number'], $taskRow);
+                    $sheetSync['task'] = true;
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Task_Queue sheet sync failed after database task completion', [
+                    'sheet_id' => $sheetId,
+                    'task_id' => $taskId,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        if ($profile && in_array($status, ['COMPLETED', 'DONE'], true)) {
+            $creatorRowNumber = $this->extractSheetRowNumber((string) ($profile->source_reference ?? ''), 'Creators_CRM');
+            if ($creatorRowNumber > 0) {
+                try {
+                    $creator = $this->findCreator($sheetId, (string) ($profile->platform ?? ''), (string) ($profile->handle ?? ''));
+                    if ($creator) {
+                        $creator = $this->applyTaskToCreator($creator, [
+                            'Task_Type' => (string) $task->task_type,
+                        ]);
+                        $this->sheets->updateAssocRow($sheetId, 'Creators_CRM', (int) $creator['_row_number'], $creator);
+                        $sheetSync['creator'] = true;
+                    }
+                } catch (\Throwable $e) {
+                    Log::warning('Creators_CRM sheet sync failed after database task completion', [
+                        'sheet_id' => $sheetId,
+                        'task_id' => $taskId,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+        }
+
+        $eventId = $this->outreachLog->appendEvent($sheetId, [
+            'Task_ID' => (string) ($task->external_task_key ?: $task->id),
+            'creator_profile_id' => $profile?->id,
+            'Platform' => (string) ($task->platform ?? ''),
+            'Handle' => (string) ($task->handle ?? ''),
+            'Channel' => $this->channelFromTaskType((string) $task->task_type, [
+                'Platform' => (string) ($task->platform ?? ''),
+                'Preferred_Channel' => (string) ($profile?->preferred_channel ?? ''),
+            ]),
+            'Event_Type' => $this->eventTypeFromTask((string) $task->task_type, $status),
+            'Template_ID' => (string) ($task->messageTemplate?->angle_id ?: ''),
+            'Sender_Account' => (string) ($payload['sender_account'] ?? ''),
+            'Status' => $status,
+            'URL' => (string) ($task->open_url ?? ''),
+            'Notes' => (string) ($payload['notes'] ?? ''),
+        ]);
+
+        return [
+            'taskId' => (string) ($task->external_task_key ?: $task->id),
+            'eventId' => $eventId,
+            'status' => $status,
+            'source' => 'database',
+            'sheetSync' => $sheetSync,
+        ];
+    }
+
+    private function extractSheetRowNumber(string $sourceReference, string $sheetName): int
+    {
+        if (!Str::startsWith($sourceReference, $sheetName . ':')) {
+            return 0;
+        }
+
+        return max(0, (int) substr($sourceReference, strlen($sheetName) + 1));
+    }
+
+    private function applyTaskToCreatorProfile(CreatorProfile $profile, Task $task): void
+    {
+        $taskType = (string) $task->task_type;
+        $status = strtoupper((string) ($task->status ?? ''));
+
+        $notes = trim((string) (optional($profile->creator)->notes ?? ''));
+        $timestamp = now()->toDateTimeString();
+
+        if ($profile->creator) {
+            $profile->creator->notes = trim($notes . ' | Task completed: ' . $taskType . ' @ ' . $timestamp, ' |');
+            $profile->creator->save();
+        }
+
+        if (!in_array($status, ['COMPLETED', 'DONE'], true)) {
+            return;
+        }
+
+        switch ($taskType) {
+            case 'FOLLOW_REQUEST':
+                $profile->status = 'FOLLOW_REQUEST_SENT';
+                break;
+            case 'DM_INVITE':
+            case 'EMAIL_SEND':
+                $profile->status = 'CONTACTED';
+                $profile->dm_sent_at = now();
+                $profile->follow_up_needed = true;
+                break;
+            case 'DM_FOLLOWUP':
+                $profile->status = 'FOLLOWED_UP';
+                break;
+            case 'CONFIRM_ACCEPTED':
+                $profile->accepted_flag = true;
+                $profile->status = 'ACCEPTED';
+                break;
+        }
     }
 
     private function determineInitialTaskType(array $creator): ?string
@@ -488,6 +678,9 @@ class TaskQueueService
         $createdTaskIds = [];
         $logEvents = [];
         $created = 0;
+        $eligible = 0;
+        $skippedExisting = 0;
+        $skippedIneligible = 0;
 
         foreach ($profiles as $profile) {
             if ($created >= $limit) {
@@ -496,11 +689,14 @@ class TaskQueueService
 
             $taskType = $this->determineInitialTaskTypeFromProfile($profile);
             if ($taskType === null) {
+                $skippedIneligible++;
                 continue;
             }
 
+            $eligible++;
             $taskKey = $this->taskUniqKey((string) $profile->platform, (string) $profile->handle, $taskType);
             if (isset($openTaskKeys[$taskKey])) {
+                $skippedExisting++;
                 continue;
             }
 
@@ -548,6 +744,8 @@ class TaskQueueService
                 'Notes' => 'Auto-generated from creator_profiles',
             ];
             $logEvents[] = [
+                'Task_ID' => $taskId,
+                'creator_profile_id' => $profile->id,
                 'Platform' => strtolower((string) $profile->platform),
                 'Handle' => (string) $profile->handle,
                 'Channel' => $this->channelFromTaskType($taskType, [
@@ -576,6 +774,9 @@ class TaskQueueService
 
         return [
             'created' => $created,
+            'eligible' => $eligible,
+            'skipped_existing' => $skippedExisting,
+            'skipped_ineligible' => $skippedIneligible,
             'taskSheet' => 'Task_Queue',
             'sourceRowNumbers' => $targetRowNumbers,
             'source' => 'database',
