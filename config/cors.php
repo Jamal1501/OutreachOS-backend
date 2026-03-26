@@ -14,6 +14,7 @@ return [
 
     'allowed_origins_patterns' => [
         '#^https://[a-z0-9-]+\.lovable\.app$#',
+        '#^https://[a-z0-9-]+\.lovableproject\.com$#',
         '#^https://[a-z0-9-]+\.onrender\.com$#',
         '#^http://localhost(:\d+)?$#',
         '#^http://127\.0\.0\.1(:\d+)?$#',
