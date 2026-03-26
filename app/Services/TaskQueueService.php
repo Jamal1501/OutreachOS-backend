@@ -802,9 +802,6 @@ class TaskQueueService
         }
 
         $tasks = Task::query()->where('project_id', $project->id)->orderByDesc('created_at')->get();
-        if ($tasks->isEmpty()) {
-            return null;
-        }
 
         return $tasks->map(fn (Task $task) => [
             'taskId' => (string) ($task->external_task_key ?: $task->id),

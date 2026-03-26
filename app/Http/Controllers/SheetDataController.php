@@ -971,7 +971,7 @@ public function operatorView(Request $request)
         $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
         $project = $this->projects->findByWorkbookId($sheetId);
 
-        if ($project && CreatorProfile::query()->where('project_id', $project->id)->exists()) {
+        if ($project) {
             $profiles = CreatorProfile::query()->where('project_id', $project->id)->get();
             $tasks = Task::query()->where('project_id', $project->id)->get();
             $outreachEvents = OutreachEvent::query()->where('project_id', $project->id)->get();
@@ -1095,7 +1095,10 @@ public function operatorView(Request $request)
 
         $total = (clone $query)->count();
         if ($total === 0) {
-            return null;
+            return [
+                'items' => [],
+                'total' => 0,
+            ];
         }
 
         $profiles = $query
@@ -1175,7 +1178,7 @@ public function operatorView(Request $request)
 
         $rows = $query->orderByDesc('created_at')->get();
         if ($rows->isEmpty()) {
-            return null;
+            return [];
         }
 
         return $rows->map(function (MessageTemplate $template) {
@@ -1910,7 +1913,13 @@ public function operatorView(Request $request)
 
         $rows = $query->orderByDesc('discovered_at')->orderByDesc('created_at')->get();
         if ($rows->isEmpty()) {
-            return null;
+            return [
+                'items' => [],
+                'total' => 0,
+                'raw_total' => 0,
+                'deduped' => (bool) ($filters['dedupe'] ?? true),
+                'duplicate_groups' => 0,
+            ];
         }
 
         $search = Str::lower(trim((string) ($filters['search'] ?? '')));

@@ -460,8 +460,17 @@ class PipelineDiscoveryService
             return 0;
         }
 
+        if (!$this->shouldSyncSheets($sheetId)) {
+            return 0;
+        }
+
         $this->sheets->appendRows($sheetId, $sheetName, $rows);
         return count($rows);
+    }
+
+    private function shouldSyncSheets(string $sheetId): bool
+    {
+        return !str_starts_with($sheetId, 'workspace:') && !str_starts_with($sheetId, 'db:');
     }
 
     private function extractProfilesFromDiscoveryItems(string $platform, array $items, array $inputHashtags): array
@@ -501,6 +510,10 @@ class PipelineDiscoveryService
 
     private function dedupeProfilesAgainstCrm(string $sheetId, string $platform, array $profiles): array
     {
+        if (!$this->shouldSyncSheets($sheetId)) {
+            return $profiles;
+        }
+
         $crmRows = $this->sheets->getRows($sheetId, 'Creators_CRM');
         $existing = [];
 

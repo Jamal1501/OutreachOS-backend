@@ -22,7 +22,7 @@ class OperatorViewService
     public function build(string $sheetId): array
     {
         $project = $this->projects->findByWorkbookId($sheetId);
-        if ($project && CreatorProfile::query()->where('project_id', $project->id)->exists()) {
+        if ($project) {
             return $this->buildFromDatabase($project->id);
         }
 
