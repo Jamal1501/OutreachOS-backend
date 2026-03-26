@@ -976,9 +976,17 @@ public function operatorView(Request $request)
             $tasks = Task::query()->where('project_id', $project->id)->get();
             $outreachEvents = OutreachEvent::query()->where('project_id', $project->id)->get();
             $discoveredCount = DiscoveryItem::query()
-                ->where('project_id', $project->id)
-                ->distinct()
-                ->count('creator_key');
+    ->where('project_id', $project->id)
+    ->selectRaw("
+        COUNT(DISTINCT COALESCE(
+            NULLIF(duplicate_key, ''),
+            NULLIF(handle, ''),
+            NULLIF(username, ''),
+            NULLIF(post_url, ''),
+            id::text
+        )) as aggregate
+    ")
+    ->value('aggregate') ?? 0;
 
             $today = now()->toDateString();
             $normalizedStates = $profiles->map(function (CreatorProfile $profile) {
