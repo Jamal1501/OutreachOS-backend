@@ -57,6 +57,26 @@ class SheetDataController extends Controller
         $offset = (int) ($validated['offset'] ?? 0);
         $dedupe = $request->boolean('dedupe', true);
 
+        $dbItems = $this->loadDiscoveryItemsFromDatabase($sheetId, [
+            'platforms' => $platforms,
+            'search' => $search,
+            'limit' => $limit,
+            'offset' => $offset,
+            'dedupe' => $dedupe,
+        ]);
+
+        if ($dbItems !== null) {
+            return response()->json([
+                'message' => 'Discovery rows fetched',
+                'items' => $dbItems['items'],
+                'total' => $dbItems['total'],
+                'raw_total' => $dbItems['raw_total'],
+                'deduped' => $dbItems['deduped'],
+                'duplicate_groups' => $dbItems['duplicate_groups'],
+                'source' => 'database',
+            ]);
+        }
+
         $normalized = [];
         foreach ($platforms as $platform) {
             $sheetName = $platform === 'instagram' ? 'Instagram_Posts_Raw' : 'TikTok_Posts_Raw';
@@ -104,6 +124,7 @@ class SheetDataController extends Controller
             'raw_total' => $rawTotal,
             'deduped' => $dedupe,
             'duplicate_groups' => $duplicateGroups,
+            'source' => 'google_sheets',
         ]);
     }
 
@@ -615,19 +636,31 @@ class SheetDataController extends Controller
         ]);
 
         $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
-        $template = $validated['template'];
-        $headers = $this->sheets->getHeaders($sheetId, 'Message_Library');
-        $row = $this->messagePayloadToSheetRecord($template);
-        $this->sheets->appendAssocRows($sheetId, 'Message_Library', [$row], $headers);
+        $project = $this->projects->resolveByWorkbookId($sheetId);
+        $templatePayload = $validated['template'];
 
-        $rows = $this->sheets->getRows($sheetId, 'Message_Library');
-        $rowNumber = (int) ($rows[count($rows) - 1]['_row_number'] ?? 2);
-        $id = 'msg:' . $rowNumber;
-        $this->mirror->syncMessageTemplates($sheetId, [$rowNumber]);
+        $template = MessageTemplate::query()->create([
+            'project_id' => $project->id,
+            'angle_id' => (string) ($templatePayload['angleId'] ?? ''),
+            'platform' => (string) ($templatePayload['platform'] ?? 'instagram'),
+            'niche' => (string) ($templatePayload['niche'] ?? ''),
+            'stage' => (string) ($templatePayload['stage'] ?? 'cold_invite'),
+            'copy' => (string) ($templatePayload['copy'] ?? ''),
+            'notes' => (string) ($templatePayload['notes'] ?? ''),
+            'psychological_trigger' => (string) ($templatePayload['psychologicalTrigger'] ?? $templatePayload['trigger'] ?? ''),
+            'metadata' => [],
+        ]);
+
+        $sheetSync = $this->syncMessageTemplateToSheet($sheetId, $template->fresh());
+        $fresh = $template->fresh();
+        $rowNumber = (int) (($fresh->metadata['source_row_number'] ?? 0));
+        $id = $rowNumber > 1 ? 'msg:' . $rowNumber : 'msgdb:' . $fresh->id;
 
         return response()->json([
             'message' => 'Message template created',
             'id' => $id,
+            'source' => 'database',
+            'sheetSync' => $sheetSync,
         ]);
     }
 
@@ -639,12 +672,30 @@ class SheetDataController extends Controller
         ]);
 
         $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
-        $rowNumber = $this->parseRowNumber($id, 'msg');
-        $record = $this->messagePayloadToSheetRecord($validated['template']);
-        $this->sheets->updateAssocRow($sheetId, 'Message_Library', $rowNumber, $record);
-        $this->mirror->syncMessageTemplates($sheetId, [$rowNumber]);
+        $template = $this->resolveMessageTemplateForRoute($sheetId, $id);
+        if (!$template) {
+            throw new RuntimeException('Message template not found');
+        }
 
-        return response()->json(['message' => 'Message template updated']);
+        $payload = $validated['template'];
+        $template->fill([
+            'angle_id' => (string) ($payload['angleId'] ?? ''),
+            'platform' => (string) ($payload['platform'] ?? 'instagram'),
+            'niche' => (string) ($payload['niche'] ?? ''),
+            'stage' => (string) ($payload['stage'] ?? 'cold_invite'),
+            'copy' => (string) ($payload['copy'] ?? ''),
+            'notes' => (string) ($payload['notes'] ?? ''),
+            'psychological_trigger' => (string) ($payload['psychologicalTrigger'] ?? $payload['trigger'] ?? ''),
+        ]);
+        $template->save();
+
+        $sheetSync = $this->syncMessageTemplateToSheet($sheetId, $template->fresh());
+
+        return response()->json([
+            'message' => 'Message template updated',
+            'source' => 'database',
+            'sheetSync' => $sheetSync,
+        ]);
     }
 
     public function deleteMessage(Request $request, string $id)
@@ -654,11 +705,38 @@ class SheetDataController extends Controller
         ]);
 
         $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
-        $rowNumber = $this->parseRowNumber($id, 'msg');
-        $this->sheets->clearAssocRow($sheetId, 'Message_Library', $rowNumber);
-        $this->mirror->deleteMessageTemplateByRowNumber($sheetId, $rowNumber);
+        $template = $this->resolveMessageTemplateForRoute($sheetId, $id);
 
-        return response()->json(['message' => 'Message template deleted']);
+        if (!$template) {
+            throw new RuntimeException('Message template not found');
+        }
+
+        $metadata = is_array($template->metadata) ? $template->metadata : [];
+        $rowNumber = (int) ($metadata['source_row_number'] ?? 0);
+        $templateId = $template->id;
+        $template->delete();
+
+        $sheetSync = ['mode' => 'not_attempted', 'rowNumber' => $rowNumber];
+        if ($rowNumber > 1) {
+            try {
+                $this->sheets->clearAssocRow($sheetId, 'Message_Library', $rowNumber);
+                $sheetSync = ['mode' => 'cleared', 'rowNumber' => $rowNumber];
+            } catch (\Throwable $e) {
+                Log::warning('Message_Library sheet sync failed after database template delete', [
+                    'sheet_id' => $sheetId,
+                    'row_number' => $rowNumber,
+                    'template_id' => $templateId,
+                    'error' => $e->getMessage(),
+                ]);
+                $sheetSync = ['mode' => 'failed', 'rowNumber' => $rowNumber, 'error' => $e->getMessage()];
+            }
+        }
+
+        return response()->json([
+            'message' => 'Message template deleted',
+            'source' => 'database',
+            'sheetSync' => $sheetSync,
+        ]);
     }
 
     public function enrichmentQueue(Request $request)
@@ -1458,28 +1536,45 @@ public function operatorView(Request $request)
         $createdItems = [];
         $created = 0;
         $skipped = 0;
+        $dbProject = $this->projects->findByWorkbookId($sheetId);
 
         foreach ($postIds as $postId) {
-            [$platform, $rowNumber] = $this->parseDiscoveryId($postId);
-            $sheetName = $platform === 'instagram' ? 'Instagram_Posts_Raw' : 'TikTok_Posts_Raw';
-            $rawRow = collect($this->sheets->getRows($sheetId, $sheetName))
-                ->first(fn (array $row) => (int) ($row['_row_number'] ?? 0) === $rowNumber);
+            $queueRecord = null;
+            $dbDiscoveryItem = null;
 
-            if (!$rawRow) {
-                $skipped++;
-                continue;
+            if (Str::startsWith((string) $postId, 'discdb:') && $dbProject) {
+                $candidateId = substr((string) $postId, 7);
+                $dbDiscoveryItem = DiscoveryItem::query()
+                    ->where('project_id', $dbProject->id)
+                    ->where('id', $candidateId)
+                    ->first();
+                if ($dbDiscoveryItem) {
+                    $queueRecord = $this->discoveryItemToQueueRecord($dbDiscoveryItem, $actionTag);
+                }
+            } else {
+                [$platform, $rowNumber] = $this->parseDiscoveryId((string) $postId);
+                $sheetName = $platform === 'instagram' ? 'Instagram_Posts_Raw' : 'TikTok_Posts_Raw';
+                $rawRow = collect($this->sheets->getRows($sheetId, $sheetName))
+                    ->first(fn (array $row) => (int) ($row['_row_number'] ?? 0) === $rowNumber);
+
+                if ($rawRow) {
+                    $queueRecord = $this->discoveryRowToQueueRecord($platform, $rawRow, $actionTag);
+                }
             }
 
-            $queueRecord = $this->discoveryRowToQueueRecord($platform, $rawRow, $actionTag);
             if ($queueRecord === null) {
                 $skipped++;
                 continue;
             }
 
-            $sheetTarget = $this->queueSheetForPlatform($platform);
+            $sheetTarget = $this->queueSheetForPlatform((string) $queueRecord['platform']);
             $key = strtolower($queueRecord['platform']) . '|' . strtolower($queueRecord['handle']) . '|' . strtolower($queueRecord['url']);
 
             if (isset($existingLookup[$sheetTarget][$key])) {
+                if ($dbDiscoveryItem) {
+                    $dbDiscoveryItem->promoted_to_enrichment_at = $dbDiscoveryItem->promoted_to_enrichment_at ?: now();
+                    $dbDiscoveryItem->save();
+                }
                 $skipped++;
                 continue;
             }
@@ -1490,6 +1585,11 @@ public function operatorView(Request $request)
             $existingLookup['Profile_URL_Queue_All'][$key] = true;
             $createdItems[] = $queueRecord;
             $created++;
+
+            if ($dbDiscoveryItem) {
+                $dbDiscoveryItem->promoted_to_enrichment_at = now();
+                $dbDiscoveryItem->save();
+            }
         }
 
         foreach ($queueRecordsBySheet as $sheetName => $records) {
@@ -1789,6 +1889,217 @@ public function operatorView(Request $request)
     private function enrichedSheetForPlatform(string $platform): string
     {
         return $platform === 'instagram' ? 'Instagram_Profile_Enriched' : 'TikTok_Profile_Enriched';
+    }
+
+    private function loadDiscoveryItemsFromDatabase(string $sheetId, array $filters): ?array
+    {
+        if (!$this->mirror->enabled()) {
+            return null;
+        }
+
+        $project = $this->projects->findByWorkbookId($sheetId);
+        if (!$project) {
+            return null;
+        }
+
+        $platforms = array_values(array_filter((array) ($filters['platforms'] ?? []), fn ($value) => in_array($value, ['instagram', 'tiktok'], true)));
+        $query = DiscoveryItem::query()->where('project_id', $project->id);
+        if ($platforms !== []) {
+            $query->whereIn('platform', $platforms);
+        }
+
+        $rows = $query->orderByDesc('discovered_at')->orderByDesc('created_at')->get();
+        if ($rows->isEmpty()) {
+            return null;
+        }
+
+        $search = Str::lower(trim((string) ($filters['search'] ?? '')));
+        $dedupe = (bool) ($filters['dedupe'] ?? true);
+        $offset = max(0, (int) ($filters['offset'] ?? 0));
+        $limit = max(1, (int) ($filters['limit'] ?? 200));
+
+        $normalized = [];
+        foreach ($rows as $row) {
+            $item = $this->discoveryItemToListItem($row);
+            if ($search !== '' && !$this->matchesDiscoverySearch($item, $search)) {
+                continue;
+            }
+            $normalized[] = $item;
+        }
+
+        usort($normalized, fn (array $a, array $b) => strcmp((string) ($b['timestamp'] ?? ''), (string) ($a['timestamp'] ?? '')));
+        $rawTotal = count($normalized);
+
+        if ($dedupe) {
+            $groups = [];
+            foreach ($normalized as $item) {
+                $groups[$item['duplicateKey']][] = $item;
+            }
+
+            $deduped = [];
+            $duplicateGroups = 0;
+            foreach ($groups as $items) {
+                if (count($items) > 1) {
+                    $duplicateGroups++;
+                }
+                $deduped[] = $this->collapseDuplicateGroup($items);
+            }
+            $normalized = $deduped;
+        } else {
+            $duplicateGroups = 0;
+        }
+
+        return [
+            'items' => array_values(array_slice($normalized, $offset, $limit)),
+            'total' => count($normalized),
+            'raw_total' => $rawTotal,
+            'deduped' => $dedupe,
+            'duplicate_groups' => $duplicateGroups,
+        ];
+    }
+
+    private function discoveryItemToListItem(DiscoveryItem $item): array
+    {
+        $metrics = is_array($item->metrics) ? $item->metrics : [];
+        $raw = is_array($item->raw_payload) ? $item->raw_payload : [];
+        $timestamp = $item->discovered_at?->toISOString() ?: (string) data_get($raw, 'timestamp', '');
+        $handle = $this->normalizeHandle((string) ($item->handle ?: $item->username ?: ''));
+        $duplicateKey = strtolower(trim((string) ($item->duplicate_key ?: ($item->post_url ?: ($item->platform . '|' . $handle . '|' . $item->caption)))));
+
+        return [
+            'id' => 'discdb:' . $item->id,
+            'rowId' => 'discdb:' . $item->id,
+            'sourceSheet' => 'discovery_items',
+            'sourceRowNumber' => null,
+            'platform' => (string) $item->platform,
+            'authorHandle' => $handle,
+            'authorUrl' => (string) ($item->profile_url ?: ''),
+            'caption' => (string) ($item->caption ?: ''),
+            'likes' => $this->sanitizeMetric($metrics['likes'] ?? null),
+            'comments' => $this->sanitizeMetric($metrics['comments'] ?? null),
+            'views' => $this->sanitizeMetric($metrics['views'] ?? $metrics['playCount'] ?? null),
+            'postUrl' => (string) ($item->post_url ?: ''),
+            'timestamp' => $timestamp,
+            'duplicateKey' => $duplicateKey,
+            'raw' => array_merge($raw, [
+                'ownerFullName' => (string) ($item->full_name ?: ''),
+                'ownerUsername' => ltrim($handle, '@'),
+                'authorMeta' => [
+                    'name' => ltrim($handle, '@'),
+                    'nickName' => (string) ($item->full_name ?: ''),
+                ],
+                'hashtags' => is_array($item->hashtags) ? $item->hashtags : [],
+            ]),
+        ];
+    }
+
+    private function resolveMessageTemplateForRoute(string $sheetId, string $id): ?MessageTemplate
+    {
+        $project = $this->projects->findByWorkbookId($sheetId);
+        if (!$project) {
+            return null;
+        }
+
+        $id = trim($id);
+        if ($id === '') {
+            return null;
+        }
+
+        if (Str::startsWith($id, 'msgdb:')) {
+            $candidate = substr($id, 6);
+            return MessageTemplate::query()->where('project_id', $project->id)->where('id', $candidate)->first();
+        }
+
+        if (Str::startsWith($id, 'msg:')) {
+            $rowNumber = (int) substr($id, 4);
+            if ($rowNumber > 1) {
+                return MessageTemplate::query()->where('project_id', $project->id)->where('metadata->source_row_number', $rowNumber)->first();
+            }
+        }
+
+        if (Str::isUuid($id)) {
+            return MessageTemplate::query()->where('project_id', $project->id)->where('id', $id)->first();
+        }
+
+        return null;
+    }
+
+    private function syncMessageTemplateToSheet(string $sheetId, MessageTemplate $template): array
+    {
+        $record = $this->messagePayloadToSheetRecord([
+            'angleId' => $template->angle_id,
+            'platform' => $template->platform,
+            'niche' => $template->niche,
+            'stage' => $template->stage,
+            'copy' => $template->copy,
+            'notes' => $template->notes,
+            'psychologicalTrigger' => $template->psychological_trigger,
+        ]);
+
+        $metadata = is_array($template->metadata) ? $template->metadata : [];
+        $rowNumber = (int) ($metadata['source_row_number'] ?? 0);
+
+        try {
+            if ($rowNumber > 1) {
+                $this->sheets->updateAssocRow($sheetId, 'Message_Library', $rowNumber, $record);
+                return ['mode' => 'updated', 'rowNumber' => $rowNumber];
+            }
+
+            $headers = $this->sheets->getHeaders($sheetId, 'Message_Library');
+            $this->sheets->appendAssocRows($sheetId, 'Message_Library', [$record], $headers);
+            $rows = $this->sheets->getRows($sheetId, 'Message_Library');
+            $rowNumber = (int) (($rows[count($rows) - 1]['_row_number'] ?? 0));
+            if ($rowNumber > 1) {
+                $metadata['source_row_number'] = $rowNumber;
+                $template->metadata = $metadata;
+                $template->save();
+            }
+            return ['mode' => 'created', 'rowNumber' => $rowNumber];
+        } catch (\Throwable $e) {
+            Log::warning('Message_Library sheet sync failed after database template write', [
+                'sheet_id' => $sheetId,
+                'template_id' => $template->id,
+                'row_number' => $rowNumber,
+                'error' => $e->getMessage(),
+            ]);
+            return ['mode' => 'failed', 'rowNumber' => $rowNumber, 'error' => $e->getMessage()];
+        }
+    }
+
+    private function discoveryItemToQueueRecord(DiscoveryItem $item, string $actionTag): ?array
+    {
+        $platform = strtolower(trim((string) $item->platform));
+        if (!in_array($platform, ['instagram', 'tiktok'], true)) {
+            return null;
+        }
+
+        $handle = $this->normalizeHandle((string) ($item->handle ?: $item->username ?: ''));
+        $username = ltrim($handle, '@');
+        $url = trim((string) ($item->profile_url ?: ''));
+
+        if ($username === '' && $url === '') {
+            return null;
+        }
+
+        if ($url === '') {
+            $url = $platform === 'instagram' ? $this->instagramProfileUrl($username) : $this->tiktokProfileUrl($username);
+        }
+
+        $addedAt = now()->toDateTimeString();
+        return [
+            'platform' => $platform,
+            'handle' => $handle,
+            'url' => $url,
+            'username' => $username,
+            'name' => (string) ($item->full_name ?: ''),
+            'country' => '',
+            'city' => '',
+            'primary_language' => '',
+            'niche_category' => '',
+            'status' => 'queued',
+            'priority_for_enrichment' => 'normal',
+            'source_notes' => sprintf('%s; added_at=%s; source_discovery_id=%s; source_post_url=%s', $actionTag, $addedAt, (string) $item->id, (string) ($item->post_url ?: '')),
+        ];
     }
 
     private function parseDiscoveryId(string $id): array
