@@ -6,8 +6,8 @@ return [
     'allowed_methods' => ['*'],
 
     'allowed_origins' => [
+        'https://lovable.dev',
         'https://croos.lovable.app',
-        'https://loveframes-outreach-api-1.onrender.com',
         'https://loveframes.shop',
         'https://www.loveframes.shop',
     ],
