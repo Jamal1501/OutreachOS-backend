@@ -9,8 +9,7 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 WORKDIR /var/www
 COPY . .
 
-RUN composer install --no-dev --optimize-autoloader
-
+RUN composer install --no-dev --optimize-autoloader && chmod +x artisan
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
 
