@@ -24,6 +24,7 @@ use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use RuntimeException;
 
+
 class SheetDataController extends Controller
 {
     public function __construct(
@@ -504,81 +505,153 @@ class SheetDataController extends Controller
         ]);
     }
 
-    public function mergeSelectedQueueToCrm(Request $request)
-    {
-        $validated = $request->validate([
-            'sheetId' => ['nullable', 'string'],
-            'platform' => ['required', 'string', Rule::in(['instagram', 'tiktok'])],
-            'queueIds' => ['required', 'array', 'min:1'],
-            'queueIds.*' => ['string'],
-            'createTasks' => ['nullable', 'boolean'],
-            'taskLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
-        ]);
+public function mergeSelectedQueueToCrm(Request $request)
+{
+    $validated = $request->validate([
+        'sheetId' => ['nullable', 'string'],
+        'platform' => ['required', 'string', Rule::in(['instagram', 'tiktok'])],
+        'queueIds' => ['required', 'array', 'min:1'],
+        'queueIds.*' => ['string'],
+        'createTasks' => ['nullable', 'boolean'],
+        'taskLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
+    ]);
 
-        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
-        $platform = $validated['platform'];
-        $queueSheet = $this->queueSheetForPlatform($platform);
-        $sourceSheet = $this->enrichedSheetForPlatform($platform);
+    $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+    $platform = $validated['platform'];
+    $project = $this->projects->findByWorkbookId($sheetId);
 
-        $queueRows = $this->sheets->getRows($sheetId, $queueSheet);
-        $sourceRows = $this->sheets->getRows($sheetId, $sourceSheet);
+    if ($project) {
+        // DB path — resolve profile IDs from queueIds
+        $profileIds = array_values(array_filter(array_map(function (string $id) {
+            if (str_starts_with($id, 'profiledb:')) {
+                return substr($id, 10);
+            }
+            return null;
+        }, $validated['queueIds'])));
 
-        $selection = $this->resolveSelectedMergeTargets($platform, $validated['queueIds'], $queueRows, $sourceRows);
-        $selectedQueueRowNumbers = $selection['selectedQueueRowNumbers'];
-        $selectedQueueRows = $selection['selectedQueueRows'];
-        $sourceRowNumbers = $selection['sourceRowNumbers'];
+        $profiles = CreatorProfile::query()
+            ->with('creator')
+            ->where('project_id', $project->id)
+            ->where('platform', $platform)
+            ->where(function ($q) use ($profileIds, $validated) {
+                if ($profileIds !== []) {
+                    $q->whereIn('id', $profileIds);
+                } else {
+                    // fallback: match by handle or profile_url from queueIds
+                    $q->whereIn('handle', $validated['queueIds'])
+                      ->orWhereIn('profile_url', $validated['queueIds']);
+                }
+            })
+            ->get();
 
-        $result = $this->creatorMerge->mergeSelectedFromEnrichedSheet($sheetId, $sourceSheet, $sourceRowNumbers);
-        $result['selectedQueueCount'] = count($selectedQueueRows);
-        $result['selectedQueueRowNumbers'] = $selectedQueueRowNumbers;
-        $result['matchedSourceRowNumbers'] = $sourceRowNumbers;
-        $result['selectionMode'] = $selection['selectionMode'];
-        $result['resolvedBy'] = $selection['resolvedBy'];
+        $created = 0;
+        $updated = 0;
+        $affectedProfileIds = [];
 
-        $affectedRowNumbers = array_values(array_unique(array_filter(
-            array_map('intval', (array) ($result['affectedRowNumbers'] ?? [])),
-            fn (int $rowNumber) => $rowNumber > 1
-        )));
-        $affectedProfileIds = array_values(array_unique(array_filter(
-            array_map('strval', (array) ($result['affectedProfileIds'] ?? [])),
-            fn (string $profileId) => trim($profileId) !== ''
-        )));
-
-        if ($affectedProfileIds === [] && $affectedRowNumbers !== []) {
-            $this->mirror->syncCreators($sheetId, $affectedRowNumbers);
+        foreach ($profiles as $profile) {
+            $wasNew = $profile->wasRecentlyCreated;
+            $profile->status = $profile->status && !in_array(strtoupper((string)$profile->status), ['NEW', 'DISCOVERED', 'ENRICHED'], true)
+                ? $profile->status : 'NEW';
+            $profile->lifecycle_state = 'new';
+            $profile->last_synced_at = now();
+            $profile->save();
+            $affectedProfileIds[] = $profile->id;
+            $wasNew ? $created++ : $updated++;
         }
 
-        if (($validated['createTasks'] ?? false) === true) {
-            if ($affectedProfileIds === [] && $affectedRowNumbers === []) {
-                $result['taskGeneration'] = [
-                    'created' => 0,
-                    'taskSheet' => 'Task_Queue',
-                    'sourceRowNumbers' => [],
-                    'sourceProfileIds' => [],
-                ];
-            } else {
-                try {
-                    $taskOptions = [
-                        'limit' => $validated['taskLimit'] ?? 50,
-                    ];
-                    if ($affectedProfileIds !== []) {
-                        $taskOptions['profileIds'] = $affectedProfileIds;
-                    } else {
-                        $taskOptions['rowNumbers'] = $affectedRowNumbers;
-                    }
-                    $result['taskGeneration'] = $this->taskQueue->generateInitialTasks($sheetId, $taskOptions);
-                } catch (\Throwable $e) {
-                    report($e);
-                    $result['taskGenerationError'] = $e->getMessage();
-                }
+        $result = [
+            'sourceSheet' => 'database',
+            'processed' => $profiles->count(),
+            'created' => $created,
+            'updated' => $updated,
+            'skipped' => count($validated['queueIds']) - $profiles->count(),
+            'affectedProfileIds' => $affectedProfileIds,
+            'affectedRowNumbers' => [],
+            'selectedQueueCount' => count($validated['queueIds']),
+            'selectionMode' => 'database',
+            'resolvedBy' => ['database'],
+        ];
+
+        if (($validated['createTasks'] ?? false) === true && $affectedProfileIds !== []) {
+            try {
+                $result['taskGeneration'] = $this->taskQueue->generateInitialTasks($sheetId, [
+                    'limit' => $validated['taskLimit'] ?? 50,
+                    'profileIds' => $affectedProfileIds,
+                ]);
+            } catch (\Throwable $e) {
+                report($e);
+                $result['taskGenerationError'] = $e->getMessage();
             }
         }
 
         return response()->json([
             'message' => 'Selected queue rows merged into Creators_CRM',
             'result' => $result,
+            'source' => 'database',
         ]);
     }
+
+    // Legacy Google Sheets fallback
+    $queueSheet = $this->queueSheetForPlatform($platform);
+    $sourceSheet = $this->enrichedSheetForPlatform($platform);
+
+    $queueRows = $this->sheets->getRows($sheetId, $queueSheet);
+    $sourceRows = $this->sheets->getRows($sheetId, $sourceSheet);
+
+    $selection = $this->resolveSelectedMergeTargets($platform, $validated['queueIds'], $queueRows, $sourceRows);
+    $selectedQueueRowNumbers = $selection['selectedQueueRowNumbers'];
+    $selectedQueueRows = $selection['selectedQueueRows'];
+    $sourceRowNumbers = $selection['sourceRowNumbers'];
+
+    $result = $this->creatorMerge->mergeSelectedFromEnrichedSheet($sheetId, $sourceSheet, $sourceRowNumbers);
+    $result['selectedQueueCount'] = count($selectedQueueRows);
+    $result['selectedQueueRowNumbers'] = $selectedQueueRowNumbers;
+    $result['matchedSourceRowNumbers'] = $sourceRowNumbers;
+    $result['selectionMode'] = $selection['selectionMode'];
+    $result['resolvedBy'] = $selection['resolvedBy'];
+
+    $affectedRowNumbers = array_values(array_unique(array_filter(
+        array_map('intval', (array) ($result['affectedRowNumbers'] ?? [])),
+        fn (int $rowNumber) => $rowNumber > 1
+    )));
+    $affectedProfileIds = array_values(array_unique(array_filter(
+        array_map('strval', (array) ($result['affectedProfileIds'] ?? [])),
+        fn (string $profileId) => trim($profileId) !== ''
+    )));
+
+    if ($affectedProfileIds === [] && $affectedRowNumbers !== []) {
+        $this->mirror->syncCreators($sheetId, $affectedRowNumbers);
+    }
+
+    if (($validated['createTasks'] ?? false) === true) {
+        if ($affectedProfileIds === [] && $affectedRowNumbers === []) {
+            $result['taskGeneration'] = [
+                'created' => 0,
+                'taskSheet' => 'Task_Queue',
+                'sourceRowNumbers' => [],
+                'sourceProfileIds' => [],
+            ];
+        } else {
+            try {
+                $taskOptions = ['limit' => $validated['taskLimit'] ?? 50];
+                if ($affectedProfileIds !== []) {
+                    $taskOptions['profileIds'] = $affectedProfileIds;
+                } else {
+                    $taskOptions['rowNumbers'] = $affectedRowNumbers;
+                }
+                $result['taskGeneration'] = $this->taskQueue->generateInitialTasks($sheetId, $taskOptions);
+            } catch (\Throwable $e) {
+                report($e);
+                $result['taskGenerationError'] = $e->getMessage();
+            }
+        }
+    }
+
+    return response()->json([
+        'message' => 'Selected queue rows merged into Creators_CRM',
+        'result' => $result,
+    ]);
+}
 
     public function messagesList(Request $request)
     {
@@ -739,59 +812,46 @@ class SheetDataController extends Controller
         ]);
     }
 
-    public function enrichmentQueue(Request $request)
-    {
-        $validated = $request->validate([
-            'sheetId' => ['nullable', 'string'],
-            'platform' => ['nullable', 'string', Rule::in(['instagram', 'tiktok'])],
-        ]);
+public function enrichmentQueue(Request $request)
+{
+    $validated = $request->validate([
+        'sheetId' => ['nullable', 'string'],
+        'platform' => ['nullable', 'string', Rule::in(['instagram', 'tiktok'])],
+    ]);
 
-        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
-        $platform = $validated['platform'] ?? null;
-        $platforms = $platform ? [$platform] : ['instagram', 'tiktok'];
+    $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+    $platform = $validated['platform'] ?? null;
+    $platforms = $platform ? [$platform] : ['instagram', 'tiktok'];
+
+    $project = $this->projects->findByWorkbookId($sheetId);
+
+    if ($project) {
         $items = [];
+        $query = CreatorProfile::query()
+            ->with('creator')
+            ->where('project_id', $project->id)
+            ->whereIn('platform', $platforms);
 
-        foreach ($platforms as $platformName) {
-            $queueSheet = $this->queueSheetForPlatform($platformName);
-            $sourceSheet = $this->enrichedSheetForPlatform($platformName);
-            $sourceRows = $this->sheets->getRows($sheetId, $sourceSheet);
-            $sourceIndex = $this->buildEnrichedLookup($platformName, $sourceRows);
+        foreach ($query->get() as $profile) {
+            $profileUrl = (string) ($profile->profile_url ?: $profile->dm_link ?: '');
+            $handle = (string) ($profile->handle ?: '');
+            $status = strtolower((string) ($profile->lifecycle_state ?: $profile->status ?: 'queued'));
+            $enriched = in_array($status, ['new', 'enriched', 'contacted', 'follow_request_sent',
+                'followed_up', 'replied', 'accepted', 'declined', 'archived'], true);
 
-            foreach ($this->sheets->getRows($sheetId, $queueSheet) as $row) {
-                $handle = $this->normalizeHandle((string) ($row['handle'] ?? $row['username'] ?? ''));
-                $url = trim((string) ($row['url'] ?? ''));
-                $lookupKeys = array_filter([
-                    strtolower($handle),
-                    strtolower(trim($url)),
-                    strtolower(trim((string) ($row['username'] ?? ''))),
-                ]);
-                $enrichedRowNumber = null;
-                foreach ($lookupKeys as $lookupKey) {
-                    if (isset($sourceIndex[$lookupKey])) {
-                        $enrichedRowNumber = (int) $sourceIndex[$lookupKey];
-                        break;
-                    }
-                }
-
-                $rowStatus = strtolower(trim((string) ($row['status'] ?? 'queued')));
-                if ($enrichedRowNumber !== null) {
-                    $rowStatus = 'enriched';
-                }
-
-                $items[] = [
-                    'id' => $this->queueId($platformName, (int) ($row['_row_number'] ?? 0)),
-                    'rowId' => $this->queueId($platformName, (int) ($row['_row_number'] ?? 0)),
-                    'platform' => $platformName,
-                    'handle' => $handle,
-                    'profileUrl' => $url,
-                    'status' => $rowStatus,
-                    'sourceNotes' => (string) ($row['source_notes'] ?? ''),
-                    'addedAt' => $this->extractTaggedValue((string) ($row['source_notes'] ?? ''), 'added_at') ?? '',
-                    'readyToMerge' => $enrichedRowNumber !== null,
-                    'enrichedRowNumber' => $enrichedRowNumber,
-                    'sourceSheet' => $sourceSheet,
-                ];
-            }
+            $items[] = [
+                'id' => 'profiledb:' . $profile->id,
+                'rowId' => 'profiledb:' . $profile->id,
+                'platform' => (string) $profile->platform,
+                'handle' => $handle,
+                'profileUrl' => $profileUrl,
+                'status' => $enriched ? 'enriched' : $status,
+                'sourceNotes' => (string) ($profile->source_reference ?: ''),
+                'addedAt' => optional($profile->created_at)->toDateTimeString() ?? '',
+                'readyToMerge' => $enriched,
+                'enrichedRowNumber' => null,
+                'sourceSheet' => 'database',
+            ];
         }
 
         usort($items, fn (array $a, array $b) => strcmp((string) ($b['addedAt'] ?? ''), (string) ($a['addedAt'] ?? '')));
@@ -799,9 +859,63 @@ class SheetDataController extends Controller
         return response()->json([
             'message' => 'Enrichment queue fetched',
             'items' => $items,
+            'source' => 'database',
         ]);
     }
 
+    // Legacy Google Sheets fallback
+    $items = [];
+    foreach ($platforms as $platformName) {
+        $queueSheet = $this->queueSheetForPlatform($platformName);
+        $sourceSheet = $this->enrichedSheetForPlatform($platformName);
+        $sourceRows = $this->sheets->getRows($sheetId, $sourceSheet);
+        $sourceIndex = $this->buildEnrichedLookup($platformName, $sourceRows);
+
+        foreach ($this->sheets->getRows($sheetId, $queueSheet) as $row) {
+            $handle = $this->normalizeHandle((string) ($row['handle'] ?? $row['username'] ?? ''));
+            $url = trim((string) ($row['url'] ?? ''));
+            $lookupKeys = array_filter([
+                strtolower($handle),
+                strtolower(trim($url)),
+                strtolower(trim((string) ($row['username'] ?? ''))),
+            ]);
+            $enrichedRowNumber = null;
+            foreach ($lookupKeys as $lookupKey) {
+                if (isset($sourceIndex[$lookupKey])) {
+                    $enrichedRowNumber = (int) $sourceIndex[$lookupKey];
+                    break;
+                }
+            }
+
+            $rowStatus = strtolower(trim((string) ($row['status'] ?? 'queued')));
+            if ($enrichedRowNumber !== null) {
+                $rowStatus = 'enriched';
+            }
+
+            $items[] = [
+                'id' => $this->queueId($platformName, (int) ($row['_row_number'] ?? 0)),
+                'rowId' => $this->queueId($platformName, (int) ($row['_row_number'] ?? 0)),
+                'platform' => $platformName,
+                'handle' => $handle,
+                'profileUrl' => $url,
+                'status' => $rowStatus,
+                'sourceNotes' => (string) ($row['source_notes'] ?? ''),
+                'addedAt' => $this->extractTaggedValue((string) ($row['source_notes'] ?? ''), 'added_at') ?? '',
+                'readyToMerge' => $enrichedRowNumber !== null,
+                'enrichedRowNumber' => $enrichedRowNumber,
+                'sourceSheet' => $sourceSheet,
+            ];
+        }
+    }
+
+    usort($items, fn (array $a, array $b) => strcmp((string) ($b['addedAt'] ?? ''), (string) ($a['addedAt'] ?? '')));
+
+    return response()->json([
+        'message' => 'Enrichment queue fetched',
+        'items' => $items,
+        'source' => 'google_sheets',
+    ]);
+}
 
 public function operatorView(Request $request)
 {
