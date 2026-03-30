@@ -549,14 +549,14 @@ public function mergeSelectedQueueToCrm(Request $request)
         $affectedProfileIds = [];
 
         foreach ($profiles as $profile) {
-            $wasNew = $profile->wasRecentlyCreated;
+            $existingBefore = $profile->exists;
             $profile->status = $profile->status && !in_array(strtoupper((string)$profile->status), ['NEW', 'DISCOVERED', 'ENRICHED'], true)
                 ? $profile->status : 'NEW';
             $profile->lifecycle_state = 'new';
             $profile->last_synced_at = now();
             $profile->save();
             $affectedProfileIds[] = $profile->id;
-            $wasNew ? $created++ : $updated++;
+            $existingBefore ? $updated++ : $created++;
         }
 
         $result = [
