@@ -32,6 +32,11 @@ return [
         'service_account_json' => env('GOOGLE_SERVICE_ACCOUNT_JSON'),
     ],
 
+    'ai' => [
+    'openai_key' => env('OPENAI_API_KEY'),
+    'openai_model' => env('OPENAI_MODEL', 'gpt-5.4-mini'),
+    'timeout' => env('AI_TIMEOUT', 45),
+],
     'apify' => [
         'token' => env('APIFY_API_TOKEN'),
         'default_max_total_charge_usd' => env('APIFY_DEFAULT_MAX_TOTAL_CHARGE_USD'),
