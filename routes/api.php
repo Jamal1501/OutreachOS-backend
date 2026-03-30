@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AiController;
 use App\Http\Controllers\ApifyController;
 use App\Http\Controllers\SheetDataController;
 use App\Http\Controllers\PipelineController;
@@ -50,4 +51,8 @@ Route::middleware('app.key')->group(function () {
 
     Route::post('/pipeline/discover', [PipelineController::class, 'discover']);
     Route::get('/pipeline/status', [PipelineController::class, 'status']);
+
+    Route::post('/ai/score-creators', [AiController::class, 'scoreCreators']);
+    Route::post('/ai/personalize-message', [AiController::class, 'personalizeMessage']);
+    Route::post('/ai/detect-duplicates', [AiController::class, 'detectDuplicates']);
 });
