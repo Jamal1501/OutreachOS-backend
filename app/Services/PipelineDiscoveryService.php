@@ -47,16 +47,38 @@ class PipelineDiscoveryService
         return $state;
     }
 
-    public function getJobState(string $jobId): ?array
-    {
-        $path = $this->jobPath($jobId);
-        if (!is_file($path)) {
-            return null;
-        }
-
+public function getJobState(string $jobId): ?array
+{
+    $path = $this->jobPath($jobId);
+    if (is_file($path)) {
         $decoded = json_decode((string) file_get_contents($path), true);
-        return is_array($decoded) ? $decoded : null;
+        if (is_array($decoded)) {
+            return $decoded;
+        }
     }
+
+    // Fallback to database when file not found (e.g. different container)
+    $run = \App\Models\DiscoveryRun::query()->find($jobId);
+    if (!$run) {
+        return null;
+    }
+
+    $result = is_array($run->result_payload) ? $run->result_payload : [];
+
+    return [
+        'jobId'          => $run->id,
+        'status'         => $run->status,
+        'currentStep'    => $run->current_step,
+        'completedSteps' => $result['completedSteps'] ?? [],
+        'steps'          => $result['steps'] ?? [],
+        'creators'       => $result['creators'] ?? [],
+        'totalCreators'  => $result['totalCreators'] ?? 0,
+        'failedStep'     => $run->error_message ? $run->current_step : null,
+        'error'          => $run->error_message,
+        'projectId'      => $run->project_id,
+        'request'        => $run->request_payload,
+    ];
+}
 
     public function runJob(string $jobId, array $payload): array
     
