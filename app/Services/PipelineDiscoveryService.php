@@ -89,7 +89,15 @@ public function getJobState(string $jobId): ?array
         $discoveryLimit = (int) ($payload['discoveryLimit'] ?? 50);
         $enrichmentLimit = (int) ($payload['enrichmentLimit'] ?? 20);
         $dedupeAgainstCRM = (bool) ($payload['dedupeAgainstCRM'] ?? true);
-        $projectId = $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId($sheetId)->id : null;
+$projectId = $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId($sheetId)->id : null;
+
+        if ($projectId) {
+            $run = DiscoveryRun::query()->find($jobId);
+            if ($run && !$run->project_id) {
+                $run->project_id = $projectId;
+                $run->save();
+            }
+        }
 
         $stepResults = [];
 
