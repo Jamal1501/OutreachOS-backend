@@ -49,6 +49,31 @@ class PipelineDiscoveryService
 
 public function getJobState(string $jobId): ?array
 {
+    // DB must be the source of truth in multi-container deployments like Render.
+    $run = DiscoveryRun::query()->find($jobId);
+
+    if ($run) {
+        $result = is_array($run->result_payload) ? $run->result_payload : [];
+
+        return [
+            'jobId' => $run->id,
+            'status' => $run->status,
+            'currentStep' => $run->current_step,
+            'completedSteps' => $result['completedSteps'] ?? [],
+            'steps' => $result['steps'] ?? [],
+            'creators' => $result['creators'] ?? [],
+            'totalCreators' => $result['totalCreators'] ?? 0,
+            'failedStep' => $run->error_message ? $run->current_step : null,
+            'error' => $run->error_message,
+            'projectId' => $run->project_id,
+            'request' => $run->request_payload,
+            'createdAt' => optional($run->created_at)?->toDateTimeString(),
+            'updatedAt' => optional($run->updated_at)?->toDateTimeString(),
+            'finishedAt' => optional($run->finished_at)?->toDateTimeString(),
+        ];
+    }
+
+    // File fallback only for local/dev cases.
     $path = $this->jobPath($jobId);
     if (is_file($path)) {
         $decoded = json_decode((string) file_get_contents($path), true);
@@ -57,27 +82,7 @@ public function getJobState(string $jobId): ?array
         }
     }
 
-    // Fallback to database when file not found (e.g. different container)
-    $run = \App\Models\DiscoveryRun::query()->find($jobId);
-    if (!$run) {
-        return null;
-    }
-
-    $result = is_array($run->result_payload) ? $run->result_payload : [];
-
-    return [
-        'jobId'          => $run->id,
-        'status'         => $run->status,
-        'currentStep'    => $run->current_step,
-        'completedSteps' => $result['completedSteps'] ?? [],
-        'steps'          => $result['steps'] ?? [],
-        'creators'       => $result['creators'] ?? [],
-        'totalCreators'  => $result['totalCreators'] ?? 0,
-        'failedStep'     => $run->error_message ? $run->current_step : null,
-        'error'          => $run->error_message,
-        'projectId'      => $run->project_id,
-        'request'        => $run->request_payload,
-    ];
+    return null;
 }
 
     public function runJob(string $jobId, array $payload): array
@@ -135,6 +140,14 @@ $projectId = $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId
 
             $this->updateJob($jobId, ['currentStep' => 'extract_urls']);
             [$profiles, $sourceHashtagsByUrl] = $this->extractProfilesFromDiscoveryItems($platform, $discoveryItems, $hashtags);
+            Log::info('Pipeline extraction summary', [
+    'jobId' => $jobId,
+    'platform' => $platform,
+    'discoveryItemCount' => count($discoveryItems),
+    'extractedProfileCount' => count($profiles),
+    'sampleDiscoveryItems' => array_slice($discoveryItems, 0, 2),
+    'sampleProfiles' => array_slice($profiles, 0, 5),
+]);
             if ($dedupeAgainstCRM) {
                 $profiles = $this->dedupeProfilesAgainstCrm($sheetId, $platform, $profiles);
             }
@@ -325,7 +338,16 @@ $projectId = $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId
         $run->enrichment_limit = (int) Arr::get($state, 'request.enrichmentLimit', 20);
         $run->dedupe_against_crm = (bool) Arr::get($state, 'request.dedupeAgainstCRM', true);
         $run->request_payload = $state['request'] ?? null;
-        $run->result_payload = $state['result'] ?? ['steps' => $state['steps'] ?? []];
+        $run->result_payload = array_merge(
+    [
+        'completedSteps' => $state['completedSteps'] ?? [],
+        'steps' => $state['steps'] ?? [],
+        'creators' => $state['creators'] ?? [],
+        'totalCreators' => $state['totalCreators'] ?? 0,
+        'failedStep' => $state['failedStep'] ?? null,
+    ],
+    is_array($state['result'] ?? null) ? $state['result'] : []
+);
         $run->error_message = $state['error'] ?? null;
         $run->started_at = $run->started_at ?: now();
         if (($state['status'] ?? null) === 'completed' || ($state['status'] ?? null) === 'failed') {
@@ -504,40 +526,60 @@ $projectId = $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId
         return !str_starts_with($sheetId, 'workspace:') && !str_starts_with($sheetId, 'db:');
     }
 
-    private function extractProfilesFromDiscoveryItems(string $platform, array $items, array $inputHashtags): array
-    {
-        $profiles = [];
-        $sourceHashtagsByUrl = [];
+private function extractProfilesFromDiscoveryItems(string $platform, array $items, array $inputHashtags): array
+{
+    $profiles = [];
+    $sourceHashtagsByUrl = [];
 
-        foreach ($items as $item) {
-            $username = trim((string) ($platform === 'instagram'
-                ? Arr::get($item, 'ownerUsername', Arr::get($item, 'owner.username', Arr::get($item, 'username', '')))
-                : Arr::get($item, 'authorMeta.name', Arr::get($item, 'author.username', Arr::get($item, 'username', '')))));
-            $profileUrl = $this->profileUrlFor($platform, $username, $item);
-            if ($profileUrl === '') {
-                continue;
-            }
+    foreach ($items as $item) {
+        $username = '';
 
-            $handle = $this->normalizeHandle($username);
-            $matchedTags = $this->matchedHashtagsForItem($item, $inputHashtags);
-
-            if (!isset($profiles[$profileUrl])) {
-                $profiles[$profileUrl] = [
-                    'platform' => $platform,
-                    'handle' => $handle,
-                    'username' => $username,
-                    'profileUrl' => $profileUrl,
-                ];
-            }
-
-            $sourceHashtagsByUrl[$profileUrl] = array_values(array_unique(array_merge(
-                $sourceHashtagsByUrl[$profileUrl] ?? [],
-                $matchedTags
-            )));
+        if ($platform === 'instagram') {
+            $username = trim((string) (
+                Arr::get($item, 'ownerUsername')
+                ?? Arr::get($item, 'owner.username')
+                ?? Arr::get($item, 'user.username')
+                ?? Arr::get($item, 'author.username')
+                ?? Arr::get($item, 'username')
+                ?? ''
+            ));
+        } else {
+            $username = trim((string) (
+                Arr::get($item, 'authorMeta.name')
+                ?? Arr::get($item, 'authorMeta.nickName')
+                ?? Arr::get($item, 'author.username')
+                ?? Arr::get($item, 'author.uniqueId')
+                ?? Arr::get($item, 'authorMeta.uniqueId')
+                ?? Arr::get($item, 'username')
+                ?? ''
+            ));
         }
 
-        return [array_values($profiles), $sourceHashtagsByUrl];
+        $profileUrl = $this->profileUrlFor($platform, $username, $item);
+        if ($profileUrl === '') {
+            continue;
+        }
+
+        $handle = $this->normalizeHandle($username);
+        $matchedTags = $this->matchedHashtagsForItem($item, $inputHashtags);
+
+        if (!isset($profiles[$profileUrl])) {
+            $profiles[$profileUrl] = [
+                'platform' => $platform,
+                'handle' => $handle,
+                'username' => $username,
+                'profileUrl' => $profileUrl,
+            ];
+        }
+
+        $sourceHashtagsByUrl[$profileUrl] = array_values(array_unique(array_merge(
+            $sourceHashtagsByUrl[$profileUrl] ?? [],
+            $matchedTags
+        )));
     }
+
+    return [array_values($profiles), $sourceHashtagsByUrl];
+}
 
     private function dedupeProfilesAgainstCrm(string $sheetId, string $platform, array $profiles): array
     {
