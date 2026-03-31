@@ -527,7 +527,6 @@ $rawQueueIds = array_values(array_unique($validated['queueIds']));
 $profileIds = [];
 $handles = [];
 $profileUrls = [];
-$mergeRefs = [];
 
 foreach ($rawQueueIds as $id) {
     if (str_starts_with($id, 'profiledb:')) {
@@ -536,8 +535,6 @@ foreach ($rawQueueIds as $id) {
     }
 
     if (str_contains($id, ':source-url:')) {
-        $mergeRefs[] = $id;
-
         $parts = explode(':source-url:', $id, 2);
         $encodedUrl = $parts[1] ?? '';
         $decodedUrl = urldecode($encodedUrl);
@@ -569,13 +566,12 @@ foreach ($rawQueueIds as $id) {
 $profileIds = array_values(array_unique(array_filter($profileIds)));
 $handles = array_values(array_unique(array_filter($handles)));
 $profileUrls = array_values(array_unique(array_filter($profileUrls)));
-$mergeRefs = array_values(array_unique(array_filter($mergeRefs)));
 
 $profiles = CreatorProfile::query()
     ->with('creator')
     ->where('project_id', $project->id)
     ->where('platform', $platform)
-    ->where(function ($q) use ($profileIds, $handles, $profileUrls, $mergeRefs) {
+    ->where(function ($q) use ($profileIds, $handles, $profileUrls) {
         $hasAny = false;
 
         if ($profileIds !== []) {
@@ -592,12 +588,6 @@ $profiles = CreatorProfile::query()
         if ($profileUrls !== []) {
             $method = $hasAny ? 'orWhereIn' : 'whereIn';
             $q->{$method}('profile_url', $profileUrls);
-            $hasAny = true;
-        }
-
-        if ($mergeRefs !== []) {
-            $method = $hasAny ? 'orWhereIn' : 'whereIn';
-            $q->{$method}('merge_ref', $mergeRefs);
         }
     })
     ->get();
