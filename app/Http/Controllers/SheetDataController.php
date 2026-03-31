@@ -525,72 +525,72 @@ public function mergeSelectedQueueToCrm(Request $request)
 $rawQueueIds = array_values(array_unique($validated['queueIds']));
 
 $profileIds = [];
-$handles = [];
-$profileUrls = [];
+$selectorHandles = [];
+$selectorUrls = [];
 
 foreach ($rawQueueIds as $id) {
+    $id = trim((string) $id);
+    if ($id === '') {
+        continue;
+    }
+
     if (str_starts_with($id, 'profiledb:')) {
         $profileIds[] = substr($id, 10);
         continue;
     }
 
-    if (str_contains($id, ':source-url:')) {
-        $parts = explode(':source-url:', $id, 2);
-        $encodedUrl = $parts[1] ?? '';
-        $decodedUrl = urldecode($encodedUrl);
-
-        if ($decodedUrl !== '') {
-            $profileUrls[] = rtrim($decodedUrl, '/');
-            $profileUrls[] = rtrim($decodedUrl, '/') . '/';
+    foreach ($this->selectorLookupKeys($platform, $id) as $key) {
+        if (str_starts_with($key, 'http://') || str_starts_with($key, 'https://')) {
+            $selectorUrls[] = rtrim(strtolower($key), '/');
+            continue;
         }
 
-        continue;
+        $normalizedHandle = $this->normalizeHandle($key);
+        if ($normalizedHandle !== '') {
+            $selectorHandles[] = strtolower($normalizedHandle);
+            $selectorHandles[] = strtolower(ltrim($normalizedHandle, '@'));
+        }
     }
-
-    if (str_starts_with($id, '@')) {
-        $handles[] = $id;
-        $handles[] = ltrim($id, '@');
-        continue;
-    }
-
-    if (str_starts_with($id, 'http://') || str_starts_with($id, 'https://')) {
-        $profileUrls[] = rtrim($id, '/');
-        $profileUrls[] = rtrim($id, '/') . '/';
-        continue;
-    }
-
-    $handles[] = $id;
-    $handles[] = '@' . ltrim($id, '@');
 }
 
 $profileIds = array_values(array_unique(array_filter($profileIds)));
-$handles = array_values(array_unique(array_filter($handles)));
-$profileUrls = array_values(array_unique(array_filter($profileUrls)));
+$selectorHandles = array_values(array_unique(array_filter($selectorHandles)));
+$selectorUrls = array_values(array_unique(array_filter($selectorUrls)));
 
 $profiles = CreatorProfile::query()
     ->with('creator')
     ->where('project_id', $project->id)
     ->where('platform', $platform)
-    ->where(function ($q) use ($profileIds, $handles, $profileUrls) {
-        $hasAny = false;
-
-        if ($profileIds !== []) {
-            $q->whereIn('id', $profileIds);
-            $hasAny = true;
+    ->get()
+    ->filter(function (CreatorProfile $profile) use ($profileIds, $selectorHandles, $selectorUrls) {
+        if ($profileIds !== [] && in_array((string) $profile->id, $profileIds, true)) {
+            return true;
         }
 
-        if ($handles !== []) {
-            $method = $hasAny ? 'orWhereIn' : 'whereIn';
-            $q->{$method}('handle', $handles);
-            $hasAny = true;
+        $profileHandle = strtolower($this->normalizeHandle((string) ($profile->handle ?? '')));
+        $profileHandleBare = strtolower(ltrim($profileHandle, '@'));
+        $profileUrl = strtolower(rtrim(trim((string) ($profile->profile_url ?? '')), '/'));
+        $dmUrl = strtolower(rtrim(trim((string) ($profile->dm_link ?? '')), '/'));
+
+        if ($profileHandle !== '' && in_array($profileHandle, $selectorHandles, true)) {
+            return true;
         }
 
-        if ($profileUrls !== []) {
-            $method = $hasAny ? 'orWhereIn' : 'whereIn';
-            $q->{$method}('profile_url', $profileUrls);
+        if ($profileHandleBare !== '' && in_array($profileHandleBare, $selectorHandles, true)) {
+            return true;
         }
+
+        if ($profileUrl !== '' && in_array($profileUrl, $selectorUrls, true)) {
+            return true;
+        }
+
+        if ($dmUrl !== '' && in_array($dmUrl, $selectorUrls, true)) {
+            return true;
+        }
+
+        return false;
     })
-    ->get();
+    ->values();
 
         $created = 0;
         $updated = 0;
