@@ -692,7 +692,7 @@ private function extractProfilesFromDiscoveryItems(string $platform, array $item
 
         return [
             'id' => (string) (Arr::get($item, 'id', $username ?: md5($profileUrl))),
-            'mergeRef' => 'instagram:source-url:' . rawurlencode(rtrim(strtolower($profileUrl), '/')),
+            'mergeRef' => 'tiktok:source-url:' . rawurlencode(rtrim(strtolower($profileUrl), '/')),
             'platform' => 'tiktok',
             'handle' => $this->normalizeHandle($username),
             'fullName' => $this->nullableString(Arr::get($item, 'nickname', Arr::get($item, 'authorMeta.nickName'))),
