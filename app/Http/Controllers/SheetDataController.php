@@ -522,27 +522,85 @@ public function mergeSelectedQueueToCrm(Request $request)
 
     if ($project) {
         // DB path — resolve profile IDs from queueIds
-        $profileIds = array_values(array_filter(array_map(function (string $id) {
-            if (str_starts_with($id, 'profiledb:')) {
-                return substr($id, 10);
-            }
-            return null;
-        }, $validated['queueIds'])));
+$rawQueueIds = array_values(array_unique($validated['queueIds']));
 
-        $profiles = CreatorProfile::query()
-            ->with('creator')
-            ->where('project_id', $project->id)
-            ->where('platform', $platform)
-            ->where(function ($q) use ($profileIds, $validated) {
-                if ($profileIds !== []) {
-                    $q->whereIn('id', $profileIds);
-                } else {
-                    // fallback: match by handle or profile_url from queueIds
-                    $q->whereIn('handle', $validated['queueIds'])
-                      ->orWhereIn('profile_url', $validated['queueIds']);
-                }
-            })
-            ->get();
+$profileIds = [];
+$handles = [];
+$profileUrls = [];
+$mergeRefs = [];
+
+foreach ($rawQueueIds as $id) {
+    if (str_starts_with($id, 'profiledb:')) {
+        $profileIds[] = substr($id, 10);
+        continue;
+    }
+
+    if (str_contains($id, ':source-url:')) {
+        $mergeRefs[] = $id;
+
+        $parts = explode(':source-url:', $id, 2);
+        $encodedUrl = $parts[1] ?? '';
+        $decodedUrl = urldecode($encodedUrl);
+
+        if ($decodedUrl !== '') {
+            $profileUrls[] = rtrim($decodedUrl, '/');
+            $profileUrls[] = rtrim($decodedUrl, '/') . '/';
+        }
+
+        continue;
+    }
+
+    if (str_starts_with($id, '@')) {
+        $handles[] = $id;
+        $handles[] = ltrim($id, '@');
+        continue;
+    }
+
+    if (str_starts_with($id, 'http://') || str_starts_with($id, 'https://')) {
+        $profileUrls[] = rtrim($id, '/');
+        $profileUrls[] = rtrim($id, '/') . '/';
+        continue;
+    }
+
+    $handles[] = $id;
+    $handles[] = '@' . ltrim($id, '@');
+}
+
+$profileIds = array_values(array_unique(array_filter($profileIds)));
+$handles = array_values(array_unique(array_filter($handles)));
+$profileUrls = array_values(array_unique(array_filter($profileUrls)));
+$mergeRefs = array_values(array_unique(array_filter($mergeRefs)));
+
+$profiles = CreatorProfile::query()
+    ->with('creator')
+    ->where('project_id', $project->id)
+    ->where('platform', $platform)
+    ->where(function ($q) use ($profileIds, $handles, $profileUrls, $mergeRefs) {
+        $hasAny = false;
+
+        if ($profileIds !== []) {
+            $q->whereIn('id', $profileIds);
+            $hasAny = true;
+        }
+
+        if ($handles !== []) {
+            $method = $hasAny ? 'orWhereIn' : 'whereIn';
+            $q->{$method}('handle', $handles);
+            $hasAny = true;
+        }
+
+        if ($profileUrls !== []) {
+            $method = $hasAny ? 'orWhereIn' : 'whereIn';
+            $q->{$method}('profile_url', $profileUrls);
+            $hasAny = true;
+        }
+
+        if ($mergeRefs !== []) {
+            $method = $hasAny ? 'orWhereIn' : 'whereIn';
+            $q->{$method}('merge_ref', $mergeRefs);
+        }
+    })
+    ->get();
 
         $created = 0;
         $updated = 0;
