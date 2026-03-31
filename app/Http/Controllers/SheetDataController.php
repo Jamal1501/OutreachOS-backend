@@ -19,6 +19,7 @@ use App\Services\ProjectResolverService;
 use App\Services\TaskQueueService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -512,6 +513,8 @@ public function mergeSelectedQueueToCrm(Request $request)
         'platform' => ['required', 'string', Rule::in(['instagram', 'tiktok'])],
         'queueIds' => ['required', 'array', 'min:1'],
         'queueIds.*' => ['string'],
+        'selectedCreators' => ['nullable', 'array'],
+        'selectedCreators.*' => ['array'],
         'createTasks' => ['nullable', 'boolean'],
         'taskLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
     ]);
@@ -521,104 +524,115 @@ public function mergeSelectedQueueToCrm(Request $request)
     $project = $this->projects->findByWorkbookId($sheetId);
 
     if ($project) {
-        // DB path — resolve profile IDs from queueIds
-$rawQueueIds = array_values(array_unique($validated['queueIds']));
+        $selectedCreators = array_values(array_filter((array) ($validated['selectedCreators'] ?? []), fn ($item) => is_array($item)));
 
-$profileIds = [];
-$selectorHandles = [];
-$selectorUrls = [];
+        if ($selectedCreators !== []) {
+            $result = $this->mergeSelectedCreatorsIntoDatabase($project->id, $platform, $validated['queueIds'], $selectedCreators);
+        } else {
+            // DB fallback path — resolve existing profile IDs from queueIds
+            $rawQueueIds = array_values(array_unique($validated['queueIds']));
 
-foreach ($rawQueueIds as $id) {
-    $id = trim((string) $id);
-    if ($id === '') {
-        continue;
-    }
+            $profileIds = [];
+            $handles = [];
+            $profileUrls = [];
 
-    if (str_starts_with($id, 'profiledb:')) {
-        $profileIds[] = substr($id, 10);
-        continue;
-    }
+            foreach ($rawQueueIds as $id) {
+                if (str_starts_with($id, 'profiledb:')) {
+                    $profileIds[] = substr($id, 10);
+                    continue;
+                }
 
-    foreach ($this->selectorLookupKeys($platform, $id) as $key) {
-        if (str_starts_with($key, 'http://') || str_starts_with($key, 'https://')) {
-            $selectorUrls[] = rtrim(strtolower($key), '/');
-            continue;
+                if (str_contains($id, ':source-url:')) {
+                    $parts = explode(':source-url:', $id, 2);
+                    $encodedUrl = $parts[1] ?? '';
+                    $decodedUrl = urldecode($encodedUrl);
+
+                    if ($decodedUrl !== '') {
+                        $profileUrls[] = rtrim($decodedUrl, '/');
+                        $profileUrls[] = rtrim($decodedUrl, '/') . '/';
+                    }
+
+                    continue;
+                }
+
+                if (str_starts_with($id, '@')) {
+                    $handles[] = $id;
+                    $handles[] = ltrim($id, '@');
+                    continue;
+                }
+
+                if (str_starts_with($id, 'http://') || str_starts_with($id, 'https://')) {
+                    $profileUrls[] = rtrim($id, '/');
+                    $profileUrls[] = rtrim($id, '/') . '/';
+                    continue;
+                }
+
+                $handles[] = $id;
+                $handles[] = '@' . ltrim($id, '@');
+            }
+
+            $profileIds = array_values(array_unique(array_filter($profileIds)));
+            $handles = array_values(array_unique(array_filter($handles)));
+            $profileUrls = array_values(array_unique(array_filter($profileUrls)));
+
+            $profiles = CreatorProfile::query()
+                ->with('creator')
+                ->where('project_id', $project->id)
+                ->where('platform', $platform)
+                ->where(function ($q) use ($profileIds, $handles, $profileUrls) {
+                    $hasAny = false;
+
+                    if ($profileIds !== []) {
+                        $q->whereIn('id', $profileIds);
+                        $hasAny = true;
+                    }
+
+                    if ($handles !== []) {
+                        $method = $hasAny ? 'orWhereIn' : 'whereIn';
+                        $q->{$method}('handle', $handles);
+                        $hasAny = true;
+                    }
+
+                    if ($profileUrls !== []) {
+                        $method = $hasAny ? 'orWhereIn' : 'whereIn';
+                        $q->{$method}('profile_url', $profileUrls);
+                    }
+                })
+                ->get();
+
+            $created = 0;
+            $updated = 0;
+            $affectedProfileIds = [];
+
+            foreach ($profiles as $profile) {
+                $existingBefore = $profile->exists;
+                $profile->status = $profile->status && !in_array(strtoupper((string) $profile->status), ['NEW', 'DISCOVERED', 'ENRICHED'], true)
+                    ? $profile->status : 'NEW';
+                $profile->lifecycle_state = 'enriched';
+                $profile->last_synced_at = now();
+                $profile->save();
+                $affectedProfileIds[] = $profile->id;
+                $existingBefore ? $updated++ : $created++;
+            }
+
+            $result = [
+                'sourceSheet' => 'database',
+                'processed' => $profiles->count(),
+                'created' => $created,
+                'updated' => $updated,
+                'skipped' => count($validated['queueIds']) - $profiles->count(),
+                'affectedProfileIds' => $affectedProfileIds,
+                'affectedRowNumbers' => [],
+                'selectedQueueCount' => count($validated['queueIds']),
+                'selectionMode' => 'database',
+                'resolvedBy' => ['database'],
+            ];
         }
 
-        $normalizedHandle = $this->normalizeHandle($key);
-        if ($normalizedHandle !== '') {
-            $selectorHandles[] = strtolower($normalizedHandle);
-            $selectorHandles[] = strtolower(ltrim($normalizedHandle, '@'));
-        }
-    }
-}
-
-$profileIds = array_values(array_unique(array_filter($profileIds)));
-$selectorHandles = array_values(array_unique(array_filter($selectorHandles)));
-$selectorUrls = array_values(array_unique(array_filter($selectorUrls)));
-
-$profiles = CreatorProfile::query()
-    ->with('creator')
-    ->where('project_id', $project->id)
-    ->where('platform', $platform)
-    ->get()
-    ->filter(function (CreatorProfile $profile) use ($profileIds, $selectorHandles, $selectorUrls) {
-        if ($profileIds !== [] && in_array((string) $profile->id, $profileIds, true)) {
-            return true;
-        }
-
-        $profileHandle = strtolower($this->normalizeHandle((string) ($profile->handle ?? '')));
-        $profileHandleBare = strtolower(ltrim($profileHandle, '@'));
-        $profileUrl = strtolower(rtrim(trim((string) ($profile->profile_url ?? '')), '/'));
-        $dmUrl = strtolower(rtrim(trim((string) ($profile->dm_link ?? '')), '/'));
-
-        if ($profileHandle !== '' && in_array($profileHandle, $selectorHandles, true)) {
-            return true;
-        }
-
-        if ($profileHandleBare !== '' && in_array($profileHandleBare, $selectorHandles, true)) {
-            return true;
-        }
-
-        if ($profileUrl !== '' && in_array($profileUrl, $selectorUrls, true)) {
-            return true;
-        }
-
-        if ($dmUrl !== '' && in_array($dmUrl, $selectorUrls, true)) {
-            return true;
-        }
-
-        return false;
-    })
-    ->values();
-
-        $created = 0;
-        $updated = 0;
-        $affectedProfileIds = [];
-
-        foreach ($profiles as $profile) {
-            $existingBefore = $profile->exists;
-            $profile->status = $profile->status && !in_array(strtoupper((string)$profile->status), ['NEW', 'DISCOVERED', 'ENRICHED'], true)
-                ? $profile->status : 'NEW';
-            $profile->lifecycle_state = 'new';
-            $profile->last_synced_at = now();
-            $profile->save();
-            $affectedProfileIds[] = $profile->id;
-            $existingBefore ? $updated++ : $created++;
-        }
-
-        $result = [
-            'sourceSheet' => 'database',
-            'processed' => $profiles->count(),
-            'created' => $created,
-            'updated' => $updated,
-            'skipped' => count($validated['queueIds']) - $profiles->count(),
-            'affectedProfileIds' => $affectedProfileIds,
-            'affectedRowNumbers' => [],
-            'selectedQueueCount' => count($validated['queueIds']),
-            'selectionMode' => 'database',
-            'resolvedBy' => ['database'],
-        ];
+        $affectedProfileIds = array_values(array_unique(array_filter(
+            array_map('strval', (array) ($result['affectedProfileIds'] ?? [])),
+            fn (string $profileId) => trim($profileId) !== ''
+        )));
 
         if (($validated['createTasks'] ?? false) === true && $affectedProfileIds !== []) {
             try {
@@ -1213,6 +1227,244 @@ public function operatorView(Request $request)
             'message' => 'Dashboard metrics fetched',
             'metrics' => $metrics,
         ]);
+    }
+
+
+    private function mergeSelectedCreatorsIntoDatabase(int $projectId, string $platform, array $queueIds, array $selectedCreators): array
+    {
+        return DB::transaction(function () use ($projectId, $platform, $queueIds, $selectedCreators) {
+            $profiles = CreatorProfile::query()
+                ->with('creator')
+                ->where('project_id', $projectId)
+                ->where('platform', $platform)
+                ->get();
+
+            $created = 0;
+            $updated = 0;
+            $skipped = 0;
+            $affectedProfileIds = [];
+
+            foreach ($selectedCreators as $payload) {
+                $candidate = $this->normalizeSelectedCreatorForMerge($platform, $payload);
+                if ($candidate === null) {
+                    $skipped++;
+                    continue;
+                }
+
+                /** @var CreatorProfile|null $profile */
+                $profile = $profiles->first(fn (CreatorProfile $item) => $this->selectedCreatorMatchesProfile($item, $candidate));
+                $isNewProfile = $profile === null;
+
+                if ($profile === null) {
+                    $creator = Creator::query()->create([
+                        'project_id' => $projectId,
+                        'external_identity_key' => $candidate['identityKey'],
+                        'display_name' => $candidate['fullName'],
+                        'primary_email' => $candidate['email'],
+                        'niche_category' => $candidate['niche'],
+                        'notes' => null,
+                        'metadata' => [
+                            'bio' => $candidate['bio'],
+                            'source_hashtags' => $candidate['sourceHashtags'],
+                            'source_platform' => $platform,
+                        ],
+                    ]);
+
+                    $profile = new CreatorProfile();
+                    $profile->creator()->associate($creator);
+                    $profile->project_id = $projectId;
+                    $profile->platform = $platform;
+                } else {
+                    $creator = $profile->creator;
+                    if (!$creator) {
+                        $creator = Creator::query()->create([
+                            'project_id' => $projectId,
+                            'external_identity_key' => $candidate['identityKey'],
+                            'display_name' => $candidate['fullName'],
+                            'primary_email' => $candidate['email'],
+                            'niche_category' => $candidate['niche'],
+                            'notes' => null,
+                            'metadata' => [
+                                'bio' => $candidate['bio'],
+                                'source_hashtags' => $candidate['sourceHashtags'],
+                                'source_platform' => $platform,
+                            ],
+                        ]);
+                        $profile->creator()->associate($creator);
+                    }
+                }
+
+                $creatorMetadata = is_array($creator->metadata) ? $creator->metadata : [];
+                if ($candidate['bio'] !== null && trim((string) ($creatorMetadata['bio'] ?? '')) === '') {
+                    $creatorMetadata['bio'] = $candidate['bio'];
+                }
+                if ($candidate['sourceHashtags'] !== []) {
+                    $existingTags = array_values(array_filter((array) ($creatorMetadata['source_hashtags'] ?? []), fn ($v) => trim((string) $v) !== ''));
+                    $creatorMetadata['source_hashtags'] = array_values(array_unique(array_merge($existingTags, $candidate['sourceHashtags'])));
+                }
+                $creatorMetadata['source_platform'] = $platform;
+                $creator->metadata = $creatorMetadata;
+                $creator->display_name = $candidate['fullName'] ?: $creator->display_name;
+                $creator->primary_email = $candidate['email'] ?: $creator->primary_email;
+                $creator->niche_category = $candidate['niche'] ?: $creator->niche_category;
+                $creator->save();
+
+                $profile->handle = $candidate['handle'];
+                $profile->username = ltrim($candidate['handle'], '@');
+                $profile->profile_url = $candidate['profileUrl'] ?: $profile->profile_url;
+                $profile->dm_link = $candidate['profileUrl'] ?: $profile->dm_link ?: $profile->profile_url;
+                $profile->status = $profile->status && !in_array(strtoupper((string) $profile->status), ['NEW', 'DISCOVERED', 'ENRICHED'], true)
+                    ? $profile->status
+                    : 'NEW';
+                $profile->lifecycle_state = $this->lifecycle->normalizeState((string) ($profile->status ?: 'NEW'), 'enriched');
+                $profile->followers_count = $candidate['followers'] ?? $profile->followers_count;
+                $profile->engagement_rate_pct = $candidate['engagementRate'] ?? $profile->engagement_rate_pct;
+                $profile->preferred_channel = $candidate['email'] ? 'Email' : ($profile->preferred_channel ?: 'DM');
+                $profile->source_provider = 'pipeline';
+                $profile->source_reference = $candidate['sourceReference'];
+                $sourceMetadata = is_array($profile->source_metadata) ? $profile->source_metadata : [];
+                $sourceMetadata['pipeline_creator_id'] = $candidate['id'];
+                $sourceMetadata['merge_ref'] = $candidate['mergeRef'];
+                $sourceMetadata['source_hashtags'] = $candidate['sourceHashtags'];
+                $sourceMetadata['bio'] = $candidate['bio'];
+                $sourceMetadata['posts_count'] = $candidate['postsCount'];
+                $sourceMetadata['avg_likes'] = $candidate['avgLikes'];
+                $sourceMetadata['avg_comments'] = $candidate['avgComments'];
+                $sourceMetadata['is_verified'] = $candidate['isVerified'];
+                $profile->source_metadata = $sourceMetadata;
+                $profile->last_synced_at = now();
+                $profile->save();
+
+                $profile->loadMissing('creator');
+                $score = $this->scoring->score($this->sheetRecordFromProfile($profile));
+                $profile->value_score = (int) round($score);
+                $profile->value_bar = $this->scoring->bar($score);
+                $profile->save();
+
+                if ($isNewProfile) {
+                    $profiles->push($profile->fresh('creator'));
+                    $created++;
+                } else {
+                    $updated++;
+                }
+
+                $affectedProfileIds[] = $profile->id;
+            }
+
+            return [
+                'sourceSheet' => 'database',
+                'processed' => $created + $updated,
+                'created' => $created,
+                'updated' => $updated,
+                'skipped' => $skipped,
+                'affectedProfileIds' => array_values(array_unique($affectedProfileIds)),
+                'affectedRowNumbers' => [],
+                'selectedQueueCount' => count($queueIds),
+                'selectionMode' => 'database',
+                'resolvedBy' => ['selectedCreators'],
+            ];
+        });
+    }
+
+    private function normalizeSelectedCreatorForMerge(string $platform, array $payload): ?array
+    {
+        $handle = $this->normalizeHandle((string) ($payload['handle'] ?? $payload['username'] ?? ''));
+        $profileUrl = trim((string) ($payload['profileUrl'] ?? ''));
+
+        if ($handle === '' && $profileUrl !== '') {
+            $parsedHandle = $this->extractHandleFromProfileUrl($platform, $profileUrl);
+            $handle = $this->normalizeHandle($parsedHandle);
+        }
+
+        if ($handle === '' && $profileUrl === '') {
+            return null;
+        }
+
+        if ($profileUrl === '') {
+            $profileUrl = $platform === 'instagram'
+                ? $this->instagramProfileUrl($handle)
+                : $this->tiktokProfileUrl($handle);
+        }
+
+        $sourceHashtags = array_values(array_unique(array_filter(array_map(
+            fn ($tag) => trim((string) $tag),
+            (array) ($payload['sourceHashtags'] ?? [])
+        ), fn ($tag) => $tag !== '')));
+
+        $fullName = trim((string) ($payload['fullName'] ?? '')) ?: null;
+        $email = trim((string) ($payload['email'] ?? '')) ?: null;
+        $bio = trim((string) ($payload['bio'] ?? '')) ?: null;
+        $niche = $sourceHashtags[0] ?? null;
+        $mergeRef = trim((string) ($payload['mergeRef'] ?? ''));
+        $sourceReference = $mergeRef !== ''
+            ? $mergeRef
+            : ($profileUrl !== '' ? $platform . ':source-url:' . rawurlencode(rtrim(strtolower($profileUrl), '/')) : null);
+        $identitySeed = $profileUrl !== '' ? strtolower(rtrim($profileUrl, '/')) : strtolower(ltrim($handle, '@'));
+
+        return [
+            'id' => trim((string) ($payload['id'] ?? '')) ?: null,
+            'mergeRef' => $mergeRef !== '' ? $mergeRef : null,
+            'sourceReference' => $sourceReference,
+            'identityKey' => $platform . ':' . sha1($identitySeed),
+            'handle' => $handle,
+            'profileUrl' => $profileUrl,
+            'fullName' => $fullName,
+            'email' => $email,
+            'bio' => $bio,
+            'niche' => $niche,
+            'followers' => $this->sanitizeMetric($payload['followers'] ?? null),
+            'engagementRate' => $this->sanitizeFloat($payload['engagementRate'] ?? null),
+            'postsCount' => $this->sanitizeMetric($payload['postsCount'] ?? null),
+            'avgLikes' => $this->sanitizeFloat($payload['avgLikes'] ?? null),
+            'avgComments' => $this->sanitizeFloat($payload['avgComments'] ?? null),
+            'isVerified' => filter_var($payload['isVerified'] ?? null, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE),
+            'sourceHashtags' => $sourceHashtags,
+        ];
+    }
+
+    private function selectedCreatorMatchesProfile(CreatorProfile $profile, array $candidate): bool
+    {
+        $candidateHandle = strtolower($this->normalizeHandle((string) ($candidate['handle'] ?? '')));
+        $candidateHandleBare = strtolower(ltrim($candidateHandle, '@'));
+        $candidateUrl = strtolower(rtrim(trim((string) ($candidate['profileUrl'] ?? '')), '/'));
+        $candidateRef = strtolower(trim((string) ($candidate['sourceReference'] ?? '')));
+
+        $profileHandle = strtolower($this->normalizeHandle((string) ($profile->handle ?? $profile->username ?? '')));
+        $profileHandleBare = strtolower(ltrim($profileHandle, '@'));
+        $profileUrl = strtolower(rtrim(trim((string) ($profile->profile_url ?? '')), '/'));
+        $profileDmUrl = strtolower(rtrim(trim((string) ($profile->dm_link ?? '')), '/'));
+        $profileRef = strtolower(trim((string) ($profile->source_reference ?? '')));
+
+        if ($candidateHandle !== '' && ($candidateHandle === $profileHandle || $candidateHandleBare === $profileHandleBare)) {
+            return true;
+        }
+
+        if ($candidateUrl !== '' && ($candidateUrl === $profileUrl || $candidateUrl === $profileDmUrl)) {
+            return true;
+        }
+
+        return $candidateRef !== '' && $candidateRef === $profileRef;
+    }
+
+    private function extractHandleFromProfileUrl(string $platform, string $profileUrl): string
+    {
+        $path = trim((string) parse_url($profileUrl, PHP_URL_PATH), '/');
+        if ($path === '') {
+            return '';
+        }
+
+        if ($platform === 'instagram') {
+            $segments = array_values(array_filter(explode('/', $path)));
+            return $segments[0] ?? '';
+        }
+
+        if ($platform === 'tiktok') {
+            $segments = array_values(array_filter(explode('/', $path)));
+            $first = $segments[0] ?? '';
+            return ltrim($first, '@');
+        }
+
+        return '';
     }
 
     private function loadCreatorsFromDatabase(string $sheetId, array $filters): ?array
