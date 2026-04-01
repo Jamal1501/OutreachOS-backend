@@ -1020,20 +1020,31 @@ public function operatorView(Request $request)
     }
 }
 
-    public function creatorDecisionSheet(Request $request, string $id)
-    {
-        $validated = $request->validate([
-            'sheetId' => ['nullable', 'string'],
-        ]);
+public function creatorDecisionSheet(Request $request, string $id)
+{
+    $validated = $request->validate([
+        'sheetId' => ['nullable', 'string'],
+    ]);
 
-        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
-        $rowNumber = $this->parseRowNumber($id, 'crm');
+    $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
+
+    $dbProfile = $this->resolveCreatorProfileForRoute($sheetId, $id);
+    if ($dbProfile) {
+        $rowNumber = $this->extractSourceRowNumberFromProfile($dbProfile);
 
         return response()->json([
             'message' => 'Creator decision sheet fetched',
             'data' => $this->operatorView->buildDecisionSheet($sheetId, $rowNumber),
         ]);
     }
+
+    $rowNumber = $this->parseRowNumber($id, 'crm');
+
+    return response()->json([
+        'message' => 'Creator decision sheet fetched',
+        'data' => $this->operatorView->buildDecisionSheet($sheetId, $rowNumber),
+    ]);
+}
 
     public function transitionCreator(Request $request, string $id)
     {
