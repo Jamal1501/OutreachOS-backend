@@ -205,16 +205,24 @@ class SheetDataController extends Controller
             'offset' => $offset,
         ]);
 
-        if ($dbItems !== null) {
-            return response()->json([
-                'message' => 'Creators fetched',
-                'items' => $dbItems['items'],
-                'total' => $dbItems['total'],
-            ]);
-        }
+if ($dbItems !== null) {
+    return response()->json([
+        'message' => 'Creators fetched',
+        'items' => $dbItems['items'],
+        'total' => $dbItems['total'],
+    ]);
+}
 
-        $items = [];
-        foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
+if (Str::startsWith($sheetId, 'workspace:')) {
+    return response()->json([
+        'message' => 'Creators fetched',
+        'items' => [],
+        'total' => 0,
+    ]);
+}
+
+$items = [];
+foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
             $item = $this->normalizeCreatorRow($row);
 
             if ($search !== '' && !$this->matchesTextSearch($search, [
