@@ -173,7 +173,7 @@ class OperatorViewService
         return $this->buildDecisionPayload($creator, $duplicates, $relatedTasks, $timeline);
     }
 
-    public function buildDecisionSheetForProfileId(string $sheetId, string $profileId): array
+public function buildDecisionSheetForProfileId(string $sheetId, string $profileId): array
 {
     $project = $this->projects->findByWorkbookId($sheetId);
     if (!$project) {
@@ -190,7 +190,54 @@ class OperatorViewService
         throw new \RuntimeException('Creator not found');
     }
 
-    return $this->buildDecisionSheetPayloadFromProfile($project->id, $profile);
+    $creator = $this->normalizeCreatorProfileCard($profile);
+    $allCreators = CreatorProfile::query()
+        ->with('creator')
+        ->where('project_id', $project->id)
+        ->get()
+        ->map(fn (CreatorProfile $item) => $this->normalizeCreatorProfileCard($item))
+        ->values()
+        ->all();
+
+    $duplicates = array_values(array_filter(
+        $this->detectDuplicateWarnings($allCreators),
+        fn (array $warning) => collect($warning['creators'])
+            ->contains(fn (array $item) => $item['id'] === $creator['id'])
+    ));
+
+    $relatedTasks = $this->normalizeDbTasks(
+        Task::query()
+            ->where('project_id', $project->id)
+            ->where('platform', strtolower($creator['platform']))
+            ->where('handle', $creator['handle'])
+            ->orderByDesc('created_at')
+            ->get()
+            ->all()
+    );
+
+    $timeline = $this->normalizeDbRecentActivity(
+        OutreachEvent::query()
+            ->where('project_id', $project->id)
+            ->where('platform', strtolower($creator['platform']))
+            ->where('handle', $creator['handle'])
+            ->orderByDesc('sent_at')
+            ->get()
+            ->all(),
+        $creator['platform'],
+        $creator['handle']
+    );
+
+    array_unshift($timeline, [
+        'id' => 'creator-added-' . $creator['id'],
+        'type' => 'creator_added',
+        'title' => 'Creator added to CRM',
+        'description' => $creator['addedAt'] ? 'Added at ' . $creator['addedAt'] : 'Added to CRM',
+        'timestamp' => (string) ($creator['addedAt'] ?? ''),
+        'handle' => $creator['handle'],
+        'platform' => $creator['platform'],
+    ]);
+
+    return $this->buildDecisionPayload($creator, $duplicates, $relatedTasks, $timeline);
 }
 
     private function buildFromDatabase(int $projectId): array
