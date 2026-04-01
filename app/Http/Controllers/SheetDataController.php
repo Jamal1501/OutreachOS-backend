@@ -745,15 +745,22 @@ public function mergeSelectedQueueToCrm(Request $request)
             'niche' => $niche,
         ]);
 
-        if ($dbItems !== null) {
-            return response()->json([
-                'message' => 'Message templates fetched',
-                'items' => $dbItems,
-            ]);
-        }
+if ($dbItems !== null) {
+    return response()->json([
+        'message' => 'Message templates fetched',
+        'items' => $dbItems,
+    ]);
+}
 
-        $items = [];
-        foreach ($this->sheets->getRows($sheetId, 'Message_Library') as $row) {
+if (Str::startsWith($sheetId, 'workspace:')) {
+    return response()->json([
+        'message' => 'Message templates fetched',
+        'items' => [],
+    ]);
+}
+
+$items = [];
+foreach ($this->sheets->getRows($sheetId, 'Message_Library') as $row) {
             $item = $this->normalizeMessageRow($row);
             if ($platform !== '' && Str::lower((string) $item['platform']) !== $platform) {
                 continue;
