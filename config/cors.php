@@ -30,6 +30,7 @@ return [
         'Origin',
         'X-Requested-With',
         'X-APP-KEY',
+        'X-Workspace-Id',
     ],
 
     'exposed_headers' => [],
