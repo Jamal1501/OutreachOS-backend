@@ -1030,11 +1030,9 @@ public function creatorDecisionSheet(Request $request, string $id)
 
     $dbProfile = $this->resolveCreatorProfileForRoute($sheetId, $id);
     if ($dbProfile) {
-        $rowNumber = $this->extractSourceRowNumberFromProfile($dbProfile);
-
         return response()->json([
             'message' => 'Creator decision sheet fetched',
-            'data' => $this->operatorView->buildDecisionSheet($sheetId, $rowNumber),
+            'data' => $this->operatorView->buildDecisionSheetForProfileId($sheetId, $dbProfile->id),
         ]);
     }
 
