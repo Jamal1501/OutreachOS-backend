@@ -642,161 +642,142 @@ $rows = $this->sheets->getRows($sheetId, 'Task_Queue');
         }, $rows);
     }
 
-    private function generateInitialTasksFromDatabase(string $sheetId, array $options = []): ?array
-    {
-        $project = $this->projects->findByWorkbookId($sheetId);
-        if (!$project) {
-            return null;
-        }
-
-        $limit = max(1, (int) ($options['limit'] ?? 50));
-        $targetRowNumbers = array_key_exists('rowNumbers', $options)
-            ? array_values(array_unique(array_filter(array_map('intval', (array) ($options['rowNumbers'] ?? [])), fn (int $rowNumber) => $rowNumber > 1)))
-            : null;
-        $targetProfileIds = array_key_exists('profileIds', $options)
-            ? array_values(array_unique(array_filter(array_map('strval', (array) ($options['profileIds'] ?? [])), fn (string $id) => trim($id) !== '')))
-            : null;
-
-        $profilesQuery = CreatorProfile::query()
-            ->with('creator')
-            ->where('project_id', $project->id)
-            ->orderBy('created_at');
-
-        if (is_array($targetProfileIds) && $targetProfileIds !== []) {
-            $profilesQuery->whereIn('id', $targetProfileIds);
-        } elseif (is_array($targetRowNumbers)) {
-            $profilesQuery->where(function ($query) use ($targetRowNumbers) {
-                foreach ($targetRowNumbers as $rowNumber) {
-                    $query->orWhere('source_reference', 'Creators_CRM:' . $rowNumber)
-                        ->orWhere('source_metadata->sheet_row_number', $rowNumber);
-                }
-            });
-        }
-
-        $profiles = $profilesQuery->get();
-        if ($profiles->isEmpty()) {
-            return null;
-        }
-
-        $openTaskKeys = Task::query()
-            ->where('project_id', $project->id)
-            ->whereNotIn('status', ['DONE', 'COMPLETED', 'SKIPPED'])
-            ->get(['platform', 'handle', 'task_type'])
-            ->map(fn (Task $task) => $this->taskUniqKey((string) $task->platform, (string) $task->handle, (string) $task->task_type))
-            ->flip()
-            ->all();
-
-        $templates = MessageTemplate::query()->where('project_id', $project->id)->get()->all();
-        $taskHeaders = $this->sheets->getHeaders($sheetId, 'Task_Queue');
-        $recordsToAppend = [];
-        $createdTaskIds = [];
-        $logEvents = [];
-        $created = 0;
-        $eligible = 0;
-        $skippedExisting = 0;
-        $skippedIneligible = 0;
-
-        foreach ($profiles as $profile) {
-            if ($created >= $limit) {
-                break;
-            }
-
-            $taskType = $this->determineInitialTaskTypeFromProfile($profile);
-            if ($taskType === null) {
-                $skippedIneligible++;
-                continue;
-            }
-
-            $eligible++;
-            $taskKey = $this->taskUniqKey((string) $profile->platform, (string) $profile->handle, $taskType);
-            if (isset($openTaskKeys[$taskKey])) {
-                $skippedExisting++;
-                continue;
-            }
-
-            $template = $this->pickTemplateFromDatabase($templates, (string) $profile->platform, $taskType);
-            $taskId = (string) Str::uuid();
-            $messageDraft = $this->buildMessageDraftFromProfile($template, $profile, $taskType);
-            $priority = $this->priorityFromProfile($profile);
-            $openUrl = (string) ($profile->dm_link ?: $profile->profile_url ?: '');
-
-            Task::create([
-                'project_id' => $project->id,
-                'creator_profile_id' => $profile->id,
-                'message_template_id' => $template?->id,
-                'external_task_key' => $taskId,
-                'platform' => strtolower((string) $profile->platform),
-                'handle' => (string) $profile->handle,
-                'task_type' => $taskType,
-                'priority' => $priority,
-                'status' => 'PENDING',
-                'due_at' => now(),
-                'open_url' => $openUrl,
-                'message_draft' => $messageDraft,
-                'source_provider' => 'database',
-                'source_reference' => 'creator_profile:' . $profile->id,
-                'notes' => 'Auto-generated from creator_profiles',
-                'metadata' => [
-                    'creator_profile_id' => $profile->id,
-                    'source_sheet_row_number' => $profile->source_metadata['sheet_row_number'] ?? null,
-                ],
-            ]);
-
-            $recordsToAppend[] = [
-                'Task_ID' => $taskId,
-                'Platform' => strtolower((string) $profile->platform),
-                'Handle' => (string) $profile->handle,
-                'Task_Type' => $taskType,
-                'Priority' => $priority,
-                'Status' => 'PENDING',
-                'Due_At' => now()->toDateTimeString(),
-                'Open_URL' => $openUrl,
-                'Message_Draft' => $messageDraft,
-                'Template_ID' => (string) ($template?->angle_id ?: ''),
-                'Created_At' => now()->toDateTimeString(),
-                'Completed_At' => '',
-                'Notes' => 'Auto-generated from creator_profiles',
-            ];
-            $logEvents[] = [
-                'Task_ID' => $taskId,
-                'creator_profile_id' => $profile->id,
-                'Platform' => strtolower((string) $profile->platform),
-                'Handle' => (string) $profile->handle,
-                'Channel' => $this->channelFromTaskType($taskType, [
-                    'Platform' => strtolower((string) $profile->platform),
-                    'Preferred_Channel' => (string) ($profile->preferred_channel ?: ''),
-                ]),
-                'Event_Type' => 'TASK_CREATED',
-                'Template_ID' => (string) ($template?->angle_id ?: ''),
-                'Status' => 'PENDING',
-                'URL' => $openUrl,
-                'Notes' => $taskType,
-            ];
-            $openTaskKeys[$taskKey] = true;
-            $createdTaskIds[] = $taskId;
-            $created++;
-        }
-
-        if ($recordsToAppend !== []) {
-            $this->sheets->appendAssocRows($sheetId, 'Task_Queue', $recordsToAppend, $taskHeaders);
-            $this->mirror->syncTasks($sheetId, $createdTaskIds);
-        }
-
-        if ($logEvents !== []) {
-            $this->outreachLog->appendEvents($sheetId, $logEvents);
-        }
-
-        return [
-            'created' => $created,
-            'eligible' => $eligible,
-            'skipped_existing' => $skippedExisting,
-            'skipped_ineligible' => $skippedIneligible,
-            'taskSheet' => 'Task_Queue',
-            'sourceRowNumbers' => $targetRowNumbers,
-            'sourceProfileIds' => $targetProfileIds,
-            'source' => 'database',
-        ];
+private function generateInitialTasksFromDatabase(string $sheetId, array $options = []): ?array
+{
+    $project = $this->projects->findByWorkbookId($sheetId);
+    if (!$project) {
+        return null;
     }
+
+    $limit = max(1, (int) ($options['limit'] ?? 50));
+    $targetRowNumbers = array_key_exists('rowNumbers', $options)
+        ? array_values(array_unique(array_filter(array_map('intval', (array) ($options['rowNumbers'] ?? [])), fn (int $rowNumber) => $rowNumber > 1)))
+        : null;
+    $targetProfileIds = array_key_exists('profileIds', $options)
+        ? array_values(array_unique(array_filter(array_map('strval', (array) ($options['profileIds'] ?? [])), fn (string $id) => trim($id) !== '')))
+        : null;
+
+    $profilesQuery = CreatorProfile::query()
+        ->with('creator')
+        ->where('project_id', $project->id)
+        ->orderBy('created_at');
+
+    if (is_array($targetProfileIds) && $targetProfileIds !== []) {
+        $profilesQuery->whereIn('id', $targetProfileIds);
+    } elseif (is_array($targetRowNumbers)) {
+        $profilesQuery->where(function ($query) use ($targetRowNumbers) {
+            foreach ($targetRowNumbers as $rowNumber) {
+                $query->orWhere('source_reference', 'Creators_CRM:' . $rowNumber)
+                    ->orWhere('source_metadata->sheet_row_number', $rowNumber);
+            }
+        });
+    }
+
+    $profiles = $profilesQuery->get();
+    if ($profiles->isEmpty()) {
+        return null;
+    }
+
+    $openTaskKeys = Task::query()
+        ->where('project_id', $project->id)
+        ->whereNotIn('status', ['DONE', 'COMPLETED', 'SKIPPED'])
+        ->get(['platform', 'handle', 'task_type'])
+        ->map(fn (Task $task) => $this->taskUniqKey((string) $task->platform, (string) $task->handle, (string) $task->task_type))
+        ->flip()
+        ->all();
+
+    $templates = MessageTemplate::query()
+        ->where('project_id', $project->id)
+        ->get()
+        ->all();
+
+    $logEvents = [];
+    $created = 0;
+    $eligible = 0;
+    $skippedExisting = 0;
+    $skippedIneligible = 0;
+
+    foreach ($profiles as $profile) {
+        if ($created >= $limit) {
+            break;
+        }
+
+        $taskType = $this->determineInitialTaskTypeFromProfile($profile);
+        if ($taskType === null) {
+            $skippedIneligible++;
+            continue;
+        }
+
+        $eligible++;
+        $taskKey = $this->taskUniqKey((string) $profile->platform, (string) $profile->handle, $taskType);
+        if (isset($openTaskKeys[$taskKey])) {
+            $skippedExisting++;
+            continue;
+        }
+
+        $template = $this->pickTemplateFromDatabase($templates, (string) $profile->platform, $taskType);
+        $taskId = (string) Str::uuid();
+        $messageDraft = $this->buildMessageDraftFromProfile($template, $profile, $taskType);
+        $priority = $this->priorityFromProfile($profile);
+        $openUrl = (string) ($profile->dm_link ?: $profile->profile_url ?: '');
+
+        Task::create([
+            'project_id' => $project->id,
+            'creator_profile_id' => $profile->id,
+            'message_template_id' => $template?->id,
+            'external_task_key' => $taskId,
+            'platform' => strtolower((string) $profile->platform),
+            'handle' => (string) $profile->handle,
+            'task_type' => $taskType,
+            'priority' => $priority,
+            'status' => 'PENDING',
+            'due_at' => now(),
+            'open_url' => $openUrl,
+            'message_draft' => $messageDraft,
+            'source_provider' => 'database',
+            'source_reference' => 'creator_profile:' . $profile->id,
+            'notes' => 'Auto-generated from creator_profiles',
+            'metadata' => [
+                'creator_profile_id' => $profile->id,
+                'source_sheet_row_number' => $profile->source_metadata['sheet_row_number'] ?? null,
+            ],
+        ]);
+
+        $logEvents[] = [
+            'Task_ID' => $taskId,
+            'creator_profile_id' => $profile->id,
+            'Platform' => strtolower((string) $profile->platform),
+            'Handle' => (string) $profile->handle,
+            'Channel' => $this->channelFromTaskType($taskType, [
+                'Platform' => strtolower((string) $profile->platform),
+                'Preferred_Channel' => (string) ($profile->preferred_channel ?: ''),
+            ]),
+            'Event_Type' => 'TASK_CREATED',
+            'Template_ID' => (string) ($template?->angle_id ?: ''),
+            'Status' => 'PENDING',
+            'URL' => $openUrl,
+            'Notes' => $taskType,
+        ];
+
+        $openTaskKeys[$taskKey] = true;
+        $created++;
+    }
+
+    if ($logEvents !== []) {
+        $this->outreachLog->appendEvents($sheetId, $logEvents);
+    }
+
+    return [
+        'created' => $created,
+        'eligible' => $eligible,
+        'skipped_existing' => $skippedExisting,
+        'skipped_ineligible' => $skippedIneligible,
+        'taskSheet' => 'Task_Queue',
+        'sourceRowNumbers' => $targetRowNumbers,
+        'sourceProfileIds' => $targetProfileIds,
+        'source' => 'database',
+    ];
+}
 
     private function listTasksFromDatabase(string $sheetId): ?array
     {
