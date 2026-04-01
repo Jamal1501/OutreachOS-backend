@@ -592,14 +592,18 @@ class TaskQueueService
 
     public function listTasks(string $sheetId): array
     {
-        if ($this->mirror->enabled()) {
-            $dbTasks = $this->listTasksFromDatabase($sheetId);
-            if ($dbTasks !== null) {
-                return $dbTasks;
-            }
-        }
+if ($this->mirror->enabled()) {
+    $dbTasks = $this->listTasksFromDatabase($sheetId);
+    if ($dbTasks !== null) {
+        return $dbTasks;
+    }
+}
 
-        $rows = $this->sheets->getRows($sheetId, 'Task_Queue');
+if (str_starts_with($sheetId, 'workspace:')) {
+    return [];
+}
+
+$rows = $this->sheets->getRows($sheetId, 'Task_Queue');
 
         usort($rows, function (array $a, array $b) {
             return strcmp((string) ($b['Created_At'] ?? ''), (string) ($a['Created_At'] ?? ''));
