@@ -8,6 +8,8 @@ use App\Services\GoogleSheetsService;
 use App\Services\OutreachLogService;
 use App\Services\OperationalMirrorService;
 use App\Services\TaskQueueService;
+use App\Services\ProviderUsageLogger;
+use App\Services\WorkspaceContextService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
@@ -24,6 +26,8 @@ class ApifyController extends Controller
         private TaskQueueService $taskQueue,
         private OutreachLogService $outreachLog,
         private OperationalMirrorService $mirror,
+        private WorkspaceContextService $workspaceContext,
+        private ProviderUsageLogger $usageLogger,
     ) {
     }
 
@@ -97,6 +101,16 @@ public function runActor(Request $request)
                 'input' => $input,
             ]);
 
+            $this->usageLogger->logApify([
+                'actor_id' => $actorId,
+                'actor_key' => $actorKey,
+                'status' => 'failed_to_start',
+                'max_total_charge_usd' => $validated['maxTotalChargeUsd'] ?? config('services.apify.default_max_total_charge_usd'),
+                'request_payload' => $input,
+                'response_payload' => $response->json() ?? ['body' => $response->body()],
+                'error_message' => 'Apify run failed',
+            ]);
+
             return response()->json([
                 'error' => 'Apify run failed',
                 'apifyStatus' => $response->status(),
@@ -108,6 +122,17 @@ public function runActor(Request $request)
             'actorKey' => $actorKey,
             'actorId' => $actorId,
             'response' => $response->json(),
+        ]);
+
+        $this->usageLogger->logApify([
+            'actor_id' => $actorId,
+            'actor_key' => $actorKey,
+            'run_id' => data_get($response->json(), 'data.id'),
+            'dataset_id' => data_get($response->json(), 'data.defaultDatasetId'),
+            'status' => data_get($response->json(), 'data.status'),
+            'max_total_charge_usd' => $validated['maxTotalChargeUsd'] ?? config('services.apify.default_max_total_charge_usd'),
+            'request_payload' => $input,
+            'response_payload' => $response->json(),
         ]);
 
         return response()->json([
@@ -220,7 +245,7 @@ public function getDatasetResults(Request $request, string $datasetId)
             'sourceNotes' => ['nullable', 'string'],
         ]);
 
-        $sheetId = $validated['sheetId'] ?: (string) config('services.google.default_sheet_id');
+        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
         if ($sheetId === '') {
             return response()->json(['error' => 'Missing sheetId and GOOGLE_DEFAULT_SHEET_ID'], 500);
         }
@@ -269,7 +294,7 @@ public function mergeEnrichedToCreators(Request $request)
             'taskLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
         ]);
 
-        $sheetId = $validated['sheetId'] ?: (string) config('services.google.default_sheet_id');
+        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
         $result = $this->creatorMerge->mergeFromEnrichedSheet($sheetId, $validated['sourceSheet']);
 
         $affectedRowNumbers = array_values(array_unique(array_filter(
@@ -333,7 +358,7 @@ public function mergeEnrichedToCreators(Request $request)
             'limit' => ['nullable', 'integer', 'min:1', 'max:500'],
         ]);
 
-        $sheetId = $validated['sheetId'] ?: (string) config('services.google.default_sheet_id');
+        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
         $result = $this->taskQueue->generateInitialTasks($sheetId, [
             'limit' => $validated['limit'] ?? 50,
         ]);
@@ -356,7 +381,7 @@ $validated = $request->validate([
     'message_draft' => ['nullable', 'string'],
 ]);
 
-        $sheetId = $validated['sheetId'] ?: (string) config('services.google.default_sheet_id');
+        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
         $result = $this->taskQueue->completeTask($sheetId, $taskId, $validated);
 
         return response()->json([
@@ -382,7 +407,7 @@ $validated = $request->validate([
             'Notes' => ['nullable', 'string'],
         ]);
 
-        $sheetId = $validated['sheetId'] ?: (string) config('services.google.default_sheet_id');
+        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
         $eventId = $this->outreachLog->appendEvent($sheetId, $validated);
 
         return response()->json([
@@ -422,7 +447,7 @@ $validated = $request->validate([
         'sheetId' => ['nullable', 'string'],
     ]);
 
-    $sheetId = $validated['sheetId'] ?: (string) config('services.google.default_sheet_id');
+    $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
     $tasks = $this->taskQueue->listTasks($sheetId);
 
     return response()->json([

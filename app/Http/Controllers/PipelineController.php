@@ -3,16 +3,17 @@
 namespace App\Http\Controllers;
 
 use App\Services\PipelineDiscoveryService;
+use App\Services\WorkspaceContextService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use App\Jobs\RunPipelineJob;
-use RuntimeException;
 
 class PipelineController extends Controller
 {
     public function __construct(
         private PipelineDiscoveryService $pipeline,
+        private WorkspaceContextService $workspaceContext,
     ) {
     }
 
@@ -30,7 +31,7 @@ class PipelineController extends Controller
         ]);
 
         $payload = [
-            'sheetId' => $this->resolveSheetId($validated['sheetId'] ?? null),
+            'sheetId' => $this->resolveSheetId($request, $validated['sheetId'] ?? null),
             'platform' => $validated['platform'],
             'hashtags' => $validated['hashtags'],
             'discoveryLimit' => (int) ($validated['discoveryLimit'] ?? 50),
@@ -91,12 +92,8 @@ class PipelineController extends Controller
         ]);
     }
 
-    private function resolveSheetId(?string $sheetId): string
+    private function resolveSheetId(Request $request, ?string $sheetId): string
     {
-        $resolved = trim((string) ($sheetId ?: config('services.google.default_sheet_id')));
-        if ($resolved === '') {
-            throw new RuntimeException('Missing sheetId and GOOGLE_DEFAULT_SHEET_ID');
-        }
-        return $resolved;
+        return $this->workspaceContext->resolveWorkbookId($request, $sheetId);
     }
 }

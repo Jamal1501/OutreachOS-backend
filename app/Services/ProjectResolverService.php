@@ -14,7 +14,12 @@ class ProjectResolverService
             return null;
         }
 
-        $project = Project::where('workbook_id', $sheetId)->first();
+        $workspaceId = $this->currentWorkspaceId();
+
+        $project = Project::query()
+            ->when($workspaceId, fn ($query) => $query->where('workspace_id', $workspaceId))
+            ->where('workbook_id', $sheetId)
+            ->first();
         if ($project) {
             return $project;
         }
@@ -24,6 +29,7 @@ class ProjectResolverService
         }
 
         return Project::create([
+            'workspace_id' => $workspaceId,
             'name' => str_starts_with($sheetId, 'workspace:')
                 ? 'Workspace ' . substr($sheetId, strlen('workspace:'))
                 : 'Workbook ' . substr($sheetId, 0, 8),
@@ -42,7 +48,12 @@ class ProjectResolverService
             throw new RuntimeException('Missing workbook/sheet id');
         }
 
-        $project = Project::where('workbook_id', $sheetId)->first();
+        $workspaceId = $this->currentWorkspaceId();
+
+        $project = Project::query()
+            ->when($workspaceId, fn ($query) => $query->where('workspace_id', $workspaceId))
+            ->where('workbook_id', $sheetId)
+            ->first();
         if ($project) {
             return $project;
         }
@@ -52,6 +63,7 @@ class ProjectResolverService
         }
 
         return Project::create([
+            'workspace_id' => $workspaceId,
             'name' => $projectName ?: 'Workbook ' . substr($sheetId, 0, 8),
             'workbook_id' => $sheetId,
             'status' => 'active',
@@ -59,5 +71,14 @@ class ProjectResolverService
                 'source' => 'google_sheets_runtime',
             ],
         ]);
+    }
+
+
+    private function currentWorkspaceId(): ?string
+    {
+        $workspaceId = request()?->attributes->get('workspace_id');
+        $workspaceId = is_string($workspaceId) ? trim($workspaceId) : '';
+
+        return $workspaceId !== '' ? $workspaceId : null;
     }
 }

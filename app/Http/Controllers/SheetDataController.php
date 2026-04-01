@@ -17,6 +17,7 @@ use App\Services\OutreachLogService;
 use App\Services\OperationalMirrorService;
 use App\Services\ProjectResolverService;
 use App\Services\TaskQueueService;
+use App\Services\WorkspaceContextService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
@@ -38,6 +39,7 @@ class SheetDataController extends Controller
         private OutreachLogService $outreachLog,
         private OperationalMirrorService $mirror,
         private ProjectResolverService $projects,
+        private WorkspaceContextService $workspaceContext,
     ) {
     }
 
@@ -52,7 +54,7 @@ class SheetDataController extends Controller
             'dedupe' => ['nullable', 'boolean'],
         ]);
 
-        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $platforms = isset($validated['platform']) ? [$validated['platform']] : ['instagram', 'tiktok'];
         $search = Str::lower(trim((string) ($validated['search'] ?? '')));
         $limit = (int) ($validated['limit'] ?? 200);
@@ -138,7 +140,7 @@ class SheetDataController extends Controller
             'postIds.*' => ['string'],
         ]);
 
-        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $result = $this->queueDiscoveryPosts($sheetId, $validated['postIds'], 'DISCOVERY_EXTRACT');
 
         return response()->json([
@@ -157,7 +159,7 @@ class SheetDataController extends Controller
             'postIds.*' => ['string'],
         ]);
 
-        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $result = $this->queueDiscoveryPosts($sheetId, $validated['postIds'], 'DISCOVERY_PUSH');
 
         return response()->json([
@@ -182,7 +184,7 @@ class SheetDataController extends Controller
             'offset' => ['nullable', 'integer', 'min:0'],
         ]);
 
-        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $search = Str::lower(trim((string) ($validated['search'] ?? '')));
         $platform = Str::lower(trim((string) ($validated['platform'] ?? '')));
         $status = Str::lower(trim((string) ($validated['status'] ?? '')));
@@ -260,7 +262,7 @@ class SheetDataController extends Controller
             'creator' => ['required', 'array'],
         ]);
 
-        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $payload = $validated['creator'];
         $dbProfile = $this->resolveCreatorProfileForRoute($sheetId, $id);
 
@@ -359,7 +361,7 @@ class SheetDataController extends Controller
             'primaryCreatorId' => ['nullable', 'string'],
         ]);
 
-        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $project = $this->projects->findByWorkbookId($sheetId);
 
         if ($project) {
@@ -519,7 +521,7 @@ public function mergeSelectedQueueToCrm(Request $request)
         'taskLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
     ]);
 
-    $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+    $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
     $platform = $validated['platform'];
     $project = $this->projects->findByWorkbookId($sheetId);
 
@@ -724,7 +726,7 @@ public function mergeSelectedQueueToCrm(Request $request)
             'niche' => ['nullable', 'string'],
         ]);
 
-        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $platform = Str::lower(trim((string) ($validated['platform'] ?? '')));
         $stage = Str::lower(trim((string) ($validated['stage'] ?? '')));
         $niche = Str::lower(trim((string) ($validated['niche'] ?? '')));
@@ -770,7 +772,7 @@ public function mergeSelectedQueueToCrm(Request $request)
             'template' => ['required', 'array'],
         ]);
 
-        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $project = $this->projects->resolveByWorkbookId($sheetId);
         $templatePayload = $validated['template'];
 
@@ -806,7 +808,7 @@ public function mergeSelectedQueueToCrm(Request $request)
             'template' => ['required', 'array'],
         ]);
 
-        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $template = $this->resolveMessageTemplateForRoute($sheetId, $id);
         if (!$template) {
             throw new RuntimeException('Message template not found');
@@ -839,7 +841,7 @@ public function mergeSelectedQueueToCrm(Request $request)
             'sheetId' => ['nullable', 'string'],
         ]);
 
-        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $template = $this->resolveMessageTemplateForRoute($sheetId, $id);
 
         if (!$template) {
@@ -881,7 +883,7 @@ public function enrichmentQueue(Request $request)
         'platform' => ['nullable', 'string', Rule::in(['instagram', 'tiktok'])],
     ]);
 
-    $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+    $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
     $platform = $validated['platform'] ?? null;
     $platforms = $platform ? [$platform] : ['instagram', 'tiktok'];
 
@@ -986,7 +988,7 @@ public function operatorView(Request $request)
             'sheetId' => ['nullable', 'string'],
         ]);
 
-        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
 
         return response()->json([
             'message' => 'Operator view fetched',
@@ -1009,7 +1011,7 @@ public function operatorView(Request $request)
             'sheetId' => ['nullable', 'string'],
         ]);
 
-        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $rowNumber = $this->parseRowNumber($id, 'crm');
 
         return response()->json([
@@ -1028,7 +1030,7 @@ public function operatorView(Request $request)
             'actor' => ['nullable', 'string'],
         ]);
 
-        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $toState = trim((string) $validated['toState']);
         $dbProfile = $this->resolveCreatorProfileForRoute($sheetId, $id);
 
@@ -1144,7 +1146,7 @@ public function operatorView(Request $request)
             'sheetId' => ['nullable', 'string'],
         ]);
 
-        $sheetId = $this->resolveSheetId($validated['sheetId'] ?? null);
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $project = $this->projects->findByWorkbookId($sheetId);
 
         if ($project) {
@@ -1866,13 +1868,9 @@ public function operatorView(Request $request)
         return (bool) preg_match('/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/', trim($value));
     }
 
-    private function resolveSheetId(?string $sheetId): string
+    private function resolveSheetId(Request $request, ?string $sheetId): string
     {
-        $resolved = trim((string) ($sheetId ?: config('services.google.default_sheet_id')));
-        if ($resolved === '') {
-            throw new RuntimeException('Missing sheetId and GOOGLE_DEFAULT_SHEET_ID');
-        }
-        return $resolved;
+        return $this->workspaceContext->resolveWorkbookId($request, $sheetId);
     }
 
     private function normalizeDiscoveryRow(string $platform, string $sheetName, array $row): ?array

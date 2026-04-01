@@ -3,11 +3,16 @@
 namespace App\Services\Providers;
 
 use App\DataTransferObjects\ProviderRunResult;
+use App\Services\ProviderUsageLogger;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
 class ApifyRunExecutor
 {
+    public function __construct(private ProviderUsageLogger $usageLogger)
+    {
+    }
+
     private const TERMINAL_RUN_STATUSES = ['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT', 'TIMED_OUT'];
     private const DEFAULT_POLL_SECONDS = 5;
     private const DEFAULT_TIMEOUT_SECONDS = 300;
@@ -27,6 +32,15 @@ class ApifyRunExecutor
             ->post("https://api.apify.com/v2/acts/{$actorId}/runs", $input);
 
         if (!$startResponse->successful()) {
+            $this->usageLogger->logApify([
+                'actor_id' => $actorId,
+                'actor_key' => $actorKey,
+                'status' => 'failed_to_start',
+                'request_payload' => $input,
+                'response_payload' => ['body' => $startResponse->body()],
+                'error_message' => 'Failed to start Apify actor',
+            ]);
+
             throw new RuntimeException('Failed to start Apify actor: ' . $startResponse->body());
         }
 
@@ -39,6 +53,19 @@ class ApifyRunExecutor
         $runData = $this->pollRun($token, $runId);
         $datasetId = (string) ($runData['defaultDatasetId'] ?? '');
         $items = $this->fetchDatasetItems($token, $datasetId);
+
+        $this->usageLogger->logApify([
+            'actor_id' => $actorId,
+            'actor_key' => $actorKey,
+            'run_id' => $runId,
+            'dataset_id' => $datasetId,
+            'status' => $runData['status'] ?? 'SUCCEEDED',
+            'request_payload' => $input,
+            'response_payload' => [
+                'start' => $startData,
+                'run' => $runData,
+            ],
+        ]);
 
         return new ProviderRunResult(
             provider: 'apify',

@@ -13,9 +13,14 @@ Route::get('/health', function () {
     ]);
 });
 
-Route::middleware('app.key')->group(function () {
+Route::middleware(['api.auth', 'workspace.context'])->group(function () {
     Route::get('/auth-check', function () {
-        return response()->json(['ok' => true]);
+        return response()->json([
+            'ok' => true,
+            'workspaceId' => request()->attributes->get('workspace_id'),
+            'workspaceRole' => request()->attributes->get('workspace_role'),
+            'legacyAccess' => (bool) request()->attributes->get('legacy_api_access'),
+        ]);
     });
 
     Route::post('/apify/run', [ApifyController::class, 'runActor']);

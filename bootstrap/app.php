@@ -1,6 +1,8 @@
 <?php
 
+use App\Http\Middleware\AuthenticateApiRequest;
 use App\Http\Middleware\RequireAppKey;
+use App\Http\Middleware\ResolveWorkspaceContext;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -18,6 +20,8 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
             'app.key' => RequireAppKey::class,
+            'api.auth' => AuthenticateApiRequest::class,
+            'workspace.context' => ResolveWorkspaceContext::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
