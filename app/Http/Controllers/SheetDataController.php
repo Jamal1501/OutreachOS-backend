@@ -1213,6 +1213,21 @@ public function operatorView(Request $request)
             ]);
         }
 
+if (Str::startsWith($sheetId, 'workspace:')) {
+    return response()->json([
+        'message' => 'Dashboard metrics fetched',
+        'metrics' => [
+            'creatorsDiscovered' => 0,
+            'creatorsEnriched' => 0,
+            'readyForOutreach' => 0,
+            'tasksDueToday' => 0,
+            'outreachSent' => 0,
+            'repliesReceived' => 0,
+            'scrapeSpend' => 0,
+        ],
+    ]);
+}
+        
         $creatorRows = $this->sheets->getRows($sheetId, 'Creators_CRM');
         $creators = array_map(fn (array $row) => $this->normalizeCreatorRow($row), $creatorRows);
         $tasks = $this->sheets->getRows($sheetId, 'Task_Queue');
