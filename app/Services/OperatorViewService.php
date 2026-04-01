@@ -173,6 +173,26 @@ class OperatorViewService
         return $this->buildDecisionPayload($creator, $duplicates, $relatedTasks, $timeline);
     }
 
+    public function buildDecisionSheetForProfileId(string $sheetId, string $profileId): array
+{
+    $project = $this->projects->findByWorkbookId($sheetId);
+    if (!$project) {
+        throw new \RuntimeException('Project not found');
+    }
+
+    $profile = CreatorProfile::query()
+        ->with('creator')
+        ->where('project_id', $project->id)
+        ->where('id', $profileId)
+        ->first();
+
+    if (!$profile) {
+        throw new \RuntimeException('Creator not found');
+    }
+
+    return $this->buildDecisionSheetPayloadFromProfile($project->id, $profile);
+}
+
     private function buildFromDatabase(int $projectId): array
     {
         $profiles = CreatorProfile::query()
