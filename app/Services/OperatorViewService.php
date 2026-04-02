@@ -532,6 +532,9 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         $sourceRowNumber = (int) (($profile->source_metadata['sheet_row_number'] ?? 0) ?: 0);
         $addedAt = optional($profile->created_at)?->toDateTimeString() ?? '';
 
+        $sourceMetadata = is_array($profile->source_metadata) ? $profile->source_metadata : [];
+        $creatorMetadata = is_array($creator?->metadata) ? $creator->metadata : [];
+
         return [
             'id' => $sourceRowNumber > 0 ? 'crm:' . $sourceRowNumber : 'profile:' . $profile->id,
             'platform' => strtolower((string) ($profile->platform ?: 'instagram')),
@@ -557,6 +560,12 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
             'creatorIdentityId' => (string) ($creator?->external_identity_key ?: ''),
             'linkedProfileCount' => $creator ? $creator->profiles()->count() : 1,
             'openTaskCount' => 0,
+            'sourcePostUrl' => (string) (($sourceMetadata['source_post_url'] ?? $creatorMetadata['latest_source_post_url'] ?? '') ?: ''),
+            'sourcePostUrls' => array_values(array_filter((array) ($sourceMetadata['source_post_urls'] ?? $creatorMetadata['source_post_urls'] ?? []))),
+            'sourceMetricType' => (string) (($sourceMetadata['source_metric_type'] ?? $creatorMetadata['latest_source_metric_type'] ?? '') ?: ''),
+            'sourceMetricValue' => is_numeric((string) ($sourceMetadata['source_metric_value'] ?? $creatorMetadata['latest_source_metric_value'] ?? null)) ? (int) ($sourceMetadata['source_metric_value'] ?? $creatorMetadata['latest_source_metric_value']) : null,
+            'matchedPostCount' => is_numeric((string) ($sourceMetadata['matched_post_count'] ?? $creatorMetadata['matched_post_count'] ?? null)) ? (int) ($sourceMetadata['matched_post_count'] ?? $creatorMetadata['matched_post_count']) : null,
+            'sourceHashtags' => array_values(array_filter((array) ($sourceMetadata['source_hashtags'] ?? $creatorMetadata['source_hashtags'] ?? []))),
             'evidence' => [
                 'followers' => [
                     'source' => (string) ($profile->source_provider ?: 'database'),
