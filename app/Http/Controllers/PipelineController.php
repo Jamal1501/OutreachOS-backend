@@ -27,6 +27,7 @@ class PipelineController extends Controller
             'discoveryLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
             'enrichmentLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
             'dedupeAgainstCRM' => ['nullable', 'boolean'],
+            'rankingMetric' => ['nullable', 'string', Rule::in(['views', 'likes', 'comments', 'shares'])],
             'wait' => ['nullable', 'boolean'],
         ]);
 
@@ -37,6 +38,7 @@ class PipelineController extends Controller
             'discoveryLimit' => (int) ($validated['discoveryLimit'] ?? 50),
             'enrichmentLimit' => (int) ($validated['enrichmentLimit'] ?? 20),
             'dedupeAgainstCRM' => (bool) ($validated['dedupeAgainstCRM'] ?? true),
+            'rankingMetric' => (string) ($validated['rankingMetric'] ?? ''),
         ];
 
         if ($request->boolean('wait')) {
