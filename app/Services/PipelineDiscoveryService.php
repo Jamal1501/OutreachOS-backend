@@ -94,7 +94,8 @@ public function getJobState(string $jobId): ?array
         $discoveryLimit = (int) ($payload['discoveryLimit'] ?? 50);
         $enrichmentLimit = (int) ($payload['enrichmentLimit'] ?? 20);
         $dedupeAgainstCRM = (bool) ($payload['dedupeAgainstCRM'] ?? true);
-$projectId = $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId($sheetId)->id : null;
+        $rankingMetric = $this->resolveRankingMetric($platform, (string) ($payload['rankingMetric'] ?? ''));
+        $projectId = $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId($sheetId)->id : null;
 
         if ($projectId) {
             $run = DiscoveryRun::query()->find($jobId);
@@ -125,7 +126,7 @@ $projectId = $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId
             ];
             $this->completeStep($jobId, 'discovery_scrape', end($stepResults));
             $this->persistDiscoveryProviderResult($jobId, $projectId, $platform, $hashtags, $discoveryLimit, $enrichmentLimit, $dedupeAgainstCRM, $discovery);
-           // $this->persistDiscoveryItems($jobId, $projectId, $platform, $discoveryItems);
+            $this->persistDiscoveryItems($jobId, $projectId, $platform, $discoveryItems);
 
             $this->updateJob($jobId, ['currentStep' => 'import_posts']);
             $rawSheet = $this->rawSheetForPlatform($platform);
@@ -139,24 +140,32 @@ $projectId = $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId
             $this->completeStep($jobId, 'import_posts', end($stepResults));
 
             $this->updateJob($jobId, ['currentStep' => 'extract_urls']);
-            [$profiles, $sourceHashtagsByUrl] = $this->extractProfilesFromDiscoveryItems($platform, $discoveryItems, $hashtags);
+            [$profiles, $sourceHashtagsByUrl] = $this->selectProfilesFromRankedPosts(
+                $platform,
+                $discoveryItems,
+                $hashtags,
+                $enrichmentLimit,
+                $rankingMetric
+            );
+            $crmMatchesByProfileUrl = $this->findExistingCrmMatches($projectId, $sheetId, $platform, $profiles);
+            foreach ($profiles as &$profile) {
+                $profileKey = $this->normalizeProfileUrlKey((string) ($profile['profileUrl'] ?? ''));
+                $profile['alreadyInCrm'] = $profileKey !== '' && isset($crmMatchesByProfileUrl[$profileKey]);
+            }
+            unset($profile);
             Log::info('Pipeline extraction summary', [
-    'jobId' => $jobId,
-    'platform' => $platform,
-    'discoveryItemCount' => count($discoveryItems),
-    'extractedProfileCount' => count($profiles),
-    'sampleDiscoveryItems' => array_slice($discoveryItems, 0, 2),
-    'sampleProfiles' => array_slice($profiles, 0, 5),
-]);
-            if ($dedupeAgainstCRM) {
-                $profiles = $this->dedupeProfilesAgainstCrm($sheetId, $platform, $profiles);
-            }
-            if ($enrichmentLimit > 0) {
-                $profiles = array_slice($profiles, 0, $enrichmentLimit);
-            }
+                'jobId' => $jobId,
+                'platform' => $platform,
+                'rankingMetric' => $rankingMetric,
+                'discoveryItemCount' => count($discoveryItems),
+                'selectedProfileCount' => count($profiles),
+                'sampleDiscoveryItems' => array_slice($discoveryItems, 0, 2),
+                'sampleProfiles' => array_slice($profiles, 0, 5),
+            ]);
             $stepResults[] = [
                 'step' => 'extract_urls',
                 'status' => 'completed',
+                'rankingMetric' => $rankingMetric,
                 'uniqueProfiles' => count($profiles),
             ];
             $this->completeStep($jobId, 'extract_urls', end($stepResults));
@@ -208,7 +217,13 @@ $projectId = $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId
             $enrichedSheet = $this->enrichedSheetForPlatform($platform);
             $enrichedRows = $this->rowMapper->mapRowsForSheet($enrichedSheet, $enrichmentItems, ['platform' => $platform]);
             $importedProfiles = $this->appendRowsIfAny($sheetId, $enrichedSheet, $enrichedRows);
-            $creators = $this->buildCreatorsResponse($platform, $enrichmentItems, $sourceHashtagsByUrl, $hashtags);
+            $creators = $this->buildCreatorsResponse(
+                $platform,
+                $enrichmentItems,
+                $this->profilesByProfileUrl($profiles),
+                $sourceHashtagsByUrl,
+                $hashtags
+            );
             $stepResults[] = [
                 'step' => 'import_profiles',
                 'status' => 'completed',
@@ -526,16 +541,90 @@ $projectId = $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId
         return !str_starts_with($sheetId, 'workspace:') && !str_starts_with($sheetId, 'db:');
     }
 
-private function extractProfilesFromDiscoveryItems(string $platform, array $items, array $inputHashtags): array
-{
-    $profiles = [];
-    $sourceHashtagsByUrl = [];
+private function selectProfilesFromRankedPosts(
+        string $platform,
+        array $items,
+        array $inputHashtags,
+        int $enrichmentLimit,
+        string $rankingMetric
+    ): array {
+        $rankedPosts = [];
+        $sourceHashtagsByUrl = [];
+        $matchedPostCounts = [];
 
-    foreach ($items as $item) {
-        $username = '';
+        foreach ($items as $item) {
+            $username = $this->extractUsernameFromDiscoveryItem($platform, $item);
+            $profileUrl = $this->profileUrlFor($platform, $username, $item);
 
+            if ($profileUrl === '') {
+                continue;
+            }
+
+            $profileKey = $this->normalizeProfileUrlKey($profileUrl);
+            $matchedTags = $this->matchedHashtagsForItem($item, $inputHashtags);
+            $sourceHashtagsByUrl[$profileKey] = array_values(array_unique(array_merge(
+                $sourceHashtagsByUrl[$profileKey] ?? [],
+                $matchedTags
+            )));
+            $matchedPostCounts[$profileKey] = ($matchedPostCounts[$profileKey] ?? 0) + 1;
+
+            $rankedPosts[] = [
+                'platform' => $platform,
+                'username' => $username,
+                'handle' => $this->normalizeHandle($username),
+                'profileUrl' => $profileUrl,
+                'profileKey' => $profileKey,
+                'postUrl' => $this->postUrlFor($platform, $item),
+                'metricType' => $rankingMetric,
+                'metricValue' => $this->metricValueForDiscoveryItem($platform, $item, $rankingMetric),
+                'metrics' => [
+                    'likes' => $this->nullableInt(Arr::get($item, 'likesCount', Arr::get($item, 'diggCount'))),
+                    'comments' => $this->nullableInt(Arr::get($item, 'commentsCount', Arr::get($item, 'commentCount'))),
+                    'views' => $this->nullableInt(Arr::get($item, 'playCount')),
+                    'shares' => $this->nullableInt(Arr::get($item, 'shareCount')),
+                ],
+            ];
+        }
+
+        usort($rankedPosts, function (array $a, array $b) {
+            $scoreCompare = ((int) ($b['metricValue'] ?? 0)) <=> ((int) ($a['metricValue'] ?? 0));
+            if ($scoreCompare !== 0) {
+                return $scoreCompare;
+            }
+            return strcmp((string) ($a['profileUrl'] ?? ''), (string) ($b['profileUrl'] ?? ''));
+        });
+
+        $profiles = [];
+        foreach ($rankedPosts as $post) {
+            $profileKey = (string) $post['profileKey'];
+            if ($profileKey === '' || isset($profiles[$profileKey])) {
+                continue;
+            }
+
+            $profiles[$profileKey] = [
+                'platform' => $platform,
+                'handle' => $post['handle'],
+                'username' => $post['username'],
+                'profileUrl' => $post['profileUrl'],
+                'sourcePostUrl' => $post['postUrl'] ?: null,
+                'sourceMetricType' => $post['metricType'],
+                'sourceMetricValue' => (int) ($post['metricValue'] ?? 0),
+                'sourcePostMetrics' => $post['metrics'],
+                'matchedPostCount' => (int) ($matchedPostCounts[$profileKey] ?? 1),
+            ];
+
+            if ($enrichmentLimit > 0 && count($profiles) >= $enrichmentLimit) {
+                break;
+            }
+        }
+
+        return [array_values($profiles), $sourceHashtagsByUrl];
+    }
+
+    private function extractUsernameFromDiscoveryItem(string $platform, array $item): string
+    {
         if ($platform === 'instagram') {
-            $username = trim((string) (
+            return trim((string) (
                 Arr::get($item, 'ownerUsername')
                 ?? Arr::get($item, 'owner.username')
                 ?? Arr::get($item, 'user.username')
@@ -543,84 +632,142 @@ private function extractProfilesFromDiscoveryItems(string $platform, array $item
                 ?? Arr::get($item, 'username')
                 ?? ''
             ));
-        } else {
-            $username = trim((string) (
-                Arr::get($item, 'authorMeta.name')
-                ?? Arr::get($item, 'authorMeta.nickName')
-                ?? Arr::get($item, 'author.username')
-                ?? Arr::get($item, 'author.uniqueId')
-                ?? Arr::get($item, 'authorMeta.uniqueId')
-                ?? Arr::get($item, 'username')
-                ?? ''
-            ));
         }
 
-        $profileUrl = $this->profileUrlFor($platform, $username, $item);
-        if ($profileUrl === '') {
-            continue;
-        }
-
-        $handle = $this->normalizeHandle($username);
-        $matchedTags = $this->matchedHashtagsForItem($item, $inputHashtags);
-
-        if (!isset($profiles[$profileUrl])) {
-            $profiles[$profileUrl] = [
-                'platform' => $platform,
-                'handle' => $handle,
-                'username' => $username,
-                'profileUrl' => $profileUrl,
-            ];
-        }
-
-        $sourceHashtagsByUrl[$profileUrl] = array_values(array_unique(array_merge(
-            $sourceHashtagsByUrl[$profileUrl] ?? [],
-            $matchedTags
-        )));
+        return trim((string) (
+            Arr::get($item, 'authorMeta.name')
+            ?? Arr::get($item, 'author.uniqueId')
+            ?? Arr::get($item, 'author.username')
+            ?? Arr::get($item, 'authorMeta.uniqueId')
+            ?? Arr::get($item, 'username')
+            ?? ''
+        ));
     }
 
-    return [array_values($profiles), $sourceHashtagsByUrl];
-}
-
-    private function dedupeProfilesAgainstCrm(string $sheetId, string $platform, array $profiles): array
+    private function postUrlFor(string $platform, array $item): string
     {
-        if (!$this->shouldSyncSheets($sheetId)) {
-            return $profiles;
+        if ($platform === 'instagram') {
+            return trim((string) Arr::get($item, 'url', Arr::get($item, 'postUrl', '')));
         }
 
-        $crmRows = $this->sheets->getRows($sheetId, 'Creators_CRM');
+        return trim((string) Arr::get($item, 'webVideoUrl', Arr::get($item, 'url', '')));
+    }
+
+    private function resolveRankingMetric(string $platform, string $requested): string
+    {
+        $requested = strtolower(trim($requested));
+
+        if ($platform === 'tiktok') {
+            return in_array($requested, ['views', 'likes', 'comments', 'shares'], true)
+                ? $requested
+                : 'views';
+        }
+
+        return in_array($requested, ['likes', 'comments'], true)
+            ? $requested
+            : 'likes';
+    }
+
+    private function metricValueForDiscoveryItem(string $platform, array $item, string $metric): int
+    {
+        return match ($metric) {
+            'views' => (int) ($this->nullableInt(Arr::get($item, 'playCount')) ?? 0),
+            'likes' => (int) ($this->nullableInt(Arr::get($item, 'likesCount', Arr::get($item, 'diggCount'))) ?? 0),
+            'comments' => (int) ($this->nullableInt(Arr::get($item, 'commentsCount', Arr::get($item, 'commentCount'))) ?? 0),
+            'shares' => (int) ($this->nullableInt(Arr::get($item, 'shareCount')) ?? 0),
+            default => 0,
+        };
+    }
+
+    private function normalizeProfileUrlKey(string $profileUrl): string
+    {
+        return strtolower(rtrim(trim($profileUrl), '/'));
+    }
+
+    private function findExistingCrmMatches(?int $projectId, string $sheetId, string $platform, array $profiles): array
+    {
         $existing = [];
 
-        foreach ($crmRows as $row) {
-            $crmPlatform = strtolower(trim((string) ($row['Platform'] ?? '')));
-            if ($crmPlatform !== strtolower($platform)) {
-                continue;
-            }
+        if ($projectId) {
+            $rows = \App\Models\CreatorProfile::query()
+                ->where('project_id', $projectId)
+                ->where('platform', strtolower($platform))
+                ->get(['profile_url', 'dm_link', 'handle', 'username']);
 
-            $handle = strtolower(trim(ltrim((string) ($row['Handle'] ?? ''), '@')));
-            $dm = strtolower(trim((string) ($row['DM_Link'] ?? '')));
-            if ($handle !== '') {
-                $existing['handle:' . $handle] = true;
+            foreach ($rows as $row) {
+                $profileUrl = $this->normalizeProfileUrlKey((string) ($row->profile_url ?? ''));
+                $dmLink = $this->normalizeProfileUrlKey((string) ($row->dm_link ?? ''));
+                $handle = strtolower(trim(ltrim((string) ($row->handle ?? $row->username ?? ''), '@')));
+                if ($profileUrl !== '') {
+                    $existing[$profileUrl] = true;
+                }
+                if ($dmLink !== '') {
+                    $existing[$dmLink] = true;
+                }
+                if ($handle !== '') {
+                    $existing['handle:' . $handle] = true;
+                }
             }
-            if ($dm !== '') {
-                $existing['url:' . rtrim($dm, '/')] = true;
+        } elseif ($this->shouldSyncSheets($sheetId)) {
+            $crmRows = $this->sheets->getRows($sheetId, 'Creators_CRM');
+            foreach ($crmRows as $row) {
+                $crmPlatform = strtolower(trim((string) ($row['Platform'] ?? '')));
+                if ($crmPlatform !== strtolower($platform)) {
+                    continue;
+                }
+                $dm = $this->normalizeProfileUrlKey((string) ($row['DM_Link'] ?? ''));
+                $handle = strtolower(trim(ltrim((string) ($row['Handle'] ?? ''), '@')));
+                if ($dm !== '') {
+                    $existing[$dm] = true;
+                }
+                if ($handle !== '') {
+                    $existing['handle:' . $handle] = true;
+                }
             }
         }
 
-        return array_values(array_filter($profiles, function (array $profile) use ($existing) {
+        $matches = [];
+        foreach ($profiles as $profile) {
+            $profileKey = $this->normalizeProfileUrlKey((string) ($profile['profileUrl'] ?? ''));
             $handleKey = 'handle:' . strtolower(trim(ltrim((string) ($profile['handle'] ?? ''), '@')));
-            $urlKey = 'url:' . rtrim(strtolower(trim((string) ($profile['profileUrl'] ?? ''))), '/');
-            return !isset($existing[$handleKey]) && !isset($existing[$urlKey]);
-        }));
+            if (($profileKey !== '' && isset($existing[$profileKey])) || ($handleKey !== 'handle:' && isset($existing[$handleKey]))) {
+                if ($profileKey !== '') {
+                    $matches[$profileKey] = true;
+                }
+            }
+        }
+
+        return $matches;
     }
 
-    private function buildCreatorsResponse(string $platform, array $enrichmentItems, array $sourceHashtagsByUrl, array $inputHashtags): array
+    private function profilesByProfileUrl(array $profiles): array
+    {
+        $indexed = [];
+        foreach ($profiles as $profile) {
+            $profileKey = $this->normalizeProfileUrlKey((string) ($profile['profileUrl'] ?? ''));
+            if ($profileKey === '') {
+                continue;
+            }
+            $indexed[$profileKey] = $profile;
+        }
+
+        return $indexed;
+    }
+
+    private function buildCreatorsResponse(
+        string $platform,
+        array $enrichmentItems,
+        array $selectedProfilesByUrl,
+        array $sourceHashtagsByUrl,
+        array $inputHashtags
+    ): array
     {
         $creators = [];
 
         foreach ($enrichmentItems as $item) {
             $creator = $platform === 'instagram'
-                ? $this->normalizeInstagramCreator($item, $sourceHashtagsByUrl, $inputHashtags)
-                : $this->normalizeTikTokCreator($item, $sourceHashtagsByUrl, $inputHashtags);
+                ? $this->normalizeInstagramCreator($item, $selectedProfilesByUrl, $sourceHashtagsByUrl, $inputHashtags)
+                : $this->normalizeTikTokCreator($item, $selectedProfilesByUrl, $sourceHashtagsByUrl, $inputHashtags);
 
             if ($creator === null) {
                 continue;
@@ -632,8 +779,12 @@ private function extractProfilesFromDiscoveryItems(string $platform, array $item
         return array_values($creators);
     }
 
-    private function normalizeInstagramCreator(array $item, array $sourceHashtagsByUrl, array $inputHashtags): ?array
-    {
+    private function normalizeInstagramCreator(
+        array $item,
+        array $selectedProfilesByUrl,
+        array $sourceHashtagsByUrl,
+        array $inputHashtags
+    ): ?array {
         $username = trim((string) Arr::get($item, 'username', Arr::get($item, 'ownerUsername', '')));
         $profileUrl = $this->profileUrlFor('instagram', $username, $item);
         if ($profileUrl === '') {
@@ -642,10 +793,12 @@ private function extractProfilesFromDiscoveryItems(string $platform, array $item
 
         $latestPosts = Arr::get($item, 'latestPosts', Arr::get($item, 'latest_posts', []));
         $latestPosts = is_array($latestPosts) ? $latestPosts : [];
-        $sourceTags = $sourceHashtagsByUrl[$profileUrl] ?? $sourceHashtagsByUrl[rtrim($profileUrl, '/')] ?? [];
-        if ($sourceTags === []) {
+        $profileKey = $this->normalizeProfileUrlKey($profileUrl);
+        $sourceTags = $sourceHashtagsByUrl[$profileKey] ?? [];
+        if ($sourceTags == []) {
             $sourceTags = $this->matchedHashtagsForItem($item, $inputHashtags);
         }
+        $selectedProfile = $selectedProfilesByUrl[$profileKey] ?? null;
 
         return [
             'id' => (string) (Arr::get($item, 'id', $username ?: md5($profileUrl))),
@@ -664,11 +817,21 @@ private function extractProfilesFromDiscoveryItems(string $platform, array $item
             'isVerified' => $this->nullableBool(Arr::get($item, 'verified', Arr::get($item, 'is_verified'))),
             'readyToMerge' => true,
             'sourceHashtags' => $sourceTags,
+            'sourcePostUrl' => $selectedProfile['sourcePostUrl'] ?? null,
+            'sourceMetricType' => $selectedProfile['sourceMetricType'] ?? null,
+            'sourceMetricValue' => $selectedProfile['sourceMetricValue'] ?? null,
+            'sourcePostMetrics' => $selectedProfile['sourcePostMetrics'] ?? null,
+            'matchedPostCount' => $selectedProfile['matchedPostCount'] ?? 1,
+            'alreadyInCrm' => (bool) ($selectedProfile['alreadyInCrm'] ?? false),
         ];
     }
 
-    private function normalizeTikTokCreator(array $item, array $sourceHashtagsByUrl, array $inputHashtags): ?array
-    {
+    private function normalizeTikTokCreator(
+        array $item,
+        array $selectedProfilesByUrl,
+        array $sourceHashtagsByUrl,
+        array $inputHashtags
+    ): ?array {
         $username = trim((string) Arr::get($item, 'username', Arr::get($item, 'authorMeta.name', Arr::get($item, 'author.username', ''))));
         $profileUrl = $this->profileUrlFor('tiktok', $username, $item);
         if ($profileUrl === '') {
@@ -677,10 +840,12 @@ private function extractProfilesFromDiscoveryItems(string $platform, array $item
 
         $latestPosts = Arr::get($item, 'latestPosts', Arr::get($item, 'latest_posts', []));
         $latestPosts = is_array($latestPosts) ? $latestPosts : [];
-        $sourceTags = $sourceHashtagsByUrl[$profileUrl] ?? $sourceHashtagsByUrl[rtrim($profileUrl, '/')] ?? [];
-        if ($sourceTags === []) {
+        $profileKey = $this->normalizeProfileUrlKey($profileUrl);
+        $sourceTags = $sourceHashtagsByUrl[$profileKey] ?? [];
+        if ($sourceTags == []) {
             $sourceTags = $this->matchedHashtagsForItem($item, $inputHashtags);
         }
+        $selectedProfile = $selectedProfilesByUrl[$profileKey] ?? null;
 
         $followers = Arr::get($item, 'followersCount', Arr::get($item, 'authorStats.followerCount', Arr::get($item, 'followers')));
         $avgLikes = $this->averageFromLatestPosts($latestPosts, 'diggCount');
@@ -707,6 +872,12 @@ private function extractProfilesFromDiscoveryItems(string $platform, array $item
             'isVerified' => $this->nullableBool(Arr::get($item, 'verified', Arr::get($item, 'authorMeta.verified', Arr::get($item, 'isVerified')))),
             'readyToMerge' => true,
             'sourceHashtags' => $sourceTags,
+            'sourcePostUrl' => $selectedProfile['sourcePostUrl'] ?? null,
+            'sourceMetricType' => $selectedProfile['sourceMetricType'] ?? null,
+            'sourceMetricValue' => $selectedProfile['sourceMetricValue'] ?? null,
+            'sourcePostMetrics' => $selectedProfile['sourcePostMetrics'] ?? null,
+            'matchedPostCount' => $selectedProfile['matchedPostCount'] ?? 1,
+            'alreadyInCrm' => (bool) ($selectedProfile['alreadyInCrm'] ?? false),
         ];
     }
 
