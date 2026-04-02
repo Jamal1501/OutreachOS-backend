@@ -1343,6 +1343,23 @@ if (Str::startsWith($sheetId, 'workspace:')) {
                     $existingTags = array_values(array_filter((array) ($creatorMetadata['source_hashtags'] ?? []), fn ($v) => trim((string) $v) !== ''));
                     $creatorMetadata['source_hashtags'] = array_values(array_unique(array_merge($existingTags, $candidate['sourceHashtags'])));
                 }
+                if ($candidate['sourcePostUrl'] !== null) {
+                    $existingSourcePosts = array_values(array_filter((array) ($creatorMetadata['source_post_urls'] ?? []), fn ($v) => trim((string) $v) !== ''));
+                    $creatorMetadata['source_post_urls'] = array_values(array_unique(array_merge($existingSourcePosts, [$candidate['sourcePostUrl']])));
+                    $creatorMetadata['latest_source_post_url'] = $candidate['sourcePostUrl'];
+                }
+                if ($candidate['sourceMetricType'] !== null) {
+                    $creatorMetadata['latest_source_metric_type'] = $candidate['sourceMetricType'];
+                }
+                if ($candidate['sourceMetricValue'] !== null) {
+                    $creatorMetadata['latest_source_metric_value'] = $candidate['sourceMetricValue'];
+                }
+                if (is_array($candidate['sourcePostMetrics']) && $candidate['sourcePostMetrics'] !== []) {
+                    $creatorMetadata['latest_source_post_metrics'] = $candidate['sourcePostMetrics'];
+                }
+                if ($candidate['matchedPostCount'] !== null) {
+                    $creatorMetadata['matched_post_count'] = max((int) ($creatorMetadata['matched_post_count'] ?? 0), (int) $candidate['matchedPostCount']);
+                }
                 $creatorMetadata['source_platform'] = $platform;
                 $creator->metadata = $creatorMetadata;
                 $creator->display_name = $candidate['fullName'] ?: $creator->display_name;
@@ -1366,7 +1383,25 @@ if (Str::startsWith($sheetId, 'workspace:')) {
                 $sourceMetadata = is_array($profile->source_metadata) ? $profile->source_metadata : [];
                 $sourceMetadata['pipeline_creator_id'] = $candidate['id'];
                 $sourceMetadata['merge_ref'] = $candidate['mergeRef'];
-                $sourceMetadata['source_hashtags'] = $candidate['sourceHashtags'];
+                $existingSourceTags = array_values(array_filter((array) ($sourceMetadata['source_hashtags'] ?? []), fn ($v) => trim((string) $v) !== ''));
+                $sourceMetadata['source_hashtags'] = array_values(array_unique(array_merge($existingSourceTags, $candidate['sourceHashtags'])));
+                if ($candidate['sourcePostUrl'] !== null) {
+                    $existingSourcePostUrls = array_values(array_filter((array) ($sourceMetadata['source_post_urls'] ?? []), fn ($v) => trim((string) $v) !== ''));
+                    $sourceMetadata['source_post_urls'] = array_values(array_unique(array_merge($existingSourcePostUrls, [$candidate['sourcePostUrl']])));
+                    $sourceMetadata['source_post_url'] = $candidate['sourcePostUrl'];
+                }
+                if ($candidate['sourceMetricType'] !== null) {
+                    $sourceMetadata['source_metric_type'] = $candidate['sourceMetricType'];
+                }
+                if ($candidate['sourceMetricValue'] !== null) {
+                    $sourceMetadata['source_metric_value'] = $candidate['sourceMetricValue'];
+                }
+                if (is_array($candidate['sourcePostMetrics']) && $candidate['sourcePostMetrics'] !== []) {
+                    $sourceMetadata['source_post_metrics'] = $candidate['sourcePostMetrics'];
+                }
+                if ($candidate['matchedPostCount'] !== null) {
+                    $sourceMetadata['matched_post_count'] = max((int) ($sourceMetadata['matched_post_count'] ?? 0), (int) $candidate['matchedPostCount']);
+                }
                 $sourceMetadata['bio'] = $candidate['bio'];
                 $sourceMetadata['posts_count'] = $candidate['postsCount'];
                 $sourceMetadata['avg_likes'] = $candidate['avgLikes'];
@@ -1460,6 +1495,11 @@ if (Str::startsWith($sheetId, 'workspace:')) {
             'avgComments' => $this->sanitizeFloat($payload['avgComments'] ?? null),
             'isVerified' => filter_var($payload['isVerified'] ?? null, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE),
             'sourceHashtags' => $sourceHashtags,
+            'sourcePostUrl' => trim((string) ($payload['sourcePostUrl'] ?? '')) ?: null,
+            'sourceMetricType' => trim((string) ($payload['sourceMetricType'] ?? '')) ?: null,
+            'sourceMetricValue' => $this->sanitizeMetric($payload['sourceMetricValue'] ?? null),
+            'sourcePostMetrics' => is_array($payload['sourcePostMetrics'] ?? null) ? $payload['sourcePostMetrics'] : null,
+            'matchedPostCount' => $this->sanitizeMetric($payload['matchedPostCount'] ?? null),
         ];
     }
 
@@ -1724,6 +1764,10 @@ if (Str::startsWith($sheetId, 'workspace:')) {
             'platform' => strtolower((string) ($profile->platform ?: 'instagram')),
             'handle' => (string) ($profile->handle ?: ''),
             'fullName' => (string) (optional($creator)->display_name ?: ''),
+            'sourcePostUrl' => (string) (($profile->source_metadata['source_post_url'] ?? '') ?: ''),
+            'sourceMetricType' => (string) (($profile->source_metadata['source_metric_type'] ?? '') ?: ''),
+            'sourceMetricValue' => $this->sanitizeMetric($profile->source_metadata['source_metric_value'] ?? null),
+            'matchedPostCount' => $this->sanitizeMetric($profile->source_metadata['matched_post_count'] ?? null),
             'followers' => $profile->followers_count,
             'engagementRate' => $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null,
             'email' => (string) (optional($creator)->primary_email ?: ''),
