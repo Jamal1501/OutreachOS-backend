@@ -24,6 +24,7 @@ class CreatorProfile extends Model
         'username',
         'profile_url',
         'dm_link',
+        'profile_pic_url',
         'status',
         'lifecycle_state',
         'followers_count',
@@ -37,6 +38,7 @@ class CreatorProfile extends Model
         'follow_up_needed',
         'dm_sent_at',
         'responded_at',
+        'comment_attempted_at',
         'source_provider',
         'source_reference',
         'source_metadata',
@@ -46,16 +48,17 @@ class CreatorProfile extends Model
     protected function casts(): array
     {
         return [
-            'followers_count' => 'integer',
-            'engagement_rate_pct' => 'decimal:2',
-            'last_content_at' => 'datetime',
-            'value_score' => 'integer',
-            'accepted_flag' => 'boolean',
-            'follow_up_needed' => 'boolean',
-            'dm_sent_at' => 'datetime',
-            'responded_at' => 'datetime',
-            'source_metadata' => 'array',
-            'last_synced_at' => 'datetime',
+            'followers_count'      => 'integer',
+            'engagement_rate_pct'  => 'decimal:2',
+            'last_content_at'      => 'datetime',
+            'value_score'          => 'integer',
+            'accepted_flag'        => 'boolean',
+            'follow_up_needed'     => 'boolean',
+            'dm_sent_at'           => 'datetime',
+            'responded_at'         => 'datetime',
+            'comment_attempted_at' => 'datetime',
+            'source_metadata'      => 'array',
+            'last_synced_at'       => 'datetime',
         ];
     }
 
