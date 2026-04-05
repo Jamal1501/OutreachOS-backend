@@ -50,8 +50,10 @@ Route::middleware(['api.auth', 'workspace.context'])->group(function () {
     Route::post('/creators/{id}/transition', [SheetDataController::class, 'transitionCreator']);
 
     Route::post('/tasks/generate', [ApifyController::class, 'generateTasks']);
-    Route::post('/tasks/{taskId}/complete', [ApifyController::class, 'completeTask']);
     Route::get('/tasks/list', [ApifyController::class, 'listTasks']);
+    Route::get('/tasks/cold-retry', [ApifyController::class, 'listColdRetry']);
+    Route::post('/tasks/{taskId}/complete', [ApifyController::class, 'completeTask']);
+    Route::post('/tasks/{taskId}/snooze', [ApifyController::class, 'snoozeTask']);
     Route::post('/outreach/log', [ApifyController::class, 'logOutreachEvent']);
 
     Route::post('/pipeline/discover', [PipelineController::class, 'discover']);
