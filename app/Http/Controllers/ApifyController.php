@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use RuntimeException;
+use Carbon\Carbon;
 
 class ApifyController extends Controller
 {
@@ -457,6 +458,41 @@ $validated = $request->validate([
     ]);
 }
     
+
+    public function snoozeTask(Request $request, string $taskId)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+            'until' => ['required', 'date'],
+        ]);
+
+        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
+        $until = Carbon::parse($validated['until']);
+        $result = $this->taskQueue->snoozeTask($sheetId, $taskId, $until);
+
+        return response()->json([
+            'message' => 'Task snoozed',
+            'sheetId' => $sheetId,
+            'result' => $result,
+        ]);
+    }
+
+    public function listColdRetry(Request $request)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+        ]);
+
+        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
+        $tasks = $this->taskQueue->listColdRetry($sheetId);
+
+        return response()->json([
+            'message' => 'Cold retry tasks fetched',
+            'sheetId' => $sheetId,
+            'tasks' => $tasks,
+        ]);
+    }
+
     private function actorMap(): array
     {
         return [
