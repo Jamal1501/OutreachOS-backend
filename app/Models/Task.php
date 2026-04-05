@@ -27,6 +27,9 @@ class Task extends Model
         'priority',
         'status',
         'due_at',
+        'snoozed_until',
+        'follow_up_count',
+        'platform_connection_state',
         'open_url',
         'message_draft',
         'source_provider',
@@ -39,11 +42,54 @@ class Task extends Model
     protected function casts(): array
     {
         return [
-            'due_at' => 'datetime',
-            'completed_at' => 'datetime',
-            'metadata' => 'array',
+            'due_at'          => 'datetime',
+            'snoozed_until'   => 'datetime',
+            'completed_at'    => 'datetime',
+            'follow_up_count' => 'integer',
+            'metadata'        => 'array',
         ];
     }
+
+    // ─── Scopes ───────────────────────────────────────────────────────────────
+
+    /**
+     * Open queue: not terminal, and not actively snoozed.
+     */
+    public function scopeVisible($query): void
+    {
+        $query->whereNotIn('status', ['COMPLETED', 'DONE', 'SKIPPED', 'ARCHIVED'])
+              ->where(function ($q) {
+                  $q->whereNull('snoozed_until')
+                    ->orWhere('snoozed_until', '<=', now());
+              });
+    }
+
+    /**
+     * Currently snoozed (snooze has not expired).
+     */
+    public function scopeSnoozed($query): void
+    {
+        $query->where('status', 'SNOOZED')
+              ->where('snoozed_until', '>', now());
+    }
+
+    /**
+     * Failed/archived outreach candidates for the Cold Retry table.
+     * Joined to creator_profiles so we can order by value_score.
+     */
+    public function scopeColdRetry($query): void
+    {
+        $query->where('tasks.status', 'ARCHIVED')
+              ->whereNotNull('tasks.creator_profile_id')
+              ->join('creator_profiles', 'creator_profiles.id', '=', 'tasks.creator_profile_id')
+              ->whereNotNull('creator_profiles.value_score')
+              ->orderByDesc('creator_profiles.value_score')
+              ->select('tasks.*', 'creator_profiles.value_score as cp_value_score',
+                       'creator_profiles.followers_count as cp_followers_count',
+                       'creator_profiles.profile_pic_url as cp_profile_pic_url');
+    }
+
+    // ─── Relations ────────────────────────────────────────────────────────────
 
     public function project(): BelongsTo
     {
