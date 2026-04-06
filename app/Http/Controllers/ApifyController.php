@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\InsufficientCreditsException;
 use App\Services\ApifyRowMapper;
 use App\Services\CreatorMergeService;
 use App\Services\GoogleSheetsService;
@@ -9,6 +10,7 @@ use App\Services\OutreachLogService;
 use App\Services\OperationalMirrorService;
 use App\Services\TaskQueueService;
 use App\Services\ProviderUsageLogger;
+use App\Services\WorkspaceBillingService;
 use App\Services\WorkspaceContextService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
@@ -16,7 +18,6 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use RuntimeException;
-use Carbon\Carbon;
 
 class ApifyController extends Controller
 {
@@ -29,11 +30,14 @@ class ApifyController extends Controller
         private OperationalMirrorService $mirror,
         private WorkspaceContextService $workspaceContext,
         private ProviderUsageLogger $usageLogger,
+        private WorkspaceBillingService $billing,
     ) {
     }
 
 public function runActor(Request $request)
 {
+    $usageReservationId = null;
+
     try {
         $token = (string) config('services.apify.token');
 
@@ -76,6 +80,15 @@ public function runActor(Request $request)
             'timeoutSecs' => $validated['timeoutSecs'] ?? null,
         ], fn ($value) => $value !== null && $value !== '');
 
+        $usageReservation = $this->billing->reserveApify(
+            workspaceId: (string) $request->attributes->get('workspace_id'),
+            actorKey: $actorKey,
+            actorId: $actorId,
+            input: $input,
+            maxChargeUsd: isset($query['maxTotalChargeUsd']) ? (float) $query['maxTotalChargeUsd'] : null,
+        );
+        $usageReservationId = $usageReservation['usage_event_id'] ?? null;
+
         $url = "https://api.apify.com/v2/acts/{$actorId}/runs";
         if ($query !== []) {
             $url .= '?' . http_build_query($query);
@@ -86,6 +99,7 @@ public function runActor(Request $request)
             'actorId' => $actorId,
             'url' => $url,
             'input' => $input,
+            'usageReservation' => $usageReservation,
         ]);
 
         $response = Http::withToken($token)
@@ -101,6 +115,12 @@ public function runActor(Request $request)
                 'body' => $response->json() ?? $response->body(),
                 'input' => $input,
             ]);
+
+            if ($usageReservationId) {
+                $this->billing->refundReservation($usageReservationId, 'Apify run failed to start', [
+                    'status' => $response->status(),
+                ]);
+            }
 
             $this->usageLogger->logApify([
                 'actor_id' => $actorId,
@@ -125,23 +145,55 @@ public function runActor(Request $request)
             'response' => $response->json(),
         ]);
 
+        $responsePayload = $response->json();
+        $runId = data_get($responsePayload, 'data.id');
+        $datasetId = data_get($responsePayload, 'data.defaultDatasetId');
+
+        if ($usageReservationId) {
+            $this->billing->consumeReservation(
+                $usageReservationId,
+                providerCostUsd: isset($query['maxTotalChargeUsd']) ? (float) $query['maxTotalChargeUsd'] : null,
+                metadata: [
+                    'run_id' => $runId,
+                    'dataset_id' => $datasetId,
+                ],
+                referenceId: $runId,
+            );
+        }
+
         $this->usageLogger->logApify([
             'actor_id' => $actorId,
             'actor_key' => $actorKey,
-            'run_id' => data_get($response->json(), 'data.id'),
-            'dataset_id' => data_get($response->json(), 'data.defaultDatasetId'),
-            'status' => data_get($response->json(), 'data.status'),
+            'run_id' => $runId,
+            'dataset_id' => $datasetId,
+            'status' => data_get($responsePayload, 'data.status'),
             'max_total_charge_usd' => $validated['maxTotalChargeUsd'] ?? config('services.apify.default_max_total_charge_usd'),
             'request_payload' => $input,
-            'response_payload' => $response->json(),
+            'response_payload' => $responsePayload,
         ]);
 
         return response()->json([
             'message' => 'Actor started',
             'actorId' => $actorId,
-            'apify' => $response->json(),
+            'billing' => [
+                'creditBucket' => $usageReservation['credit_bucket'] ?? 'scrape',
+                'creditCost' => $usageReservation['credit_cost'] ?? null,
+                'remainingBalance' => $usageReservation['remaining_balance'] ?? null,
+            ],
+            'apify' => $responsePayload,
         ]);
+    } catch (InsufficientCreditsException $e) {
+        return response()->json([
+            'error' => $e->getMessage(),
+            'billing' => $e->context(),
+        ], 402);
     } catch (\Throwable $e) {
+        if ($usageReservationId) {
+            $this->billing->refundReservation($usageReservationId, 'Unhandled Apify exception', [
+                'message' => $e->getMessage(),
+            ]);
+        }
+
         Log::error('Unhandled exception in runActor', [
             'message' => $e->getMessage(),
             'file' => basename($e->getFile()),
@@ -458,41 +510,6 @@ $validated = $request->validate([
     ]);
 }
     
-
-    public function snoozeTask(Request $request, string $taskId)
-    {
-        $validated = $request->validate([
-            'sheetId' => ['nullable', 'string'],
-            'until' => ['required', 'date'],
-        ]);
-
-        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
-        $until = Carbon::parse($validated['until']);
-        $result = $this->taskQueue->snoozeTask($sheetId, $taskId, $until);
-
-        return response()->json([
-            'message' => 'Task snoozed',
-            'sheetId' => $sheetId,
-            'result' => $result,
-        ]);
-    }
-
-    public function listColdRetry(Request $request)
-    {
-        $validated = $request->validate([
-            'sheetId' => ['nullable', 'string'],
-        ]);
-
-        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
-        $tasks = $this->taskQueue->listColdRetry($sheetId);
-
-        return response()->json([
-            'message' => 'Cold retry tasks fetched',
-            'sheetId' => $sheetId,
-            'tasks' => $tasks,
-        ]);
-    }
-
     private function actorMap(): array
     {
         return [
