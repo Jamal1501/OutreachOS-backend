@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AiController;
 use App\Http\Controllers\ApifyController;
+use App\Http\Controllers\BillingController;
 use App\Http\Controllers\SheetDataController;
 use App\Http\Controllers\PipelineController;
 use Illuminate\Support\Facades\Route;
@@ -50,11 +51,11 @@ Route::middleware(['api.auth', 'workspace.context'])->group(function () {
     Route::post('/creators/{id}/transition', [SheetDataController::class, 'transitionCreator']);
 
     Route::post('/tasks/generate', [ApifyController::class, 'generateTasks']);
-    Route::get('/tasks/list', [ApifyController::class, 'listTasks']);
-    Route::get('/tasks/cold-retry', [ApifyController::class, 'listColdRetry']);
     Route::post('/tasks/{taskId}/complete', [ApifyController::class, 'completeTask']);
-    Route::post('/tasks/{taskId}/snooze', [ApifyController::class, 'snoozeTask']);
+    Route::get('/tasks/list', [ApifyController::class, 'listTasks']);
     Route::post('/outreach/log', [ApifyController::class, 'logOutreachEvent']);
+
+    Route::get('/billing/summary', [BillingController::class, 'summary']);
 
     Route::post('/pipeline/discover', [PipelineController::class, 'discover']);
     Route::get('/pipeline/status', [PipelineController::class, 'status']);
