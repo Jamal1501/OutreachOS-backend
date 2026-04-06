@@ -164,65 +164,70 @@ return new class extends Migration
         });
     }
 
-    private function seedPlans(): void
-    {
-        if (!Schema::hasTable('plans')) {
-            return;
-        }
-
-        $now = now();
-        $rows = [
-            [
-                'id' => 'free',
-                'name' => 'Free Trial',
-                'max_members' => 1,
-                'max_creators' => 100,
-                'monthly_scrape_credits' => 0,
-                'monthly_ai_credits' => 0,
-                'trial_scrape_credits' => 200,
-                'trial_ai_credits' => 20,
-                'topup_price_multiplier' => 1.25,
-                'features' => json_encode(['trial', 'paywall_preview']),
-                'is_active' => true,
-                'updated_at' => $now,
-                'created_at' => $now,
-            ],
-            [
-                'id' => 'pro',
-                'name' => 'Pro',
-                'max_members' => 5,
-                'max_creators' => 5000,
-                'monthly_scrape_credits' => 3500,
-                'monthly_ai_credits' => 250,
-                'trial_scrape_credits' => 0,
-                'trial_ai_credits' => 0,
-                'topup_price_multiplier' => 1.00,
-                'features' => json_encode(['team_workspace', 'analytics_basic']),
-                'is_active' => true,
-                'updated_at' => $now,
-                'created_at' => $now,
-            ],
-            [
-                'id' => 'enterprise',
-                'name' => 'Enterprise',
-                'max_members' => 25,
-                'max_creators' => 25000,
-                'monthly_scrape_credits' => 12000,
-                'monthly_ai_credits' => 1200,
-                'trial_scrape_credits' => 0,
-                'trial_ai_credits' => 0,
-                'topup_price_multiplier' => 0.80,
-                'features' => json_encode(['team_workspace', 'analytics_advanced', 'priority_support']),
-                'is_active' => true,
-                'updated_at' => $now,
-                'created_at' => $now,
-            ],
-        ];
-
-        foreach ($rows as $row) {
-            DB::table('plans')->updateOrInsert(['id' => $row['id']], $row);
-        }
+private function seedPlans(): void
+{
+    if (!Schema::hasTable('plans')) {
+        return;
     }
+
+    $now = now();
+    $hasCreatedAt = Schema::hasColumn('plans', 'created_at');
+    $hasUpdatedAt = Schema::hasColumn('plans', 'updated_at');
+
+    $rows = [
+        [
+            'id'                      => 'free',
+            'name'                    => 'Free Trial',
+            'max_members'             => 1,
+            'max_creators'            => 100,
+            'monthly_scrape_credits'  => 0,
+            'monthly_ai_credits'      => 0,
+            'trial_scrape_credits'    => 200,
+            'trial_ai_credits'        => 20,
+            'topup_price_multiplier'  => 1.25,
+            'features'                => json_encode(['trial', 'paywall_preview']),
+            'is_active'               => true,
+        ],
+        [
+            'id'                      => 'pro',
+            'name'                    => 'Pro',
+            'max_members'             => 5,
+            'max_creators'            => 5000,
+            'monthly_scrape_credits'  => 3500,
+            'monthly_ai_credits'      => 250,
+            'trial_scrape_credits'    => 0,
+            'trial_ai_credits'        => 0,
+            'topup_price_multiplier'  => 1.00,
+            'features'                => json_encode(['team_workspace', 'analytics_basic']),
+            'is_active'               => true,
+        ],
+        [
+            'id'                      => 'enterprise',
+            'name'                    => 'Enterprise',
+            'max_members'             => 25,
+            'max_creators'            => 25000,
+            'monthly_scrape_credits'  => 12000,
+            'monthly_ai_credits'      => 1200,
+            'trial_scrape_credits'    => 0,
+            'trial_ai_credits'        => 0,
+            'topup_price_multiplier'  => 0.80,
+            'features'                => json_encode(['team_workspace', 'analytics_advanced', 'priority_support']),
+            'is_active'               => true,
+        ],
+    ];
+
+    foreach ($rows as $row) {
+        if ($hasCreatedAt) {
+            $row['created_at'] = $now;
+        }
+
+        if ($hasUpdatedAt) {
+            $row['updated_at'] = $now;
+        }
+
+        DB::table('plans')->updateOrInsert(['id' => $row['id']], $row);
+    }
+}
 
     private function bootstrapExistingWorkspaces(): void
     {
