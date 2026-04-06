@@ -25,7 +25,7 @@ return [
 
     'app_security' => [
         'key' => env('APP_API_KEY'),
-        'allow_legacy_key' => env('ALLOW_LEGACY_APP_KEY', true),
+        'allow_legacy_key' => env('ALLOW_LEGACY_APP_KEY', false),
     ],
 
     'supabase' => [
