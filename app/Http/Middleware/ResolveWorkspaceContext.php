@@ -34,10 +34,6 @@ class ResolveWorkspaceContext
         }
 
         if ($workspaceId === '') {
-            if ($request->attributes->get('legacy_api_access')) {
-                return $next($request);
-            }
-
             return response()->json([
                 'error' => 'Missing workspace context.',
             ], 400);
