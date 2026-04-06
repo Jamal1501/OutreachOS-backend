@@ -18,4 +18,12 @@ return [
         'outreach' => env('OUTREACH_SYNC_OUTREACH', true),
         'pipeline' => env('OUTREACH_SYNC_PIPELINE', true),
     ],
+
+
+    'billing' => [
+        'trial_days' => env('OUTREACH_TRIAL_DAYS', 14),
+        'enrichment_credit_cost' => env('OUTREACH_ENRICHMENT_CREDIT_COST', 5),
+        'ai_request_credit_cost' => env('OUTREACH_AI_REQUEST_CREDIT_COST', 1),
+        'default_discovery_credit_cost' => env('OUTREACH_DEFAULT_DISCOVERY_CREDIT_COST', 25),
+    ],
 ];
