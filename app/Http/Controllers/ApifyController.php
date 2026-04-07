@@ -509,6 +509,22 @@ $validated = $request->validate([
         'tasks' => $tasks,
     ]);
 }
+
+        public function coldRetryTasks(Request $request)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+        ]);
+
+        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
+        $tasks = $this->taskQueue->listColdRetry($sheetId);
+
+        return response()->json([
+            'message' => 'Cold retry tasks fetched',
+            'sheetId' => $sheetId,
+            'tasks' => $tasks,
+        ]);
+    }
     
     private function actorMap(): array
     {
