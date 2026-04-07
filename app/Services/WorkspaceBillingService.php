@@ -3,6 +3,8 @@
 namespace App\Services;
 
 use App\Exceptions\InsufficientCreditsException;
+use App\Models\CreditPackage;
+use App\Models\CreditPurchase;
 use App\Models\WorkspaceCreditWallet;
 use App\Models\WorkspaceSubscription;
 use App\Models\WorkspaceUsageEvent;
@@ -16,6 +18,39 @@ class WorkspaceBillingService
 {
     private const PLAN_ALIASES = [
         'trial' => 'free',
+    ];
+
+    private const DEFAULT_PLAN_PRICES_CENTS = [
+        'free' => 0,
+        'pro' => 4900,
+        'enterprise' => 14900,
+    ];
+
+    private const DEFAULT_CREDIT_PACKAGES = [
+        [
+            'id' => '11111111-1111-4111-8111-111111111111',
+            'name' => 'Starter Top-up',
+            'scrape_credits' => 500,
+            'ai_credits' => 50,
+            'price_usd' => 19.00,
+            'allowed_plan_ids' => ['free', 'pro', 'enterprise'],
+        ],
+        [
+            'id' => '22222222-2222-4222-8222-222222222222',
+            'name' => 'Growth Top-up',
+            'scrape_credits' => 2000,
+            'ai_credits' => 250,
+            'price_usd' => 69.00,
+            'allowed_plan_ids' => ['free', 'pro', 'enterprise'],
+        ],
+        [
+            'id' => '33333333-3333-4333-8333-333333333333',
+            'name' => 'Scale Top-up',
+            'scrape_credits' => 6000,
+            'ai_credits' => 800,
+            'price_usd' => 179.00,
+            'allowed_plan_ids' => ['pro', 'enterprise'],
+        ],
     ];
 
     public function summary(string $workspaceId): array
@@ -36,6 +71,8 @@ class WorkspaceBillingService
                 'aiCreditsBalance' => (int) $wallet->ai_credits_balance,
                 'bonusScrapeCredits' => (int) $wallet->bonus_scrape_credits,
                 'bonusAiCredits' => (int) $wallet->bonus_ai_credits,
+                'totalScrapeCreditsAvailable' => (int) $wallet->scrape_credits_balance + (int) $wallet->bonus_scrape_credits,
+                'totalAiCreditsAvailable' => (int) $wallet->ai_credits_balance + (int) $wallet->bonus_ai_credits,
                 'lifetimeScrapeUsed' => (int) $wallet->lifetime_scrape_used,
                 'lifetimeAiUsed' => (int) $wallet->lifetime_ai_used,
             ],
@@ -46,6 +83,77 @@ class WorkspaceBillingService
                 'trialAiCredits' => (int) Arr::get($plan, 'trial_ai_credits', 0),
                 'topupPriceMultiplier' => (float) Arr::get($plan, 'topup_price_multiplier', 1),
             ],
+        ];
+    }
+
+    public function catalog(string $workspaceId): array
+    {
+        $this->ensureCatalogSeeded();
+        [$subscription, $wallet, $currentPlan] = $this->ensureWorkspaceBilling($workspaceId);
+
+        $plans = DB::table('plans')
+            ->where('is_active', true)
+            ->orderByRaw("CASE id WHEN 'free' THEN 1 WHEN 'pro' THEN 2 WHEN 'enterprise' THEN 3 ELSE 4 END")
+            ->get()
+            ->map(function ($row) use ($subscription) {
+                $data = (array) $row;
+                $features = $this->normalizeJsonArray($data['features'] ?? []);
+                $priceCents = $this->planPriceCents((string) ($data['id'] ?? 'free'));
+
+                return [
+                    'id' => (string) ($data['id'] ?? ''),
+                    'name' => (string) ($data['name'] ?? ''),
+                    'monthlyScrapeCredits' => (int) ($data['monthly_scrape_credits'] ?? 0),
+                    'monthlyAiCredits' => (int) ($data['monthly_ai_credits'] ?? 0),
+                    'trialScrapeCredits' => (int) ($data['trial_scrape_credits'] ?? 0),
+                    'trialAiCredits' => (int) ($data['trial_ai_credits'] ?? 0),
+                    'maxMembers' => (int) ($data['max_members'] ?? 0),
+                    'maxCreators' => (int) ($data['max_creators'] ?? 0),
+                    'features' => $features,
+                    'priceCents' => $priceCents,
+                    'priceUsd' => round($priceCents / 100, 2),
+                    'isCurrent' => (string) ($data['id'] ?? '') === (string) $subscription->plan_id,
+                ];
+            })
+            ->values()
+            ->all();
+
+        $multiplier = max(0.1, (float) Arr::get($currentPlan, 'topup_price_multiplier', 1));
+        $currentPlanId = (string) ($subscription->plan_id ?: 'free');
+
+        $packages = CreditPackage::query()
+            ->where('active', true)
+            ->orderBy('price_usd')
+            ->get()
+            ->map(function (CreditPackage $package) use ($multiplier, $currentPlanId) {
+                $allowed = $this->normalizeJsonArray($package->allowed_plan_ids ?? []);
+                if ($allowed !== [] && !in_array($currentPlanId, $allowed, true)) {
+                    return null;
+                }
+
+                $effectivePriceCents = (int) round(((float) $package->price_usd * 100) * $multiplier);
+
+                return [
+                    'id' => $package->id,
+                    'name' => $package->name,
+                    'scrapeCredits' => (int) $package->scrape_credits,
+                    'aiCredits' => (int) $package->ai_credits,
+                    'basePriceUsd' => round((float) $package->price_usd, 2),
+                    'effectivePriceUsd' => round($effectivePriceCents / 100, 2),
+                    'effectivePriceCents' => $effectivePriceCents,
+                    'allowedPlanIds' => $allowed,
+                ];
+            })
+            ->filter()
+            ->values()
+            ->all();
+
+        return [
+            'currency' => (string) config('outreach.billing.currency', 'usd'),
+            'checkoutEnabled' => trim((string) config('services.stripe.secret_key')) !== '',
+            'currentPlanId' => $currentPlanId,
+            'plans' => $plans,
+            'packages' => $packages,
         ];
     }
 
@@ -143,10 +251,16 @@ class WorkspaceBillingService
                 ->first();
 
             if ($wallet) {
+                $deductions = Arr::get((array) ($event->metadata ?? []), 'deductions', []);
+                $base = max(0, (int) ($deductions['base'] ?? 0));
+                $bonus = max(0, (int) ($deductions['bonus'] ?? 0));
+
                 if ($event->credit_bucket === 'scrape') {
-                    $wallet->scrape_credits_balance = (int) $wallet->scrape_credits_balance + (int) $event->credit_cost;
+                    $wallet->scrape_credits_balance = (int) $wallet->scrape_credits_balance + $base;
+                    $wallet->bonus_scrape_credits = (int) $wallet->bonus_scrape_credits + $bonus;
                 } else {
-                    $wallet->ai_credits_balance = (int) $wallet->ai_credits_balance + (int) $event->credit_cost;
+                    $wallet->ai_credits_balance = (int) $wallet->ai_credits_balance + $base;
+                    $wallet->bonus_ai_credits = (int) $wallet->bonus_ai_credits + $bonus;
                 }
                 $wallet->save();
             }
@@ -161,14 +275,16 @@ class WorkspaceBillingService
 
     public function ensureWorkspaceBilling(string $workspaceId): array
     {
+        $this->ensureCatalogSeeded();
+
         return DB::transaction(function () use ($workspaceId) {
-            $workspace = DB::table('workspaces')->where('id', $workspaceId)->first();
+            $workspace = DB::table('workspaces')->where('id', $workspaceId)->lockForUpdate()->first();
             if (!$workspace) {
                 throw new RuntimeException('Workspace not found for billing.');
             }
 
-            $planId = $this->normalizePlanId((string) ($workspace->plan_id ?? 'free'));
-            $plan = $this->resolvePlan($planId);
+            $workspacePlanId = $this->normalizePlanId((string) ($workspace->plan_id ?? 'free'));
+            $plan = $this->resolvePlan($workspacePlanId);
             $now = CarbonImmutable::now();
 
             $subscription = WorkspaceSubscription::query()
@@ -180,17 +296,27 @@ class WorkspaceBillingService
                 $subscription = WorkspaceSubscription::query()->create([
                     'id' => (string) Str::uuid(),
                     'workspace_id' => $workspaceId,
-                    'plan_id' => $planId,
-                    'status' => $planId === 'free' ? 'trialing' : 'active',
+                    'plan_id' => $workspacePlanId,
+                    'status' => $workspacePlanId === 'free' ? 'trialing' : 'active',
                     'current_period_start' => $now,
                     'current_period_end' => $now->addMonth(),
-                    'trial_ends_at' => $planId === 'free' ? $now->addDays((int) config('outreach.billing.trial_days', 14)) : null,
-                    'metadata' => ['bootstrap' => true],
+                    'trial_ends_at' => $workspacePlanId === 'free' ? $now->addDays((int) config('outreach.billing.trial_days', 14)) : null,
+                    'metadata' => $workspacePlanId === 'free'
+                        ? ['bootstrap' => true]
+                        : ['bootstrap' => true, 'last_refill_period_key' => $now->toIso8601String()],
                 ]);
-            } elseif (!$subscription->plan_id) {
-                $subscription->plan_id = $planId;
+            }
+
+            $subscriptionPlanId = $this->normalizePlanId((string) ($subscription->plan_id ?: $workspacePlanId));
+            if ($subscription->plan_id !== $subscriptionPlanId) {
+                $subscription->plan_id = $subscriptionPlanId;
                 $subscription->save();
             }
+            if ($workspacePlanId !== $subscriptionPlanId) {
+                DB::table('workspaces')->where('id', $workspaceId)->update(['plan_id' => $subscriptionPlanId]);
+                $workspacePlanId = $subscriptionPlanId;
+            }
+            $plan = $this->resolvePlan($subscriptionPlanId);
 
             $wallet = WorkspaceCreditWallet::query()
                 ->where('workspace_id', $workspaceId)
@@ -201,10 +327,10 @@ class WorkspaceBillingService
                 $wallet = WorkspaceCreditWallet::query()->create([
                     'id' => (string) Str::uuid(),
                     'workspace_id' => $workspaceId,
-                    'scrape_credits_balance' => $planId === 'free'
+                    'scrape_credits_balance' => $subscriptionPlanId === 'free'
                         ? (int) Arr::get($plan, 'trial_scrape_credits', 0)
                         : (int) Arr::get($plan, 'monthly_scrape_credits', 0),
-                    'ai_credits_balance' => $planId === 'free'
+                    'ai_credits_balance' => $subscriptionPlanId === 'free'
                         ? (int) Arr::get($plan, 'trial_ai_credits', 0)
                         : (int) Arr::get($plan, 'monthly_ai_credits', 0),
                     'bonus_scrape_credits' => 0,
@@ -215,8 +341,159 @@ class WorkspaceBillingService
                 ]);
             }
 
+            [$subscription, $wallet] = $this->reconcileLocked($workspaceId, $subscription, $wallet, $plan, $now);
+
             return [$subscription, $wallet, $plan];
         });
+    }
+
+    public function reconcileWorkspace(string $workspaceId): array
+    {
+        return $this->summary($workspaceId);
+    }
+
+    public function reconcileAllWorkspaces(?int $limit = null): array
+    {
+        $query = DB::table('workspaces')->select('id')->orderBy('created_at');
+        if ($limit !== null) {
+            $query->limit(max(1, $limit));
+        }
+
+        $checked = 0;
+        $errors = 0;
+
+        foreach ($query->get() as $workspace) {
+            try {
+                $this->ensureWorkspaceBilling((string) $workspace->id);
+                $checked++;
+            } catch (\Throwable $e) {
+                $errors++;
+            }
+        }
+
+        return [
+            'checked' => $checked,
+            'errors' => $errors,
+        ];
+    }
+
+    public function grantPlanCycleCredits(string $workspaceId, string $planId, ?CarbonImmutable $periodStart = null): void
+    {
+        DB::transaction(function () use ($workspaceId, $planId, $periodStart) {
+            $subscription = WorkspaceSubscription::query()
+                ->where('workspace_id', $workspaceId)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $wallet = WorkspaceCreditWallet::query()
+                ->where('workspace_id', $workspaceId)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $normalizedPlanId = $this->normalizePlanId($planId);
+            $plan = $this->resolvePlan($normalizedPlanId);
+            $periodStart = $periodStart ?: CarbonImmutable::instance($subscription->current_period_start ?: now());
+            $periodKey = $periodStart->toIso8601String();
+            $metadata = (array) ($subscription->metadata ?? []);
+
+            if (($metadata['last_refill_period_key'] ?? null) === $periodKey) {
+                return;
+            }
+
+            $wallet->scrape_credits_balance = (int) $wallet->scrape_credits_balance + (int) Arr::get($plan, 'monthly_scrape_credits', 0);
+            $wallet->ai_credits_balance = (int) $wallet->ai_credits_balance + (int) Arr::get($plan, 'monthly_ai_credits', 0);
+            $wallet->save();
+
+            $metadata['last_refill_period_key'] = $periodKey;
+            $metadata['last_refill_at'] = now()->toIso8601String();
+            $subscription->metadata = $metadata;
+            $subscription->plan_id = $normalizedPlanId;
+            $subscription->status = $subscription->status === 'trial_expired' ? 'active' : $subscription->status;
+            $subscription->save();
+        });
+    }
+
+    public function applyPurchasedCredits(string $workspaceId, int $scrapeCredits, int $aiCredits, array $purchaseData = []): void
+    {
+        DB::transaction(function () use ($workspaceId, $scrapeCredits, $aiCredits, $purchaseData) {
+            $wallet = WorkspaceCreditWallet::query()
+                ->where('workspace_id', $workspaceId)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$wallet) {
+                [, $wallet] = $this->ensureWorkspaceBilling($workspaceId);
+                $wallet = WorkspaceCreditWallet::query()->where('workspace_id', $workspaceId)->lockForUpdate()->firstOrFail();
+            }
+
+            $wallet->bonus_scrape_credits = (int) $wallet->bonus_scrape_credits + max(0, $scrapeCredits);
+            $wallet->bonus_ai_credits = (int) $wallet->bonus_ai_credits + max(0, $aiCredits);
+            $wallet->save();
+
+            CreditPurchase::query()->create([
+                'id' => (string) Str::uuid(),
+                'workspace_id' => $workspaceId,
+                'credit_package_id' => Arr::get($purchaseData, 'credit_package_id'),
+                'stripe_payment_intent_id' => Arr::get($purchaseData, 'stripe_payment_intent_id'),
+                'scrape_credits_added' => max(0, $scrapeCredits),
+                'ai_credits_added' => max(0, $aiCredits),
+                'amount_paid_usd' => (float) Arr::get($purchaseData, 'amount_paid_usd', 0),
+                'metadata' => Arr::except($purchaseData, ['credit_package_id', 'stripe_payment_intent_id', 'amount_paid_usd']),
+            ]);
+        });
+    }
+
+    public function getCreditPackageConfig(string $workspaceId, string $packageId): array
+    {
+        $this->ensureCatalogSeeded();
+        [, , $plan] = $this->ensureWorkspaceBilling($workspaceId);
+
+        $package = CreditPackage::query()->find($packageId);
+        if (!$package || !$package->active) {
+            throw new RuntimeException('Credit package not found.');
+        }
+
+        $allowed = $this->normalizeJsonArray($package->allowed_plan_ids ?? []);
+        $currentPlanId = $this->normalizePlanId((string) Arr::get($plan, 'id', 'free'));
+        if ($allowed !== [] && !in_array($currentPlanId, $allowed, true)) {
+            throw new RuntimeException('This credit package is not available on the current plan.');
+        }
+
+        $multiplier = max(0.1, (float) Arr::get($plan, 'topup_price_multiplier', 1));
+        $effectivePriceCents = (int) round(((float) $package->price_usd * 100) * $multiplier);
+
+        return [
+            'id' => $package->id,
+            'name' => $package->name,
+            'scrape_credits' => (int) $package->scrape_credits,
+            'ai_credits' => (int) $package->ai_credits,
+            'price_cents' => $effectivePriceCents,
+            'price_usd' => round($effectivePriceCents / 100, 2),
+            'currency' => (string) config('outreach.billing.currency', 'usd'),
+        ];
+    }
+
+    public function getPlanCheckoutConfig(string $workspaceId, string $planId): array
+    {
+        $planId = $this->normalizePlanId($planId);
+        if ($planId === 'free') {
+            throw new RuntimeException('Free plan does not require checkout.');
+        }
+
+        $plan = $this->resolvePlan($planId);
+        if (!$plan || (isset($plan['is_active']) && !(bool) $plan['is_active'])) {
+            throw new RuntimeException('Plan not available for checkout.');
+        }
+
+        return [
+            'id' => $planId,
+            'name' => (string) Arr::get($plan, 'name', ucfirst($planId)),
+            'price_cents' => $this->planPriceCents($planId),
+            'currency' => (string) config('outreach.billing.currency', 'usd'),
+            'monthly_scrape_credits' => (int) Arr::get($plan, 'monthly_scrape_credits', 0),
+            'monthly_ai_credits' => (int) Arr::get($plan, 'monthly_ai_credits', 0),
+            'workspace_id' => $workspaceId,
+        ];
     }
 
     private function reserve(
@@ -231,7 +508,7 @@ class WorkspaceBillingService
     ): array {
         [$subscription] = $this->ensureWorkspaceBilling($workspaceId);
 
-        if ($subscription->status === 'canceled' || $subscription->status === 'past_due') {
+        if (in_array($subscription->status, ['past_due', 'unpaid', 'incomplete_expired'], true)) {
             throw new InsufficientCreditsException('Workspace subscription is not active.', [
                 'subscriptionStatus' => $subscription->status,
             ]);
@@ -243,18 +520,27 @@ class WorkspaceBillingService
                 ->lockForUpdate()
                 ->firstOrFail();
 
-            $balanceField = $bucket === 'scrape' ? 'scrape_credits_balance' : 'ai_credits_balance';
-            $available = (int) $wallet->{$balanceField};
+            $baseField = $bucket === 'scrape' ? 'scrape_credits_balance' : 'ai_credits_balance';
+            $bonusField = $bucket === 'scrape' ? 'bonus_scrape_credits' : 'bonus_ai_credits';
+            $baseAvailable = (int) $wallet->{$baseField};
+            $bonusAvailable = (int) $wallet->{$bonusField};
+            $totalAvailable = $baseAvailable + $bonusAvailable;
 
-            if ($available < $creditCost) {
+            if ($totalAvailable < $creditCost) {
                 throw new InsufficientCreditsException('Not enough credits available for this action.', [
                     'bucket' => $bucket,
                     'required' => $creditCost,
-                    'available' => $available,
+                    'available' => $totalAvailable,
+                    'baseAvailable' => $baseAvailable,
+                    'bonusAvailable' => $bonusAvailable,
                 ]);
             }
 
-            $wallet->{$balanceField} = $available - $creditCost;
+            $deductBase = min($baseAvailable, $creditCost);
+            $deductBonus = max(0, $creditCost - $deductBase);
+
+            $wallet->{$baseField} = $baseAvailable - $deductBase;
+            $wallet->{$bonusField} = $bonusAvailable - $deductBonus;
             $wallet->save();
 
             $event = WorkspaceUsageEvent::query()->create([
@@ -267,7 +553,12 @@ class WorkspaceBillingService
                 'provider' => $provider,
                 'source' => $source,
                 'status' => 'reserved',
-                'metadata' => $metadata,
+                'metadata' => array_merge($metadata, [
+                    'deductions' => [
+                        'base' => $deductBase,
+                        'bonus' => $deductBonus,
+                    ],
+                ]),
             ]);
 
             return [
@@ -275,9 +566,135 @@ class WorkspaceBillingService
                 'credit_bucket' => $bucket,
                 'credit_cost' => $creditCost,
                 'units' => $units,
-                'remaining_balance' => (int) $wallet->{$balanceField},
+                'remaining_balance' => (int) $wallet->{$baseField} + (int) $wallet->{$bonusField},
             ];
         });
+    }
+
+    private function reconcileLocked(string $workspaceId, WorkspaceSubscription $subscription, WorkspaceCreditWallet $wallet, array $plan, CarbonImmutable $now): array
+    {
+        $planId = $this->normalizePlanId((string) ($subscription->plan_id ?: Arr::get($plan, 'id', 'free')));
+        $metadata = (array) ($subscription->metadata ?? []);
+        $subscriptionChanged = false;
+        $walletChanged = false;
+
+        if ($planId === 'free') {
+            if (!$subscription->trial_ends_at) {
+                $subscription->trial_ends_at = $now->addDays((int) config('outreach.billing.trial_days', 14));
+                $subscriptionChanged = true;
+            }
+            if ($subscription->status === '' || $subscription->status === 'active') {
+                $subscription->status = 'trialing';
+                $subscriptionChanged = true;
+            }
+
+            $trialEndsAt = $subscription->trial_ends_at ? CarbonImmutable::instance($subscription->trial_ends_at) : null;
+            if ($trialEndsAt && $now->greaterThanOrEqualTo($trialEndsAt) && $subscription->status !== 'trial_expired') {
+                $subscription->status = 'trial_expired';
+                $wallet->scrape_credits_balance = 0;
+                $wallet->ai_credits_balance = 0;
+                $metadata['trial_expired_at'] = $now->toIso8601String();
+                $subscriptionChanged = true;
+                $walletChanged = true;
+            }
+        } else {
+            if (!$subscription->current_period_start) {
+                $subscription->current_period_start = $now;
+                $subscriptionChanged = true;
+            }
+            if (!$subscription->current_period_end) {
+                $subscription->current_period_end = CarbonImmutable::instance($subscription->current_period_start ?: $now)->addMonth();
+                $subscriptionChanged = true;
+            }
+            if (in_array($subscription->status, ['', 'trialing', 'trial_expired'], true)) {
+                $subscription->status = 'active';
+                $subscriptionChanged = true;
+            }
+
+            $lastRefillKey = (string) ($metadata['last_refill_period_key'] ?? '');
+            $currentPeriodStart = CarbonImmutable::instance($subscription->current_period_start ?: $now);
+            $currentPeriodEnd = CarbonImmutable::instance($subscription->current_period_end ?: $now->addMonth());
+
+            if ($lastRefillKey === '') {
+                $metadata['last_refill_period_key'] = $currentPeriodStart->toIso8601String();
+                $subscriptionChanged = true;
+            } elseif (!in_array($subscription->status, ['past_due', 'unpaid', 'incomplete_expired'], true) && $currentPeriodStart->toIso8601String() !== $lastRefillKey) {
+                $wallet->scrape_credits_balance = (int) $wallet->scrape_credits_balance + (int) Arr::get($plan, 'monthly_scrape_credits', 0);
+                $wallet->ai_credits_balance = (int) $wallet->ai_credits_balance + (int) Arr::get($plan, 'monthly_ai_credits', 0);
+                $metadata['last_refill_period_key'] = $currentPeriodStart->toIso8601String();
+                $metadata['last_refill_at'] = $now->toIso8601String();
+                $walletChanged = true;
+                $subscriptionChanged = true;
+            }
+
+            $safety = 0;
+            while (!in_array($subscription->status, ['past_due', 'unpaid', 'incomplete_expired'], true) && $now->greaterThanOrEqualTo($currentPeriodEnd) && $safety < 24) {
+                $currentPeriodStart = $currentPeriodEnd;
+                $currentPeriodEnd = $currentPeriodEnd->addMonth();
+                $wallet->scrape_credits_balance = (int) $wallet->scrape_credits_balance + (int) Arr::get($plan, 'monthly_scrape_credits', 0);
+                $wallet->ai_credits_balance = (int) $wallet->ai_credits_balance + (int) Arr::get($plan, 'monthly_ai_credits', 0);
+                $metadata['last_refill_period_key'] = $currentPeriodStart->toIso8601String();
+                $metadata['last_refill_at'] = $now->toIso8601String();
+                $subscription->current_period_start = $currentPeriodStart;
+                $subscription->current_period_end = $currentPeriodEnd;
+                $walletChanged = true;
+                $subscriptionChanged = true;
+                $safety++;
+            }
+        }
+
+        if ($subscriptionChanged) {
+            $subscription->metadata = $metadata;
+            $subscription->save();
+        }
+        if ($walletChanged) {
+            $wallet->save();
+        }
+
+        return [$subscription->fresh(), $wallet->fresh()];
+    }
+
+    private function ensureCatalogSeeded(): void
+    {
+        if (!DB::getSchemaBuilder()->hasTable('credit_packages')) {
+            return;
+        }
+
+        foreach ($this->defaultCreditPackages() as $package) {
+            DB::table('credit_packages')->updateOrInsert(
+                ['id' => $package['id']],
+                [
+                    'name' => $package['name'],
+                    'scrape_credits' => $package['scrape_credits'],
+                    'ai_credits' => $package['ai_credits'],
+                    'price_usd' => $package['price_usd'],
+                    'allowed_plan_ids' => json_encode($package['allowed_plan_ids']),
+                    'active' => true,
+                    'updated_at' => now(),
+                    'created_at' => now(),
+                ]
+            );
+        }
+    }
+
+    private function defaultCreditPackages(): array
+    {
+        $configured = config('outreach.billing.credit_packages');
+        if (is_array($configured) && $configured !== []) {
+            return $configured;
+        }
+
+        return self::DEFAULT_CREDIT_PACKAGES;
+    }
+
+    private function planPriceCents(string $planId): int
+    {
+        $configured = config("outreach.billing.plan_prices.{$planId}");
+        if (is_numeric($configured)) {
+            return max(0, (int) $configured);
+        }
+
+        return self::DEFAULT_PLAN_PRICES_CENTS[$planId] ?? 0;
     }
 
     private function estimateApifyCredits(?string $actorKey, ?string $actorId, array $input): array
@@ -363,5 +780,21 @@ class WorkspaceBillingService
     {
         $planId = strtolower(trim($planId));
         return self::PLAN_ALIASES[$planId] ?? ($planId !== '' ? $planId : 'free');
+    }
+
+    private function normalizeJsonArray(mixed $value): array
+    {
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            if (is_array($decoded)) {
+                return array_values(array_filter($decoded, fn ($item) => is_scalar($item) && trim((string) $item) !== ''));
+            }
+        }
+
+        if (is_array($value)) {
+            return array_values(array_filter($value, fn ($item) => is_scalar($item) && trim((string) $item) !== ''));
+        }
+
+        return [];
     }
 }
