@@ -14,6 +14,8 @@ Route::get('/health', function () {
     ]);
 });
 
+Route::post('/billing/webhooks/stripe', [BillingController::class, 'stripeWebhook']);
+
 Route::middleware(['api.auth', 'workspace.context'])->group(function () {
     Route::get('/auth-check', function () {
         return response()->json([
@@ -57,6 +59,9 @@ Route::middleware(['api.auth', 'workspace.context'])->group(function () {
     Route::post('/tasks/{taskId}/snooze', [ApifyController::class, 'snoozeTask']);
 
     Route::get('/billing/summary', [BillingController::class, 'summary']);
+    Route::get('/billing/catalog', [BillingController::class, 'catalog']);
+    Route::post('/billing/checkout/subscription', [BillingController::class, 'checkoutSubscription']);
+    Route::post('/billing/checkout/topup', [BillingController::class, 'checkoutTopup']);
 
     Route::post('/pipeline/discover', [PipelineController::class, 'discover']);
     Route::get('/pipeline/status', [PipelineController::class, 'status']);
