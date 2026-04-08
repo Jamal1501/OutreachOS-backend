@@ -90,11 +90,6 @@ public function createSubscriptionCheckoutSession(
     return !($meta[$usedKey] ?? false);
 }
 
-    $metadata = (array) ($record->metadata ?? []);
-$metadata['paid_plan_trial_used_' . $planId] = true;
-$record->metadata = $metadata;
-$record->save();
-
 
     public function createTopupCheckoutSession(string $workspaceId, string $packageId, string $successUrl, string $cancelUrl): array
     {
@@ -278,6 +273,9 @@ $record->save();
             $record->metadata = array_merge($metadata, [
                 'stripe_synced_at' => now()->toIso8601String(),
             ]);
+            if ($trialEndsAt !== null) {
+    $metadata['paid_plan_trial_used_' . $planId] = true;
+}
             $record->save();
 
             DB::table('workspaces')->where('id', $workspaceId)->update(['plan_id' => $planId]);
