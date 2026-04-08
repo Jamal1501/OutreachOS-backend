@@ -54,6 +54,8 @@ return [
             'tiktok_discovery' => env('APIFY_ACTOR_TIKTOK_DISCOVERY'),
             'instagram_profile' => env('APIFY_ACTOR_INSTAGRAM_PROFILE'),
             'tiktok_profile' => env('APIFY_ACTOR_TIKTOK_PROFILE'),
+            'instagram_content_deep' => env('APIFY_ACTOR_INSTAGRAM_CONTENT_DEEP'),
+            'tiktok_comments_deep' => env('APIFY_ACTOR_TIKTOK_COMMENTS_DEEP'),
         ],
     ],
 

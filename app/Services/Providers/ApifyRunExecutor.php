@@ -9,8 +9,10 @@ use RuntimeException;
 
 class ApifyRunExecutor
 {
-    public function __construct(private ProviderUsageLogger $usageLogger)
-    {
+    public function __construct(
+        private ProviderUsageLogger $usageLogger,
+        private \App\Services\ScraperRegistryService $scrapers,
+    ) {
     }
 
     private const TERMINAL_RUN_STATUSES = ['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT', 'TIMED_OUT'];

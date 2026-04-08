@@ -4,16 +4,20 @@ namespace App\Services\Providers;
 
 use App\Contracts\EnrichmentProvider;
 use App\DataTransferObjects\ProviderRunResult;
+use App\Services\ScraperRegistryService;
 
 class ApifyEnrichmentProvider implements EnrichmentProvider
 {
-    public function __construct(private ApifyRunExecutor $executor)
-    {
+    public function __construct(
+        private ApifyRunExecutor $executor,
+        private ScraperRegistryService $scrapers,
+    ) {
     }
 
     public function enrich(string $platform, array $urls, array $hashtags, int $limit): ProviderRunResult
     {
-        $actorKey = $platform === 'instagram' ? 'instagram_profile' : 'tiktok_profile';
+        $module = $this->scrapers->systemDefaultModule($platform, 'enrichment');
+        $actorKey = (string) ($module['actorKey'] ?? ($platform === 'instagram' ? 'instagram_profile' : 'tiktok_profile'));
 
         if ($platform === 'instagram') {
             $input = [

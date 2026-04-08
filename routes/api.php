@@ -26,6 +26,7 @@ Route::middleware(['api.auth', 'workspace.context'])->group(function () {
         ]);
     });
 
+    Route::get('/apify/modules', [ApifyController::class, 'modules']);
     Route::post('/apify/run', [ApifyController::class, 'runActor']);
     Route::get('/apify/status/{runId}', [ApifyController::class, 'getRunStatus']);
     Route::get('/apify/results/{datasetId}', [ApifyController::class, 'getDatasetResults']);

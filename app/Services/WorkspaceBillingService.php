@@ -53,6 +53,12 @@ class WorkspaceBillingService
         ],
     ];
 
+
+    public function __construct(
+        private ScraperRegistryService $scrapers,
+    ) {
+    }
+
     public function summary(string $workspaceId): array
     {
         [$subscription, $wallet, $plan] = $this->ensureWorkspaceBilling($workspaceId);
@@ -82,6 +88,7 @@ class WorkspaceBillingService
                 'trialScrapeCredits' => (int) Arr::get($plan, 'trial_scrape_credits', 0),
                 'trialAiCredits' => (int) Arr::get($plan, 'trial_ai_credits', 0),
                 'topupPriceMultiplier' => (float) Arr::get($plan, 'topup_price_multiplier', 1),
+                'scraperModuleKeys' => array_values(array_map(fn (array $module) => $module['key'], $this->scrapers->availableForPlan((string) Arr::get($plan, 'id', 'free')))),
             ],
         ];
     }
@@ -97,11 +104,13 @@ class WorkspaceBillingService
             ->get()
             ->map(function ($row) use ($subscription) {
                 $data = (array) $row;
+                $planId = (string) ($data['id'] ?? 'free');
                 $features = $this->normalizeJsonArray($data['features'] ?? []);
-                $priceCents = $this->planPriceCents((string) ($data['id'] ?? 'free'));
+                $priceCents = $this->planPriceCents($planId);
+                $scraperModules = $this->scrapers->availableForPlan($planId);
 
                 return [
-                    'id' => (string) ($data['id'] ?? ''),
+                    'id' => $planId,
                     'name' => (string) ($data['name'] ?? ''),
                     'monthlyScrapeCredits' => (int) ($data['monthly_scrape_credits'] ?? 0),
                     'monthlyAiCredits' => (int) ($data['monthly_ai_credits'] ?? 0),
@@ -110,9 +119,11 @@ class WorkspaceBillingService
                     'maxMembers' => (int) ($data['max_members'] ?? 0),
                     'maxCreators' => (int) ($data['max_creators'] ?? 0),
                     'features' => $features,
+                    'scraperModuleKeys' => array_values(array_map(fn (array $module) => $module['key'], $scraperModules)),
+                    'maxScraperDepth' => $this->maxScraperDepth($scraperModules),
                     'priceCents' => $priceCents,
                     'priceUsd' => round($priceCents / 100, 2),
-                    'isCurrent' => (string) ($data['id'] ?? '') === (string) $subscription->plan_id,
+                    'isCurrent' => $planId === (string) $subscription->plan_id,
                 ];
             })
             ->values()
@@ -157,23 +168,25 @@ class WorkspaceBillingService
         ];
     }
 
-    public function reserveApify(?string $workspaceId, ?string $actorKey, ?string $actorId, array $input, ?float $maxChargeUsd = null): array
+    public function reserveApify(?string $workspaceId, ?string $moduleKey, ?string $actorKey, ?string $actorId, array $input, ?float $maxChargeUsd = null): array
     {
         if (!$workspaceId) {
             throw new RuntimeException('Workspace billing requires a valid workspace context.');
         }
 
-        $estimate = $this->estimateApifyCredits($actorKey, $actorId, $input);
+        $estimate = $this->estimateApifyCredits($moduleKey, $actorKey, $actorId, $input);
 
         return $this->reserve(
             workspaceId: $workspaceId,
             type: $estimate['type'],
-            bucket: 'scrape',
+            bucket: (string) ($estimate['bucket'] ?? 'scrape'),
             units: $estimate['units'],
             creditCost: $estimate['credit_cost'],
             provider: 'apify',
-            source: (string) ($actorKey ?: $actorId ?: 'apify_run'),
+            source: (string) ($moduleKey ?: $actorKey ?: $actorId ?: 'apify_run'),
             metadata: [
+                'module_key' => $moduleKey,
+                'cost_class' => $estimate['cost_class'] ?? null,
                 'actor_key' => $actorKey,
                 'actor_id' => $actorId,
                 'max_total_charge_usd' => $maxChargeUsd,
@@ -345,6 +358,14 @@ class WorkspaceBillingService
 
             return [$subscription, $wallet, $plan];
         });
+    }
+
+
+    public function currentPlanId(string $workspaceId): string
+    {
+        [$subscription] = $this->ensureWorkspaceBilling($workspaceId);
+
+        return $this->normalizePlanId((string) ($subscription->plan_id ?: 'free'));
     }
 
     public function reconcileWorkspace(string $workspaceId): array
@@ -687,6 +708,20 @@ class WorkspaceBillingService
         return self::DEFAULT_CREDIT_PACKAGES;
     }
 
+
+    private function maxScraperDepth(array $modules): string
+    {
+        $depths = array_map(fn (array $module) => strtolower((string) ($module['depth'] ?? 'basic')), $modules);
+        if (in_array('deep', $depths, true)) {
+            return 'deep';
+        }
+        if (in_array('standard', $depths, true)) {
+            return 'standard';
+        }
+
+        return 'basic';
+    }
+
     private function planPriceCents(string $planId): int
     {
         $configured = config("outreach.billing.plan_prices.{$planId}");
@@ -697,30 +732,9 @@ class WorkspaceBillingService
         return self::DEFAULT_PLAN_PRICES_CENTS[$planId] ?? 0;
     }
 
-    private function estimateApifyCredits(?string $actorKey, ?string $actorId, array $input): array
+    private function estimateApifyCredits(?string $moduleKey, ?string $actorKey, ?string $actorId, array $input): array
     {
-        $normalizedActor = strtolower((string) ($actorKey ?: $actorId ?: ''));
-        $isProfile = str_contains($normalizedActor, 'profile');
-        $targetCount = $this->estimateTargetCount($input);
-
-        if ($isProfile) {
-            $units = max(1, $targetCount);
-            $perProfileCost = max(1, (int) config('outreach.billing.enrichment_credit_cost', 5));
-
-            return [
-                'type' => 'enrichment',
-                'units' => $units,
-                'credit_cost' => $units * $perProfileCost,
-            ];
-        }
-
-        $units = max(1, $this->estimateDiscoveryCount($input));
-
-        return [
-            'type' => 'scrape',
-            'units' => $units,
-            'credit_cost' => $units,
-        ];
+        return $this->scrapers->estimateCredits($moduleKey, $actorKey, $actorId, $input);
     }
 
     private function estimateTargetCount(array $input): int

@@ -9,6 +9,7 @@ use App\Services\GoogleSheetsService;
 use App\Services\OutreachLogService;
 use App\Services\OperationalMirrorService;
 use App\Services\TaskQueueService;
+use App\Services\ScraperRegistryService;
 use App\Services\ProviderUsageLogger;
 use App\Services\WorkspaceBillingService;
 use App\Services\WorkspaceContextService;
@@ -31,6 +32,7 @@ class ApifyController extends Controller
         private WorkspaceContextService $workspaceContext,
         private ProviderUsageLogger $usageLogger,
         private WorkspaceBillingService $billing,
+        private ScraperRegistryService $scrapers,
     ) {
     }
 
@@ -46,8 +48,10 @@ public function runActor(Request $request)
             return response()->json(['error' => 'Missing APIFY_API_TOKEN'], 500);
         }
 
+        $configuredActorKeys = array_keys($this->actorMap());
         $validated = $request->validate([
-            'actorKey' => ['nullable', 'string', Rule::in(array_keys($this->actorMap()))],
+            'moduleKey' => ['nullable', 'string'],
+            'actorKey' => ['nullable', 'string', Rule::in($configuredActorKeys)],
             'actorId' => ['nullable', 'string'],
             'maxTotalChargeUsd' => ['nullable', 'numeric', 'min:0'],
             'memoryMbytes' => ['nullable', 'integer', 'min:128'],
@@ -55,23 +59,18 @@ public function runActor(Request $request)
             'input' => ['nullable', 'array'],
         ]);
 
-        $actorMap = $this->actorMap();
+        $workspaceId = (string) $request->attributes->get('workspace_id');
+        $planId = $this->billing->currentPlanId($workspaceId);
+        $moduleKey = $validated['moduleKey'] ?? null;
         $actorKey = $validated['actorKey'] ?? null;
-        $actorId = $validated['actorId'] ?? $actorMap[$actorKey ?? ''] ?? null;
-
-        if (!$actorId) {
-            Log::warning('Missing actorId or unmapped actorKey', [
-                'actorKey' => $actorKey,
-                'actorMap' => $actorMap,
-            ]);
-
-            return response()->json([
-                'error' => 'Missing actorId or unmapped actorKey',
-            ], 422);
-        }
+        $requestedActorId = $validated['actorId'] ?? null;
+        $module = $this->scrapers->resolveExecution($moduleKey, $actorKey, $requestedActorId, $planId);
+        $moduleKey = $module['key'];
+        $actorKey = $module['actorKey'];
+        $actorId = $module['actorId'];
 
         $input = $validated['input'] ?? Arr::except($request->all(), [
-            'actorKey', 'actorId', 'maxTotalChargeUsd', 'memoryMbytes', 'timeoutSecs'
+            'moduleKey', 'actorKey', 'actorId', 'maxTotalChargeUsd', 'memoryMbytes', 'timeoutSecs'
         ]);
 
         $query = array_filter([
@@ -81,7 +80,8 @@ public function runActor(Request $request)
         ], fn ($value) => $value !== null && $value !== '');
 
         $usageReservation = $this->billing->reserveApify(
-            workspaceId: (string) $request->attributes->get('workspace_id'),
+            workspaceId: $workspaceId,
+            moduleKey: $moduleKey,
             actorKey: $actorKey,
             actorId: $actorId,
             input: $input,
@@ -95,6 +95,8 @@ public function runActor(Request $request)
         }
 
         Log::info('Starting Apify actor run', [
+            'moduleKey' => $moduleKey,
+            'planId' => $planId,
             'actorKey' => $actorKey,
             'actorId' => $actorId,
             'url' => $url,
@@ -109,6 +111,7 @@ public function runActor(Request $request)
 
         if (!$response->successful()) {
             Log::error('Apify run failed', [
+                'moduleKey' => $moduleKey,
                 'actorKey' => $actorKey,
                 'actorId' => $actorId,
                 'status' => $response->status(),
@@ -139,12 +142,6 @@ public function runActor(Request $request)
             ], $response->status());
         }
 
-        Log::info('Apify actor run started', [
-            'actorKey' => $actorKey,
-            'actorId' => $actorId,
-            'response' => $response->json(),
-        ]);
-
         $responsePayload = $response->json();
         $runId = data_get($responsePayload, 'data.id');
         $datasetId = data_get($responsePayload, 'data.defaultDatasetId');
@@ -154,6 +151,7 @@ public function runActor(Request $request)
                 $usageReservationId,
                 providerCostUsd: isset($query['maxTotalChargeUsd']) ? (float) $query['maxTotalChargeUsd'] : null,
                 metadata: [
+                    'module_key' => $moduleKey,
                     'run_id' => $runId,
                     'dataset_id' => $datasetId,
                 ],
@@ -174,6 +172,14 @@ public function runActor(Request $request)
 
         return response()->json([
             'message' => 'Actor started',
+            'module' => [
+                'key' => $module['key'],
+                'label' => $module['label'],
+                'platform' => $module['platform'],
+                'stage' => $module['stage'],
+                'depth' => $module['depth'],
+                'targetSheet' => $module['targetSheet'],
+            ],
             'actorId' => $actorId,
             'billing' => [
                 'creditBucket' => $usageReservation['credit_bucket'] ?? 'scrape',
@@ -207,6 +213,25 @@ public function runActor(Request $request)
             'line' => $e->getLine(),
         ], 500);
     }
+}
+
+public function modules(Request $request)
+{
+    $workspaceId = (string) $request->attributes->get('workspace_id');
+    $planId = $this->billing->currentPlanId($workspaceId);
+
+    return response()->json([
+        'message' => 'Scraper modules fetched',
+        'data' => [
+            'planId' => $planId,
+            'modules' => $this->scrapers->availableForPlan(
+                $planId,
+                platform: $request->query('platform') ?: null,
+                stage: $request->query('stage') ?: null,
+                configuredOnly: true,
+            ),
+        ],
+    ]);
 }
 
     public function getRunStatus(string $runId)
@@ -528,11 +553,6 @@ $validated = $request->validate([
     
     private function actorMap(): array
     {
-        return [
-            'instagram_discovery' => (string) config('services.apify.actors.instagram_discovery'),
-            'tiktok_discovery' => (string) config('services.apify.actors.tiktok_discovery'),
-            'instagram_profile' => (string) config('services.apify.actors.instagram_profile'),
-            'tiktok_profile' => (string) config('services.apify.actors.tiktok_profile'),
-        ];
+        return $this->scrapers->configuredActorMap();
     }
 }
