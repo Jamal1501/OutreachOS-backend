@@ -16,54 +16,85 @@ class StripeBillingService
     {
     }
 
-    public function createSubscriptionCheckoutSession(string $workspaceId, string $planId, string $successUrl, string $cancelUrl): array
-    {
-        $config = $this->billing->getPlanCheckoutConfig($workspaceId, $planId);
-        $customerId = $this->ensureStripeCustomer($workspaceId);
+public function createSubscriptionCheckoutSession(
+    string $workspaceId,
+    string $planId,
+    string $successUrl,
+    string $cancelUrl
+): array {
+    $config = $this->billing->getPlanCheckoutConfig($workspaceId, $planId);
+    $customerId = $this->ensureStripeCustomer($workspaceId);
 
-        $response = $this->request('POST', '/checkout/sessions', [
-            'customer' => $customerId,
-            'client_reference_id' => $workspaceId,
-            'mode' => 'subscription',
-            'allow_promotion_codes' => 'true',
-            'success_url' => $successUrl,
-            'cancel_url' => $cancelUrl,
-            'metadata' => [
-                'billing_type' => 'subscription_checkout',
-                'workspace_id' => $workspaceId,
-                'plan_id' => $config['id'],
-            ],
-            'subscription_data' => [
-                'metadata' => [
-                    'workspace_id' => $workspaceId,
-                    'plan_id' => $config['id'],
-                ],
-            ],
-            'line_items' => [[
-                'quantity' => 1,
-                'price_data' => [
-                    'currency' => $config['currency'],
-                    'unit_amount' => $config['price_cents'],
-                    'recurring' => [
-                        'interval' => 'month',
-                    ],
-                    'product_data' => [
-                        'name' => 'OutreachOS ' . $config['name'],
-                        'description' => sprintf(
-                            '%d scrape credits and %d AI credits per month.',
-                            $config['monthly_scrape_credits'],
-                            $config['monthly_ai_credits'],
-                        ),
-                    ],
-                ],
-            ]],
-        ]);
-
-        return [
-            'id' => (string) ($response['id'] ?? ''),
-            'url' => (string) ($response['url'] ?? ''),
-        ];
+    $trialDays = 0;
+    if ($this->workspaceEligibleForPaidTrial($workspaceId, $config['id'])) {
+        $trialDays = in_array($config['id'], ['pro', 'enterprise'], true) ? 7 : 0;
     }
+
+    $payload = [
+        'customer'               => $customerId,
+        'client_reference_id'    => $workspaceId,
+        'mode'                   => 'subscription',
+        'allow_promotion_codes'  => 'true',
+        'success_url'            => $successUrl,
+        'cancel_url'             => $cancelUrl,
+        'metadata' => [
+            'billing_type' => 'subscription_checkout',
+            'workspace_id' => $workspaceId,
+            'plan_id'      => $config['id'],
+        ],
+        'subscription_data' => [
+            'metadata' => [
+                'workspace_id' => $workspaceId,
+                'plan_id'      => $config['id'],
+            ],
+        ],
+        'line_items' => [[
+            'quantity'   => 1,
+            'price_data' => [
+                'currency'   => $config['currency'],
+                'unit_amount' => $config['price_cents'],
+                'recurring'  => ['interval' => 'month'],
+                'product_data' => [
+                    'name'        => 'OutreachOS ' . $config['name'],
+                    'description' => sprintf(
+                        '%d scrape credits and %d AI credits per month.',
+                        $config['monthly_scrape_credits'],
+                        $config['monthly_ai_credits'],
+                    ),
+                ],
+            ],
+        ]],
+    ];
+
+    if ($trialDays > 0) {
+        $payload['subscription_data']['trial_period_days'] = $trialDays;
+    }
+
+    $response = $this->request('POST', '/checkout/sessions', $payload);
+
+    return [
+        'id'  => (string) ($response['id'] ?? ''),
+        'url' => (string) ($response['url'] ?? ''),
+    ];
+}
+
+    private function workspaceEligibleForPaidTrial(string $workspaceId, string $planId): bool
+{
+    $subscription = WorkspaceSubscription::query()
+        ->where('workspace_id', $workspaceId)
+        ->first();
+
+    $meta   = (array) ($subscription?->metadata ?? []);
+    $usedKey = 'paid_plan_trial_used_' . strtolower($planId);
+
+    return !($meta[$usedKey] ?? false);
+}
+
+    $metadata = (array) ($record->metadata ?? []);
+$metadata['paid_plan_trial_used_' . $planId] = true;
+$record->metadata = $metadata;
+$record->save();
+
 
     public function createTopupCheckoutSession(string $workspaceId, string $packageId, string $successUrl, string $cancelUrl): array
     {
