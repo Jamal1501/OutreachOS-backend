@@ -34,6 +34,7 @@ public function createSubscriptionCheckoutSession(
         'customer'               => $customerId,
         'client_reference_id'    => $workspaceId,
         'mode'                   => 'subscription',
+        'payment_method_collection' => 'always',
         'allow_promotion_codes'  => 'true',
         'success_url'            => $successUrl,
         'cancel_url'             => $cancelUrl,
@@ -269,14 +270,15 @@ public function createSubscriptionCheckoutSession(
             $record->current_period_start = $periodStart;
             $record->current_period_end = $periodEnd;
             $record->trial_ends_at = $trialEndsAt;
-            $metadata = (array) ($record->metadata ?? []);
-            $record->metadata = array_merge($metadata, [
-                'stripe_synced_at' => now()->toIso8601String(),
-            ]);
-            if ($trialEndsAt !== null) {
+$metadata = (array) ($record->metadata ?? []);
+$metadata['stripe_synced_at'] = now()->toIso8601String();
+
+if ($trialEndsAt !== null && in_array($planId, ['pro', 'enterprise'], true)) {
     $metadata['paid_plan_trial_used_' . $planId] = true;
 }
-            $record->save();
+
+$record->metadata = $metadata;
+$record->save();
 
             DB::table('workspaces')->where('id', $workspaceId)->update(['plan_id' => $planId]);
 
