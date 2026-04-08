@@ -303,31 +303,36 @@ class StripeBillingService
     }
 
     private function resolveWorkspaceContact(string $workspaceId): array
-    {
-        $workspace = DB::table('workspaces')->where('id', $workspaceId)->first();
-        if (!$workspace) {
-            return [];
-        }
+{
+    $workspace = DB::table('workspaces')->where('id', $workspaceId)->first();
+    if (!$workspace) {
+        return [];
+    }
 
-        if (!empty($workspace->owner_id)) {
-            $owner = DB::table('users')->where('id', $workspace->owner_id)->first();
-            if ($owner) {
-                return [
-                    'email' => $owner->email,
-                    'name' => $owner->name,
-                ];
-            }
-        }
-
-        $member = DB::table('workspace_members')
-            ->join('users', 'users.supabase_user_id', '=', 'workspace_members.user_id')
-            ->where('workspace_members.workspace_id', $workspaceId)
-            ->orderByRaw("CASE workspace_members.role WHEN 'owner' THEN 1 WHEN 'admin' THEN 2 ELSE 3 END")
-            ->select('users.email', 'users.name')
+    if (!empty($workspace->owner_id)) {
+        $owner = DB::table('users')
+            ->where('supabase_user_id', $workspace->owner_id)
             ->first();
 
-        return $member ? ['email' => $member->email, 'name' => $member->name] : [];
+        if ($owner) {
+            return [
+                'email' => $owner->email,
+                'name' => $owner->name,
+            ];
+        }
     }
+
+    $member = DB::table('workspace_members')
+        ->join('users', 'users.supabase_user_id', '=', 'workspace_members.user_id')
+        ->where('workspace_members.workspace_id', $workspaceId)
+        ->orderByRaw("CASE workspace_members.role WHEN 'owner' THEN 1 WHEN 'admin' THEN 2 ELSE 3 END")
+        ->select('users.email', 'users.name')
+        ->first();
+
+    return $member
+        ? ['email' => $member->email, 'name' => $member->name]
+        : [];
+}
 
     private function verifyWebhookSignature(string $payload, ?string $signatureHeader): void
     {
