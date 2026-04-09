@@ -14,6 +14,7 @@ Route::get('/health', function () {
     ]);
 });
 
+Route::get('/avatar-proxy', [SheetDataController::class, 'avatarProxy']);
 Route::post('/billing/webhooks/stripe', [BillingController::class, 'stripeWebhook']);
 
 Route::middleware(['api.auth', 'workspace.context'])->group(function () {
