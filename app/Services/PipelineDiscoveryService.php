@@ -800,30 +800,45 @@ private function selectProfilesFromRankedPosts(
         }
         $selectedProfile = $selectedProfilesByUrl[$profileKey] ?? null;
 
-        return [
-            'id' => (string) (Arr::get($item, 'id', $username ?: md5($profileUrl))),
-            'mergeRef' => 'instagram:source-url:' . rawurlencode(rtrim(strtolower($profileUrl), '/')),
-            'platform' => 'instagram',
-            'handle' => $this->normalizeHandle($username),
-            'fullName' => $this->nullableString(Arr::get($item, 'fullName', Arr::get($item, 'ownerFullName'))),
-            'profileUrl' => $profileUrl,
-            'followers' => $this->nullableInt(Arr::get($item, 'followersCount', Arr::get($item, 'followers'))),
-            'engagementRate' => $this->nullableFloat($this->estimateInstagramEngagementRate($item)),
-            'email' => $this->nullableString(Arr::get($item, 'email_from_bio', $this->extractEmailFromText((string) Arr::get($item, 'biography', Arr::get($item, 'bio', ''))))),
-            'bio' => $this->nullableString(Arr::get($item, 'biography', Arr::get($item, 'bio'))),
-            'postsCount' => $this->nullableInt(Arr::get($item, 'postsCount', Arr::get($item, 'posts_count'))),
-            'avgLikes' => $this->nullableFloat($this->averageFromLatestPosts($latestPosts, 'likesCount')),
-            'avgComments' => $this->nullableFloat($this->averageFromLatestPosts($latestPosts, 'commentsCount')),
-            'isVerified' => $this->nullableBool(Arr::get($item, 'verified', Arr::get($item, 'is_verified'))),
-            'readyToMerge' => true,
-            'sourceHashtags' => $sourceTags,
-            'sourcePostUrl' => $selectedProfile['sourcePostUrl'] ?? null,
-            'sourceMetricType' => $selectedProfile['sourceMetricType'] ?? null,
-            'sourceMetricValue' => $selectedProfile['sourceMetricValue'] ?? null,
-            'sourcePostMetrics' => $selectedProfile['sourcePostMetrics'] ?? null,
-            'matchedPostCount' => $selectedProfile['matchedPostCount'] ?? 1,
-            'alreadyInCrm' => (bool) ($selectedProfile['alreadyInCrm'] ?? false),
-        ];
+return [
+    'id' => (string) (Arr::get($item, 'id', $username ?: md5($profileUrl))),
+    'mergeRef' => 'instagram:source-url:' . rawurlencode(rtrim(strtolower($profileUrl), '/')),
+    'platform' => 'instagram',
+    'handle' => $this->normalizeHandle($username),
+    'fullName' => $this->nullableString(Arr::get($item, 'fullName', Arr::get($item, 'ownerFullName'))),
+    'profileUrl' => $profileUrl,
+    'avatarUrl' => $this->nullableString(
+        Arr::get(
+            $item,
+            'profilePicUrl',
+            Arr::get(
+                $item,
+                'profile_pic_url',
+                Arr::get(
+                    $item,
+                    'profilePic',
+                    Arr::get($item, 'profile_pic')
+                )
+            )
+        )
+    ),
+    'followers' => $this->nullableInt(Arr::get($item, 'followersCount', Arr::get($item, 'followers'))),
+    'engagementRate' => $this->nullableFloat($this->estimateInstagramEngagementRate($item)),
+    'email' => $this->nullableString(Arr::get($item, 'email_from_bio', $this->extractEmailFromText((string) Arr::get($item, 'biography', Arr::get($item, 'bio', ''))))),
+    'bio' => $this->nullableString(Arr::get($item, 'biography', Arr::get($item, 'bio'))),
+    'postsCount' => $this->nullableInt(Arr::get($item, 'postsCount', Arr::get($item, 'posts_count'))),
+    'avgLikes' => $this->nullableFloat($this->averageFromLatestPosts($latestPosts, 'likesCount')),
+    'avgComments' => $this->nullableFloat($this->averageFromLatestPosts($latestPosts, 'commentsCount')),
+    'isVerified' => $this->nullableBool(Arr::get($item, 'verified', Arr::get($item, 'is_verified'))),
+    'readyToMerge' => true,
+    'sourceHashtags' => $sourceTags,
+    'sourcePostUrl' => $selectedProfile['sourcePostUrl'] ?? null,
+    'sourceMetricType' => $selectedProfile['sourceMetricType'] ?? null,
+    'sourceMetricValue' => $selectedProfile['sourceMetricValue'] ?? null,
+    'sourcePostMetrics' => $selectedProfile['sourcePostMetrics'] ?? null,
+    'matchedPostCount' => $selectedProfile['matchedPostCount'] ?? 1,
+    'alreadyInCrm' => (bool) ($selectedProfile['alreadyInCrm'] ?? false),
+];
     }
 
     private function normalizeTikTokCreator(
@@ -855,30 +870,45 @@ private function selectProfilesFromRankedPosts(
             $engagementRate = round((((float) $avgLikes + (float) $avgComments) / (float) $followers) * 100, 2);
         }
 
-        return [
-            'id' => (string) (Arr::get($item, 'id', $username ?: md5($profileUrl))),
-            'mergeRef' => 'tiktok:source-url:' . rawurlencode(rtrim(strtolower($profileUrl), '/')),
-            'platform' => 'tiktok',
-            'handle' => $this->normalizeHandle($username),
-            'fullName' => $this->nullableString(Arr::get($item, 'nickname', Arr::get($item, 'authorMeta.nickName'))),
-            'profileUrl' => $profileUrl,
-            'followers' => $this->nullableInt($followers),
-            'engagementRate' => $this->nullableFloat($engagementRate),
-            'email' => $this->nullableString(Arr::get($item, 'email_from_bio', $this->extractEmailFromText((string) Arr::get($item, 'bio', Arr::get($item, 'signature', ''))))),
-            'bio' => $this->nullableString(Arr::get($item, 'bio', Arr::get($item, 'signature'))),
-            'postsCount' => $this->nullableInt(Arr::get($item, 'videoCount', Arr::get($item, 'authorStats.videoCount', Arr::get($item, 'posts')))),
-            'avgLikes' => $this->nullableFloat($avgLikes),
-            'avgComments' => $this->nullableFloat($avgComments),
-            'isVerified' => $this->nullableBool(Arr::get($item, 'verified', Arr::get($item, 'authorMeta.verified', Arr::get($item, 'isVerified')))),
-            'readyToMerge' => true,
-            'sourceHashtags' => $sourceTags,
-            'sourcePostUrl' => $selectedProfile['sourcePostUrl'] ?? null,
-            'sourceMetricType' => $selectedProfile['sourceMetricType'] ?? null,
-            'sourceMetricValue' => $selectedProfile['sourceMetricValue'] ?? null,
-            'sourcePostMetrics' => $selectedProfile['sourcePostMetrics'] ?? null,
-            'matchedPostCount' => $selectedProfile['matchedPostCount'] ?? 1,
-            'alreadyInCrm' => (bool) ($selectedProfile['alreadyInCrm'] ?? false),
-        ];
+return [
+    'id' => (string) (Arr::get($item, 'id', $username ?: md5($profileUrl))),
+    'mergeRef' => 'tiktok:source-url:' . rawurlencode(rtrim(strtolower($profileUrl), '/')),
+    'platform' => 'tiktok',
+    'handle' => $this->normalizeHandle($username),
+    'fullName' => $this->nullableString(Arr::get($item, 'nickname', Arr::get($item, 'authorMeta.nickName'))),
+    'profileUrl' => $profileUrl,
+    'avatarUrl' => $this->nullableString(
+        Arr::get(
+            $item,
+            'avatarUrl',
+            Arr::get(
+                $item,
+                'avatar_url',
+                Arr::get(
+                    $item,
+                    'avatarLarger',
+                    Arr::get($item, 'authorMeta.avatar')
+                )
+            )
+        )
+    ),
+    'followers' => $this->nullableInt($followers),
+    'engagementRate' => $this->nullableFloat($engagementRate),
+    'email' => $this->nullableString(Arr::get($item, 'email_from_bio', $this->extractEmailFromText((string) Arr::get($item, 'bio', Arr::get($item, 'signature', ''))))),
+    'bio' => $this->nullableString(Arr::get($item, 'bio', Arr::get($item, 'signature'))),
+    'postsCount' => $this->nullableInt(Arr::get($item, 'videoCount', Arr::get($item, 'authorStats.videoCount', Arr::get($item, 'posts')))),
+    'avgLikes' => $this->nullableFloat($avgLikes),
+    'avgComments' => $this->nullableFloat($avgComments),
+    'isVerified' => $this->nullableBool(Arr::get($item, 'verified', Arr::get($item, 'authorMeta.verified', Arr::get($item, 'isVerified')))),
+    'readyToMerge' => true,
+    'sourceHashtags' => $sourceTags,
+    'sourcePostUrl' => $selectedProfile['sourcePostUrl'] ?? null,
+    'sourceMetricType' => $selectedProfile['sourceMetricType'] ?? null,
+    'sourceMetricValue' => $selectedProfile['sourceMetricValue'] ?? null,
+    'sourcePostMetrics' => $selectedProfile['sourcePostMetrics'] ?? null,
+    'matchedPostCount' => $selectedProfile['matchedPostCount'] ?? 1,
+    'alreadyInCrm' => (bool) ($selectedProfile['alreadyInCrm'] ?? false),
+];
     }
 
     private function rawSheetForPlatform(string $platform): string
