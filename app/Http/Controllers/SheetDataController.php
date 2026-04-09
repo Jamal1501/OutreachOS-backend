@@ -918,19 +918,20 @@ public function enrichmentQueue(Request $request)
             $enriched = in_array($status, ['new', 'enriched', 'contacted', 'follow_request_sent',
                 'followed_up', 'replied', 'accepted', 'declined', 'archived'], true);
 
-            $items[] = [
-                'id' => 'profiledb:' . $profile->id,
-                'rowId' => 'profiledb:' . $profile->id,
-                'platform' => (string) $profile->platform,
-                'handle' => $handle,
-                'profileUrl' => $profileUrl,
-                'status' => $enriched ? 'enriched' : $status,
-                'sourceNotes' => (string) ($profile->source_reference ?: ''),
-                'addedAt' => optional($profile->created_at)->toDateTimeString() ?? '',
-                'readyToMerge' => $enriched,
-                'enrichedRowNumber' => null,
-                'sourceSheet' => 'database',
-            ];
+$items[] = [
+    'id' => 'profiledb:' . $profile->id,
+    'rowId' => 'profiledb:' . $profile->id,
+    'platform' => (string) $profile->platform,
+    'handle' => $handle,
+    'avatarUrl' => (string) ($profile->profile_pic_url ?: ''),
+    'profileUrl' => $profileUrl,
+    'status' => $enriched ? 'enriched' : $status,
+    'sourceNotes' => (string) ($profile->source_reference ?: ''),
+    'addedAt' => optional($profile->created_at)->toDateTimeString() ?? '',
+    'readyToMerge' => $enriched,
+    'enrichedRowNumber' => null,
+    'sourceSheet' => 'database',
+];
         }
 
         usort($items, fn (array $a, array $b) => strcmp((string) ($b['addedAt'] ?? ''), (string) ($a['addedAt'] ?? '')));
@@ -1367,19 +1368,20 @@ if (Str::startsWith($sheetId, 'workspace:')) {
                 $creator->niche_category = $candidate['niche'] ?: $creator->niche_category;
                 $creator->save();
 
-                $profile->handle = $candidate['handle'];
-                $profile->username = ltrim($candidate['handle'], '@');
-                $profile->profile_url = $candidate['profileUrl'] ?: $profile->profile_url;
-                $profile->dm_link = $candidate['profileUrl'] ?: $profile->dm_link ?: $profile->profile_url;
-                $profile->status = $profile->status && !in_array(strtoupper((string) $profile->status), ['NEW', 'DISCOVERED', 'ENRICHED'], true)
-                    ? $profile->status
-                    : 'NEW';
-                $profile->lifecycle_state = $this->lifecycle->normalizeState((string) ($profile->status ?: 'NEW'), 'enriched');
-                $profile->followers_count = $candidate['followers'] ?? $profile->followers_count;
-                $profile->engagement_rate_pct = $candidate['engagementRate'] ?? $profile->engagement_rate_pct;
-                $profile->preferred_channel = $candidate['email'] ? 'Email' : ($profile->preferred_channel ?: 'DM');
-                $profile->source_provider = 'pipeline';
-                $profile->source_reference = $candidate['sourceReference'];
+$profile->handle = $candidate['handle'];
+$profile->username = ltrim($candidate['handle'], '@');
+$profile->profile_url = $candidate['profileUrl'] ?: $profile->profile_url;
+$profile->dm_link = $candidate['profileUrl'] ?: $profile->dm_link ?: $profile->profile_url;
+$profile->profile_pic_url = $candidate['avatarUrl'] ?: $profile->profile_pic_url;
+$profile->status = $profile->status && !in_array(strtoupper((string) $profile->status), ['NEW', 'DISCOVERED', 'ENRICHED'], true)
+    ? $profile->status
+    : 'NEW';
+$profile->lifecycle_state = $this->lifecycle->normalizeState((string) ($profile->status ?: 'NEW'), 'enriched');
+$profile->followers_count = $candidate['followers'] ?? $profile->followers_count;
+$profile->engagement_rate_pct = $candidate['engagementRate'] ?? $profile->engagement_rate_pct;
+$profile->preferred_channel = $candidate['email'] ? 'Email' : ($profile->preferred_channel ?: 'DM');
+$profile->source_provider = 'pipeline';
+$profile->source_reference = $candidate['sourceReference'];
                 $sourceMetadata = is_array($profile->source_metadata) ? $profile->source_metadata : [];
                 $sourceMetadata['pipeline_creator_id'] = $candidate['id'];
                 $sourceMetadata['merge_ref'] = $candidate['mergeRef'];
@@ -1467,40 +1469,48 @@ if (Str::startsWith($sheetId, 'workspace:')) {
             (array) ($payload['sourceHashtags'] ?? [])
         ), fn ($tag) => $tag !== '')));
 
-        $fullName = trim((string) ($payload['fullName'] ?? '')) ?: null;
-        $email = trim((string) ($payload['email'] ?? '')) ?: null;
-        $bio = trim((string) ($payload['bio'] ?? '')) ?: null;
-        $niche = $sourceHashtags[0] ?? null;
-        $mergeRef = trim((string) ($payload['mergeRef'] ?? ''));
-        $sourceReference = $mergeRef !== ''
-            ? $mergeRef
-            : ($profileUrl !== '' ? $platform . ':source-url:' . rawurlencode(rtrim(strtolower($profileUrl), '/')) : null);
-        $identitySeed = $profileUrl !== '' ? strtolower(rtrim($profileUrl, '/')) : strtolower(ltrim($handle, '@'));
+$avatarUrl = trim((string) (
+    $payload['avatarUrl']
+    ?? $payload['profilePicUrl']
+    ?? $payload['profile_pic_url']
+    ?? ''
+)) ?: null;
 
-        return [
-            'id' => trim((string) ($payload['id'] ?? '')) ?: null,
-            'mergeRef' => $mergeRef !== '' ? $mergeRef : null,
-            'sourceReference' => $sourceReference,
-            'identityKey' => $platform . ':' . sha1($identitySeed),
-            'handle' => $handle,
-            'profileUrl' => $profileUrl,
-            'fullName' => $fullName,
-            'email' => $email,
-            'bio' => $bio,
-            'niche' => $niche,
-            'followers' => $this->sanitizeMetric($payload['followers'] ?? null),
-            'engagementRate' => $this->sanitizeFloat($payload['engagementRate'] ?? null),
-            'postsCount' => $this->sanitizeMetric($payload['postsCount'] ?? null),
-            'avgLikes' => $this->sanitizeFloat($payload['avgLikes'] ?? null),
-            'avgComments' => $this->sanitizeFloat($payload['avgComments'] ?? null),
-            'isVerified' => filter_var($payload['isVerified'] ?? null, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE),
-            'sourceHashtags' => $sourceHashtags,
-            'sourcePostUrl' => trim((string) ($payload['sourcePostUrl'] ?? '')) ?: null,
-            'sourceMetricType' => trim((string) ($payload['sourceMetricType'] ?? '')) ?: null,
-            'sourceMetricValue' => $this->sanitizeMetric($payload['sourceMetricValue'] ?? null),
-            'sourcePostMetrics' => is_array($payload['sourcePostMetrics'] ?? null) ? $payload['sourcePostMetrics'] : null,
-            'matchedPostCount' => $this->sanitizeMetric($payload['matchedPostCount'] ?? null),
-        ];
+$fullName = trim((string) ($payload['fullName'] ?? '')) ?: null;
+$email = trim((string) ($payload['email'] ?? '')) ?: null;
+$bio = trim((string) ($payload['bio'] ?? '')) ?: null;
+$niche = $sourceHashtags[0] ?? null;
+$mergeRef = trim((string) ($payload['mergeRef'] ?? ''));
+$sourceReference = $mergeRef !== ''
+    ? $mergeRef
+    : ($profileUrl !== '' ? $platform . ':source-url:' . rawurlencode(rtrim(strtolower($profileUrl), '/')) : null);
+$identitySeed = $profileUrl !== '' ? strtolower(rtrim($profileUrl, '/')) : strtolower(ltrim($handle, '@'));
+
+return [
+    'id' => trim((string) ($payload['id'] ?? '')) ?: null,
+    'mergeRef' => $mergeRef !== '' ? $mergeRef : null,
+    'sourceReference' => $sourceReference,
+    'identityKey' => $platform . ':' . sha1($identitySeed),
+    'handle' => $handle,
+    'profileUrl' => $profileUrl,
+    'avatarUrl' => $avatarUrl,
+    'fullName' => $fullName,
+    'email' => $email,
+    'bio' => $bio,
+    'niche' => $niche,
+    'followers' => $this->sanitizeMetric($payload['followers'] ?? null),
+    'engagementRate' => $this->sanitizeFloat($payload['engagementRate'] ?? null),
+    'postsCount' => $this->sanitizeMetric($payload['postsCount'] ?? null),
+    'avgLikes' => $this->sanitizeFloat($payload['avgLikes'] ?? null),
+    'avgComments' => $this->sanitizeFloat($payload['avgComments'] ?? null),
+    'isVerified' => filter_var($payload['isVerified'] ?? null, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE),
+    'sourceHashtags' => $sourceHashtags,
+    'sourcePostUrl' => trim((string) ($payload['sourcePostUrl'] ?? '')) ?: null,
+    'sourceMetricType' => trim((string) ($payload['sourceMetricType'] ?? '')) ?: null,
+    'sourceMetricValue' => $this->sanitizeMetric($payload['sourceMetricValue'] ?? null),
+    'sourcePostMetrics' => is_array($payload['sourcePostMetrics'] ?? null) ? $payload['sourcePostMetrics'] : null,
+    'matchedPostCount' => $this->sanitizeMetric($payload['matchedPostCount'] ?? null),
+];
     }
 
     private function selectedCreatorMatchesProfile(CreatorProfile $profile, array $candidate): bool
