@@ -1628,12 +1628,13 @@ if (Str::startsWith($sheetId, 'workspace:')) {
                 ? 'enriched'
                 : 'pending';
 
-            return [
+                        return [
                 'id' => $id,
                 'rowId' => $id,
                 'platform' => strtolower((string) ($profile->platform ?: 'instagram')),
                 'handle' => (string) ($profile->handle ?: ''),
                 'fullName' => (string) (optional($creator)->display_name ?: ''),
+                'avatarUrl' => (string) ($profile->profile_pic_url ?: ''),
                 'followers' => $profile->followers_count,
                 'engagementRate' => $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null,
                 'email' => (string) (optional($creator)->primary_email ?: ''),
@@ -1758,12 +1759,13 @@ if (Str::startsWith($sheetId, 'workspace:')) {
             ? 'enriched'
             : 'pending';
 
-        return [
+                return [
             'id' => $id,
             'rowId' => $id,
             'platform' => strtolower((string) ($profile->platform ?: 'instagram')),
             'handle' => (string) ($profile->handle ?: ''),
             'fullName' => (string) (optional($creator)->display_name ?: ''),
+            'avatarUrl' => (string) ($profile->profile_pic_url ?: ''),
             'sourcePostUrl' => (string) (($profile->source_metadata['source_post_url'] ?? '') ?: ''),
             'sourceMetricType' => (string) (($profile->source_metadata['source_metric_type'] ?? '') ?: ''),
             'sourceMetricValue' => $this->sanitizeMetric($profile->source_metadata['source_metric_value'] ?? null),
