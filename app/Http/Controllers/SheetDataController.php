@@ -21,6 +21,7 @@ use App\Services\WorkspaceContextService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -41,6 +42,98 @@ class SheetDataController extends Controller
         private ProjectResolverService $projects,
         private WorkspaceContextService $workspaceContext,
     ) {
+    }
+
+    public function avatarProxy(Request $request)
+    {
+        $validated = $request->validate([
+            'url' => ['required', 'string', 'max:2000'],
+        ]);
+
+        $url = trim((string) $validated['url']);
+
+        if (!filter_var($url, FILTER_VALIDATE_URL)) {
+            return response()->json([
+                'message' => 'Invalid avatar URL',
+            ], 422);
+        }
+
+        $parts = parse_url($url);
+        $scheme = Str::lower((string) ($parts['scheme'] ?? ''));
+        $host = Str::lower((string) ($parts['host'] ?? ''));
+
+        if ($scheme !== 'https' || $host === '') {
+            return response()->json([
+                'message' => 'Invalid avatar host',
+            ], 422);
+        }
+
+        $allowedHostSuffixes = [
+            'cdninstagram.com',
+            'fbcdn.net',
+            'instagram.com',
+            'tiktokcdn.com',
+            'muscdn.com',
+            'byteoversea.com',
+            'ibyteimg.com',
+        ];
+
+        $hostAllowed = false;
+        foreach ($allowedHostSuffixes as $suffix) {
+            if ($host === $suffix || Str::endsWith($host, '.' . $suffix)) {
+                $hostAllowed = true;
+                break;
+            }
+        }
+
+        if (!$hostAllowed) {
+            return response()->json([
+                'message' => 'Avatar host not allowed',
+            ], 403);
+        }
+
+        try {
+            $upstream = Http::timeout(12)
+                ->withHeaders([
+                    'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+                    'Accept' => 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                ])
+                ->get($url);
+        } catch (\Throwable $e) {
+            Log::warning('avatar proxy fetch failed', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'message' => 'Avatar fetch failed',
+            ], 502);
+        }
+
+        if (!$upstream->ok()) {
+            Log::warning('avatar proxy upstream not ok', [
+                'url' => $url,
+                'status' => $upstream->status(),
+            ]);
+
+            return response()->json([
+                'message' => 'Avatar fetch failed',
+            ], 502);
+        }
+
+        $contentType = (string) $upstream->header('Content-Type', '');
+
+        if (!Str::startsWith(Str::lower($contentType), 'image/')) {
+            return response()->json([
+                'message' => 'Avatar response was not an image',
+            ], 415);
+        }
+
+        return response($upstream->body(), 200)
+            ->header('Content-Type', $contentType)
+            ->header('Cache-Control', 'public, max-age=86400')
+            ->header('Cross-Origin-Resource-Policy', 'cross-origin')
+            ->header('X-Content-Type-Options', 'nosniff');
     }
 
     public function discoveryList(Request $request)
