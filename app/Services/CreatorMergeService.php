@@ -305,13 +305,21 @@ class CreatorMergeService
     {
         $existingStatus = strtoupper(trim((string) ($profile->status ?? '')));
         $incomingStatus = trim((string) ($creatorRecord['Status'] ?? 'NEW')) ?: 'NEW';
-        $profile->creator_id = $creator->id;
-        $profile->username = ltrim($this->normalizeHandle((string) ($creatorRecord['Handle'] ?? '')), '@');
-        $profile->profile_url = trim((string) ($creatorRecord['DM_Link'] ?? '')) ?: ($profile->profile_url ?: null);
-        $profile->dm_link = trim((string) ($creatorRecord['DM_Link'] ?? '')) ?: ($profile->dm_link ?: null);
-        $profile->status = $existingStatus !== '' && !in_array($existingStatus, ['NEW', 'DISCOVERED', 'ENRICHED'], true)
-            ? $profile->status
-            : $incomingStatus;
+        $incomingProfilePicUrl = trim((string) (
+    $sourceRow['profilePicUrl']
+    ?? $sourceRow['avatarUrl']
+    ?? $sourceRow['profile_pic_url']
+    ?? ''
+));
+
+$profile->creator_id = $creator->id;
+$profile->username = ltrim($this->normalizeHandle((string) ($creatorRecord['Handle'] ?? '')), '@');
+$profile->profile_url = trim((string) ($creatorRecord['DM_Link'] ?? '')) ?: ($profile->profile_url ?: null);
+$profile->dm_link = trim((string) ($creatorRecord['DM_Link'] ?? '')) ?: ($profile->dm_link ?: null);
+$profile->profile_pic_url = $incomingProfilePicUrl !== '' ? $incomingProfilePicUrl : ($profile->profile_pic_url ?: null);
+$profile->status = $existingStatus !== '' && !in_array($existingStatus, ['NEW', 'DISCOVERED', 'ENRICHED'], true)
+    ? $profile->status
+    : $incomingStatus;
         $profile->lifecycle_state = strtolower(str_replace(' ', '_', trim((string) ($profile->status ?: $incomingStatus))));
         $profile->followers_count = is_numeric((string) ($creatorRecord['Followers'] ?? '')) ? (int) round((float) $creatorRecord['Followers']) : $profile->followers_count;
         $profile->engagement_rate_pct = is_numeric((string) ($creatorRecord['Engagement_Rate_%'] ?? '')) ? (float) $creatorRecord['Engagement_Rate_%'] : $profile->engagement_rate_pct;
