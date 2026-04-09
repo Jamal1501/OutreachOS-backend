@@ -257,8 +257,14 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
             }
         }
 
-        $tasks = $this->normalizeDbTasks(Task::query()->where('project_id', $projectId)->orderBy('due_at')->get()->all());
-        $openTaskByCreator = [];
+$tasks = $this->normalizeDbTasks(
+    Task::query()
+        ->with('creatorProfile')
+        ->where('project_id', $projectId)
+        ->orderBy('due_at')
+        ->get()
+        ->all()
+);        $openTaskByCreator = [];
         foreach ($tasks as $task) {
             if (in_array($task['status'], ['completed', 'skipped'], true)) {
                 continue;
@@ -538,13 +544,14 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         return [
             'id' => $sourceRowNumber > 0 ? 'crm:' . $sourceRowNumber : 'profile:' . $profile->id,
             'platform' => strtolower((string) ($profile->platform ?: 'instagram')),
-            'handle' => (string) ($profile->handle ?: ''),
-            'fullName' => (string) ($creator?->display_name ?: $profile->username ?: ''),
-            'followers' => (int) ($profile->followers_count ?? 0),
-            'engagementRate' => $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null,
-            'email' => (string) ($creator?->primary_email ?: ''),
-            'profileUrl' => (string) ($profile->profile_url ?: $profile->dm_link ?: ''),
-            'status' => $state,
+'handle' => (string) ($profile->handle ?: ''),
+'fullName' => (string) ($creator?->display_name ?: $profile->username ?: ''),
+'avatarUrl' => (string) ($profile->profile_pic_url ?: ''),
+'followers' => (int) ($profile->followers_count ?? 0),
+'engagementRate' => $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null,
+'email' => (string) ($creator?->primary_email ?: ''),
+'profileUrl' => (string) ($profile->profile_url ?: $profile->dm_link ?: ''),
+'status' => $state,
             'lifecycleState' => $state,
             'enrichmentStatus' => 'enriched',
             'niche' => (string) ($creator?->niche_category ?: ''),
@@ -592,26 +599,27 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         $items = array_map(function (Task $task) {
             $status = strtoupper(trim((string) ($task->status ?: 'PENDING')));
 
-            return [
-                'id' => (string) ($task->external_task_key ?: $task->id),
-                'type' => (string) $task->task_type,
-                'platform' => Str::lower((string) ($task->platform ?: 'instagram')),
-                'handle' => (string) ($task->handle ?: ''),
-                'status' => match ($status) {
-                    'DONE', 'COMPLETED' => 'completed',
-                    'SKIPPED' => 'skipped',
-                    'IN_PROGRESS' => 'in_progress',
-                    'SNOOZED' => 'snoozed',
-                    default => 'pending',
-                },
-                'priority' => Str::lower((string) ($task->priority ?: 'medium')),
-                'dueDate' => optional($task->due_at)?->toDateTimeString() ?? '',
-                'createdAt' => optional($task->created_at)?->toDateTimeString() ?? '',
-                'completedAt' => optional($task->completed_at)?->toDateTimeString() ?? '',
-                'messageText' => (string) ($task->message_draft ?: ''),
-                'profileUrl' => (string) ($task->open_url ?: ''),
-                'notes' => (string) ($task->notes ?: ''),
-            ];
+return [
+    'id' => (string) ($task->external_task_key ?: $task->id),
+    'type' => (string) $task->task_type,
+    'platform' => Str::lower((string) ($task->platform ?: 'instagram')),
+    'handle' => (string) ($task->handle ?: ''),
+    'status' => match ($status) {
+        'DONE', 'COMPLETED' => 'completed',
+        'SKIPPED' => 'skipped',
+        'IN_PROGRESS' => 'in_progress',
+        'SNOOZED' => 'snoozed',
+        default => 'pending',
+    },
+    'priority' => Str::lower((string) ($task->priority ?: 'medium')),
+    'dueDate' => optional($task->due_at)?->toDateTimeString() ?? '',
+    'createdAt' => optional($task->created_at)?->toDateTimeString() ?? '',
+    'completedAt' => optional($task->completed_at)?->toDateTimeString() ?? '',
+    'messageText' => (string) ($task->message_draft ?: ''),
+    'profileUrl' => (string) ($task->open_url ?: ''),
+    'profilePicUrl' => (string) ($task->creatorProfile?->profile_pic_url ?: ''),
+    'notes' => (string) ($task->notes ?: ''),
+];
         }, $tasks);
 
         usort($items, fn (array $a, array $b) => strcmp((string) ($a['dueDate'] ?? ''), (string) ($b['dueDate'] ?? '')));
