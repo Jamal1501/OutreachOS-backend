@@ -284,7 +284,7 @@ $record->save();
 
             $periodKey = $periodStart?->toIso8601String();
             if ($periodKey && ($previousPlan !== $planId || (($metadata['last_refill_period_key'] ?? null) !== $periodKey && in_array($status, ['active', 'trialing'], true)))) {
-                $this->billing->grantPlanCycleCredits($workspaceId, $planId, $periodStart);
+                $this->billing->grantPlanCycleCredits($workspaceId, $planId, $periodStart, $previousPlan !== $planId);
             }
         });
     }

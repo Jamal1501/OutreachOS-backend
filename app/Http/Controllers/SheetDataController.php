@@ -18,6 +18,7 @@ use App\Services\OperationalMirrorService;
 use App\Services\ProjectResolverService;
 use App\Services\TaskQueueService;
 use App\Services\WorkspaceContextService;
+use App\Services\WorkspaceBillingService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
@@ -41,6 +42,7 @@ class SheetDataController extends Controller
         private OperationalMirrorService $mirror,
         private ProjectResolverService $projects,
         private WorkspaceContextService $workspaceContext,
+        private WorkspaceBillingService $billing,
     ) {
     }
 
@@ -463,6 +465,10 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
         ]);
 
         $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
+        $workspaceId = (string) $request->attributes->get('workspace_id');
+        $billingSummary = $workspaceId !== '' ? $this->billing->summary($workspaceId) : ['usage' => ['providerSpendUsd' => 0, 'consumedScrapeCredits' => 0]];
+        $providerSpendUsd = round((float) (($billingSummary['usage']['providerSpendUsd'] ?? 0)), 4);
+        $consumedScrapeCredits = (int) (($billingSummary['usage']['consumedScrapeCredits'] ?? 0));
         $project = $this->projects->findByWorkbookId($sheetId);
 
         if ($project) {
@@ -1265,6 +1271,10 @@ public function creatorDecisionSheet(Request $request, string $id)
         ]);
 
         $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
+        $workspaceId = (string) $request->attributes->get('workspace_id');
+        $billingSummary = $workspaceId !== '' ? $this->billing->summary($workspaceId) : ['usage' => ['providerSpendUsd' => 0, 'consumedScrapeCredits' => 0]];
+        $providerSpendUsd = round((float) (($billingSummary['usage']['providerSpendUsd'] ?? 0)), 4);
+        $consumedScrapeCredits = (int) (($billingSummary['usage']['consumedScrapeCredits'] ?? 0));
         $project = $this->projects->findByWorkbookId($sheetId);
 
         if ($project) {
@@ -1307,7 +1317,8 @@ public function creatorDecisionSheet(Request $request, string $id)
                 })->count(),
                 'outreachSent' => $outreachEvents->filter(fn (OutreachEvent $event) => Str::contains(Str::upper((string) $event->event_type), ['SENT', 'OUTREACH']))->count(),
                 'repliesReceived' => $outreachEvents->filter(fn (OutreachEvent $event) => Str::contains(Str::upper((string) $event->event_type), ['REPLY', 'ACCEPTED', 'DEAL_WON']))->count(),
-                'scrapeSpend' => 0,
+                'scrapeSpend' => $providerSpendUsd,
+                'scrapeCreditsUsed' => $consumedScrapeCredits,
             ];
 
             return response()->json([
@@ -1326,7 +1337,8 @@ if (Str::startsWith($sheetId, 'workspace:')) {
             'tasksDueToday' => 0,
             'outreachSent' => 0,
             'repliesReceived' => 0,
-            'scrapeSpend' => 0,
+            'scrapeSpend' => $providerSpendUsd,
+            'scrapeCreditsUsed' => $consumedScrapeCredits,
         ],
     ]);
 }
@@ -1355,7 +1367,8 @@ if (Str::startsWith($sheetId, 'workspace:')) {
             'tasksDueToday' => count(array_filter($tasks, fn (array $row) => str_starts_with((string) ($row['Due_At'] ?? ''), $today) && !in_array(strtoupper((string) ($row['Status'] ?? '')), ['DONE', 'COMPLETED', 'SKIPPED'], true))),
             'outreachSent' => count(array_filter($outreach, fn (array $row) => Str::contains(strtoupper((string) ($row['Event_Type'] ?? '')), ['SENT']))),
             'repliesReceived' => count(array_filter($outreach, fn (array $row) => Str::contains(strtoupper((string) ($row['Event_Type'] ?? '')), ['REPLY', 'ACCEPTED']))),
-            'scrapeSpend' => 0,
+            'scrapeSpend' => $providerSpendUsd,
+            'scrapeCreditsUsed' => $consumedScrapeCredits,
         ];
 
         return response()->json([

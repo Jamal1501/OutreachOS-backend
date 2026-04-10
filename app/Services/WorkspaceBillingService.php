@@ -63,6 +63,16 @@ class WorkspaceBillingService
     {
         [$subscription, $wallet, $plan] = $this->ensureWorkspaceBilling($workspaceId);
 
+        $usage = WorkspaceUsageEvent::query()
+            ->where('workspace_id', $workspaceId)
+            ->where('status', 'consumed')
+            ->selectRaw("
+                COALESCE(SUM(CASE WHEN credit_bucket = 'scrape' THEN credit_cost ELSE 0 END), 0) as consumed_scrape_credits,
+                COALESCE(SUM(CASE WHEN credit_bucket = 'ai' THEN credit_cost ELSE 0 END), 0) as consumed_ai_credits,
+                COALESCE(SUM(provider_cost_usd), 0) as provider_spend_usd
+            ")
+            ->first();
+
         return [
             'workspaceId' => $workspaceId,
             'subscription' => [
@@ -81,6 +91,11 @@ class WorkspaceBillingService
                 'totalAiCreditsAvailable' => (int) $wallet->ai_credits_balance + (int) $wallet->bonus_ai_credits,
                 'lifetimeScrapeUsed' => (int) $wallet->lifetime_scrape_used,
                 'lifetimeAiUsed' => (int) $wallet->lifetime_ai_used,
+            ],
+            'usage' => [
+                'consumedScrapeCredits' => (int) ($usage->consumed_scrape_credits ?? 0),
+                'consumedAiCredits' => (int) ($usage->consumed_ai_credits ?? 0),
+                'providerSpendUsd' => round((float) ($usage->provider_spend_usd ?? 0), 4),
             ],
             'entitlements' => [
                 'monthlyScrapeCredits' => (int) Arr::get($plan, 'monthly_scrape_credits', 0),
@@ -398,9 +413,9 @@ class WorkspaceBillingService
         ];
     }
 
-    public function grantPlanCycleCredits(string $workspaceId, string $planId, ?CarbonImmutable $periodStart = null): void
+    public function grantPlanCycleCredits(string $workspaceId, string $planId, ?CarbonImmutable $periodStart = null, bool $resetBaseBalances = false): void
     {
-        DB::transaction(function () use ($workspaceId, $planId, $periodStart) {
+        DB::transaction(function () use ($workspaceId, $planId, $periodStart, $resetBaseBalances) {
             $subscription = WorkspaceSubscription::query()
                 ->where('workspace_id', $workspaceId)
                 ->lockForUpdate()
@@ -417,16 +432,22 @@ class WorkspaceBillingService
             $periodKey = $periodStart->toIso8601String();
             $metadata = (array) ($subscription->metadata ?? []);
 
-            if (($metadata['last_refill_period_key'] ?? null) === $periodKey) {
+            if (!$resetBaseBalances && ($metadata['last_refill_period_key'] ?? null) === $periodKey) {
                 return;
             }
 
-            $wallet->scrape_credits_balance = (int) $wallet->scrape_credits_balance + (int) Arr::get($plan, 'monthly_scrape_credits', 0);
-            $wallet->ai_credits_balance = (int) $wallet->ai_credits_balance + (int) Arr::get($plan, 'monthly_ai_credits', 0);
+            if ($resetBaseBalances) {
+                $wallet->scrape_credits_balance = (int) Arr::get($plan, 'monthly_scrape_credits', 0);
+                $wallet->ai_credits_balance = (int) Arr::get($plan, 'monthly_ai_credits', 0);
+            } else {
+                $wallet->scrape_credits_balance = (int) $wallet->scrape_credits_balance + (int) Arr::get($plan, 'monthly_scrape_credits', 0);
+                $wallet->ai_credits_balance = (int) $wallet->ai_credits_balance + (int) Arr::get($plan, 'monthly_ai_credits', 0);
+            }
             $wallet->save();
 
             $metadata['last_refill_period_key'] = $periodKey;
             $metadata['last_refill_at'] = now()->toIso8601String();
+            $metadata['base_balance_plan_id'] = $normalizedPlanId;
             $subscription->metadata = $metadata;
             $subscription->plan_id = $normalizedPlanId;
             $subscription->status = $subscription->status === 'trial_expired' ? 'active' : $subscription->status;
@@ -632,18 +653,33 @@ class WorkspaceBillingService
                 $subscriptionChanged = true;
             }
 
-            $lastRefillKey = (string) ($metadata['last_refill_period_key'] ?? '');
             $currentPeriodStart = CarbonImmutable::instance($subscription->current_period_start ?: $now);
             $currentPeriodEnd = CarbonImmutable::instance($subscription->current_period_end ?: $now->addMonth());
+            $currentPeriodKey = $currentPeriodStart->toIso8601String();
+            $lastRefillKey = (string) ($metadata['last_refill_period_key'] ?? '');
+            $baseBalancePlanId = (string) ($metadata['base_balance_plan_id'] ?? '');
+
+            if ($baseBalancePlanId !== $planId) {
+                $wallet->scrape_credits_balance = (int) Arr::get($plan, 'monthly_scrape_credits', 0);
+                $wallet->ai_credits_balance = (int) Arr::get($plan, 'monthly_ai_credits', 0);
+                $metadata['base_balance_plan_id'] = $planId;
+                $metadata['last_refill_period_key'] = $currentPeriodKey;
+                $metadata['last_refill_at'] = $now->toIso8601String();
+                $walletChanged = true;
+                $subscriptionChanged = true;
+                $lastRefillKey = $currentPeriodKey;
+            }
 
             if ($lastRefillKey === '') {
-                $metadata['last_refill_period_key'] = $currentPeriodStart->toIso8601String();
+                $metadata['last_refill_period_key'] = $currentPeriodKey;
+                $metadata['base_balance_plan_id'] = $planId;
                 $subscriptionChanged = true;
-            } elseif (!in_array($subscription->status, ['past_due', 'unpaid', 'incomplete_expired'], true) && $currentPeriodStart->toIso8601String() !== $lastRefillKey) {
+            } elseif (!in_array($subscription->status, ['past_due', 'unpaid', 'incomplete_expired'], true) && $currentPeriodKey !== $lastRefillKey) {
                 $wallet->scrape_credits_balance = (int) $wallet->scrape_credits_balance + (int) Arr::get($plan, 'monthly_scrape_credits', 0);
                 $wallet->ai_credits_balance = (int) $wallet->ai_credits_balance + (int) Arr::get($plan, 'monthly_ai_credits', 0);
-                $metadata['last_refill_period_key'] = $currentPeriodStart->toIso8601String();
+                $metadata['last_refill_period_key'] = $currentPeriodKey;
                 $metadata['last_refill_at'] = $now->toIso8601String();
+                $metadata['base_balance_plan_id'] = $planId;
                 $walletChanged = true;
                 $subscriptionChanged = true;
             }

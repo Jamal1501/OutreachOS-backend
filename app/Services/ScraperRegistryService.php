@@ -267,7 +267,9 @@ class ScraperRegistryService
         $costConfig = config('scrapers.cost_classes.' . $costClass, []);
         $strategy = (string) Arr::get($costConfig, 'strategy', 'results_limit');
         $multiplier = max(1, (int) Arr::get($costConfig, 'multiplier', 1));
+        $divisor = max(1, (int) Arr::get($costConfig, 'divisor', 1));
         $minUnits = max(1, (int) Arr::get($costConfig, 'min_units', 1));
+        $minCreditCost = max(1, (int) Arr::get($costConfig, 'min_credit_cost', 1));
 
         $units = match ($strategy) {
             'target_count' => max($minUnits, $this->estimateTargetCount($input)),
@@ -275,11 +277,13 @@ class ScraperRegistryService
             default => max($minUnits, $this->estimateDiscoveryCount($input)),
         };
 
+        $creditCost = max($minCreditCost, (int) ceil(($units * $multiplier) / $divisor));
+
         return [
             'type' => (string) Arr::get($costConfig, 'type', 'scrape'),
             'bucket' => (string) Arr::get($costConfig, 'bucket', 'scrape'),
             'units' => $units,
-            'credit_cost' => $units * $multiplier,
+            'credit_cost' => $creditCost,
             'cost_class' => $costClass,
             'module_key' => $module['key'],
             'module' => $module,
