@@ -66,8 +66,10 @@ Route::middleware(['api.auth', 'workspace.context'])->group(function () {
     Route::post('/billing/checkout/topup', [BillingController::class, 'checkoutTopup']);
 
     Route::post('/pipeline/discover', [PipelineController::class, 'discover']);
+    Route::post('/pipeline/discover-from-brief', [PipelineController::class, 'discoverFromBrief']);
     Route::get('/pipeline/status', [PipelineController::class, 'status']);
 
+    Route::post('/ai/parse-discovery-brief', [AiController::class, 'parseDiscoveryBrief']);
     Route::post('/ai/score-creators', [AiController::class, 'scoreCreators']);
     Route::post('/ai/personalize-message', [AiController::class, 'personalizeMessage']);
     Route::post('/ai/detect-duplicates', [AiController::class, 'detectDuplicates']);
