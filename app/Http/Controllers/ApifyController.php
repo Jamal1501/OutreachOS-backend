@@ -448,6 +448,30 @@ public function mergeEnrichedToCreators(Request $request)
         ]);
     }
 
+    public function createTask(Request $request)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+            'platform' => ['required', 'string', Rule::in(['instagram', 'tiktok', 'email'])],
+            'handle' => ['required', 'string', 'max:255'],
+            'taskType' => ['required', 'string', Rule::in(['FOLLOW_REQUEST', 'DM_INVITE', 'DM_FOLLOWUP', 'EMAIL_SEND', 'REVIEW_CREATOR', 'COMMENT_ON_POST', 'NEGOTIATE_TERMS', 'CHECK_IN', 'CONFIRM_POSTED', 'CONFIRM_ACCEPTED', 'ARCHIVE_CREATOR'])],
+            'priority' => ['nullable', 'string', Rule::in(['LOW', 'MEDIUM', 'HIGH', 'URGENT'])],
+            'profileUrl' => ['nullable', 'string'],
+            'messageText' => ['nullable', 'string'],
+            'notes' => ['nullable', 'string'],
+            'dueAt' => ['nullable', 'string'],
+        ]);
+
+        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
+        $task = $this->taskQueue->createManualTask($sheetId, $validated);
+
+        return response()->json([
+            'message' => 'Task created',
+            'sheetId' => $sheetId,
+            'task' => $task,
+        ]);
+    }
+
     public function completeTask(Request $request, string $taskId)
     {
 $validated = $request->validate([

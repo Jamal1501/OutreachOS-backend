@@ -46,6 +46,99 @@ class ScraperRegistryService
         return $module;
     }
 
+
+    public function estimatePipeline(
+        string $planId,
+        string $platform,
+        int $discoveryLimit,
+        int $enrichmentLimit,
+        int $seedCount = 1,
+        ?string $discoveryModuleKey = null,
+        ?string $enrichmentModuleKey = null,
+    ): array
+    {
+        $planId = $this->normalizePlanId($planId);
+        $seedCount = max(1, $seedCount);
+
+        $discoveryModule = $this->resolvePipelineModule($planId, $platform, 'discovery', $discoveryModuleKey);
+        $enrichmentModule = $this->resolvePipelineModule($planId, $platform, 'enrichment', $enrichmentModuleKey);
+
+        $effectiveDiscoveryLimit = $this->normalizeDiscoveryLimitForSeeds($discoveryLimit, $seedCount, $discoveryModule);
+        $effectiveEnrichmentLimit = $this->clampBatchSize($enrichmentLimit, $enrichmentModule);
+
+        $discoveryEstimate = $this->estimateCredits($discoveryModule['key'], null, null, [
+            'hashtags' => array_fill(0, $seedCount, 'seed'),
+            'resultsLimit' => $effectiveDiscoveryLimit,
+        ]);
+
+        $enrichmentEstimate = $this->estimateCredits($enrichmentModule['key'], null, null, [
+            'directUrls' => array_fill(0, $effectiveEnrichmentLimit, 'profile-url'),
+            'resultsLimit' => $effectiveEnrichmentLimit,
+        ]);
+
+        return [
+            'planId' => $planId,
+            'platform' => $platform,
+            'seedCount' => $seedCount,
+            'discovery' => [
+                'requestedLimit' => max(1, $discoveryLimit),
+                'effectiveLimitPerSeed' => $effectiveDiscoveryLimit,
+                'effectiveTotalRequested' => $effectiveDiscoveryLimit * $seedCount,
+                'module' => $discoveryModule,
+                'estimate' => $discoveryEstimate,
+            ],
+            'enrichment' => [
+                'requestedLimit' => max(1, $enrichmentLimit),
+                'effectiveLimit' => $effectiveEnrichmentLimit,
+                'module' => $enrichmentModule,
+                'estimate' => $enrichmentEstimate,
+            ],
+            'totals' => [
+                'scrapeCredits' => (int) ($discoveryEstimate['credit_cost'] ?? 0) + (int) ($enrichmentEstimate['credit_cost'] ?? 0),
+            ],
+        ];
+    }
+
+    public function resolvePipelineModule(string $planId, string $platform, string $stage, ?string $preferredModuleKey = null, bool $configuredOnly = true): array
+    {
+        $planId = $this->normalizePlanId($planId);
+
+        if ($preferredModuleKey) {
+            $preferred = $this->module($preferredModuleKey, $configuredOnly);
+            if ($preferred && $preferred['platform'] === $platform && $preferred['stage'] === $stage && in_array($planId, $preferred['allowedPlans'], true)) {
+                return $preferred;
+            }
+        }
+
+        $module = $this->defaultModuleForPlan($planId, $platform, $stage, $configuredOnly);
+        if ($module) {
+            return $module;
+        }
+
+        $fallback = $this->systemDefaultModule($platform, $stage, $configuredOnly);
+        if ($fallback) {
+            return $fallback;
+        }
+
+        throw new RuntimeException(sprintf('No configured scraper module found for %s %s on plan %s.', $platform, $stage, $planId));
+    }
+
+    public function normalizeDiscoveryLimitForSeeds(int $requestedLimit, int $seedCount, array $module): int
+    {
+        $requestedLimit = max(1, $requestedLimit);
+        $seedCount = max(1, $seedCount);
+        $perSeed = (int) ceil($requestedLimit / $seedCount);
+
+        return $this->clampBatchSize($perSeed, $module);
+    }
+
+    public function clampBatchSize(int $requestedLimit, array $module): int
+    {
+        $requestedLimit = max(1, $requestedLimit);
+        $maxBatchSize = max(1, (int) ($module['maxBatchSize'] ?? $requestedLimit));
+
+        return min($requestedLimit, $maxBatchSize);
+    }
     public function configuredActorMap(): array
     {
         $map = [];

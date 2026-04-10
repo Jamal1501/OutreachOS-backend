@@ -14,16 +14,34 @@ class ApifyDiscoveryProvider implements DiscoveryProvider
     ) {
     }
 
-    public function discover(string $platform, array $hashtags, int $limit): ProviderRunResult
+    public function discover(string $platform, array $hashtags, int $limit, array $context = []): ProviderRunResult
     {
-        $module = $this->scrapers->systemDefaultModule($platform, 'discovery');
+        $planId = (string) ($context['planId'] ?? 'free');
+        $module = $this->scrapers->resolvePipelineModule($planId, $platform, 'discovery', $context['moduleKey'] ?? null);
+        $seedCount = max(1, count(array_filter($hashtags, fn ($value) => trim((string) $value) !== '')));
+        $effectiveResultsLimit = $this->scrapers->normalizeDiscoveryLimitForSeeds($limit, $seedCount, $module);
         $actorKey = (string) ($module['actorKey'] ?? ($platform === 'instagram' ? 'instagram_discovery' : 'tiktok_discovery'));
 
-        return $this->executor->run($actorKey, $platform, [
+        $result = $this->executor->run($actorKey, $platform, [
             'hashtags' => array_values($hashtags),
             'keywordSearch' => false,
-            'resultsLimit' => $limit,
+            'resultsLimit' => $effectiveResultsLimit,
             'resultsType' => 'reels',
-        ]);
+        ], array_merge($context, [
+            'moduleKey' => $module['key'],
+            'stage' => 'discovery',
+        ]));
+
+        $trimmedItems = count($result->items) > $limit ? array_slice($result->items, 0, $limit) : $result->items;
+
+        return new ProviderRunResult(
+            provider: $result->provider,
+            platform: $result->platform,
+            runId: $result->runId,
+            datasetId: $result->datasetId,
+            items: $trimmedItems,
+            requestPayload: $result->requestPayload,
+            responsePayload: $result->responsePayload,
+        );
     }
 }

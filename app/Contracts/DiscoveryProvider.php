@@ -6,5 +6,5 @@ use App\DataTransferObjects\ProviderRunResult;
 
 interface DiscoveryProvider
 {
-    public function discover(string $platform, array $hashtags, int $limit): ProviderRunResult;
+    public function discover(string $platform, array $hashtags, int $limit, array $context = []): ProviderRunResult;
 }

@@ -55,6 +55,7 @@ Route::middleware(['api.auth', 'workspace.context'])->group(function () {
     Route::post('/creators/{id}/transition', [SheetDataController::class, 'transitionCreator']);
 
     Route::post('/tasks/generate', [ApifyController::class, 'generateTasks']);
+    Route::post('/tasks/create', [ApifyController::class, 'createTask']);
     Route::get('/tasks/cold-retry', [ApifyController::class, 'coldRetryTasks']);
     Route::get('/tasks/list', [ApifyController::class, 'listTasks']);
     Route::post('/tasks/{taskId}/complete', [ApifyController::class, 'completeTask']);
@@ -65,6 +66,7 @@ Route::middleware(['api.auth', 'workspace.context'])->group(function () {
     Route::post('/billing/checkout/subscription', [BillingController::class, 'checkoutSubscription']);
     Route::post('/billing/checkout/topup', [BillingController::class, 'checkoutTopup']);
 
+    Route::post('/pipeline/estimate', [PipelineController::class, 'estimate']);
     Route::post('/pipeline/discover', [PipelineController::class, 'discover']);
     Route::post('/pipeline/discover-from-brief', [PipelineController::class, 'discoverFromBrief']);
     Route::get('/pipeline/status', [PipelineController::class, 'status']);

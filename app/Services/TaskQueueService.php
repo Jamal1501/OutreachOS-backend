@@ -238,6 +238,52 @@ class TaskQueueService
         ];
     }
 
+    public function createManualTask(string $sheetId, array $payload): array
+    {
+        if ($this->mirror->enabled()) {
+            $dbTask = $this->createManualTaskInDatabase($sheetId, $payload);
+            if ($dbTask !== null) {
+                return $dbTask;
+            }
+        }
+
+        if (str_starts_with($sheetId, 'workspace:')) {
+            throw new RuntimeException('Cannot create a manual task without a project workbook.');
+        }
+
+        $taskId = (string) Str::uuid();
+        $row = [
+            'Task_ID' => $taskId,
+            'Platform' => strtolower((string) ($payload['platform'] ?? 'instagram')),
+            'Handle' => (string) ($payload['handle'] ?? ''),
+            'Task_Type' => (string) ($payload['taskType'] ?? 'DM_INVITE'),
+            'Priority' => strtoupper((string) ($payload['priority'] ?? 'MEDIUM')),
+            'Status' => 'PENDING',
+            'Due_At' => (string) ($payload['dueAt'] ?? now()->toDateTimeString()),
+            'Open_URL' => (string) ($payload['profileUrl'] ?? ''),
+            'Message_Draft' => (string) ($payload['messageText'] ?? ''),
+            'Template_ID' => '',
+            'Created_At' => now()->toDateTimeString(),
+            'Completed_At' => '',
+            'Notes' => trim('Manual task: ' . (string) ($payload['notes'] ?? '')),
+        ];
+
+        $headers = $this->sheets->getHeaders($sheetId, 'Task_Queue');
+        $this->sheets->appendAssocRows($sheetId, 'Task_Queue', [$row], $headers);
+        $this->outreachLog->appendEvent($sheetId, [
+            'Task_ID' => $taskId,
+            'Platform' => $row['Platform'],
+            'Handle' => $row['Handle'],
+            'Channel' => $this->channelFromTaskType($row['Task_Type'], ['Platform' => $row['Platform']]),
+            'Event_Type' => 'TASK_CREATED',
+            'Status' => 'PENDING',
+            'URL' => $row['Open_URL'],
+            'Notes' => 'MANUAL_TASK_CREATE',
+        ]);
+
+        return $this->normalizeSheetTaskRow($row);
+    }
+
     // ─── Public: complete ────────────────────────────────────────────────────
 
     public function completeTask(string $sheetId, string $taskId, array $payload = []): array
@@ -425,6 +471,49 @@ class TaskQueueService
     }
 
     // ─── Private: database generate ──────────────────────────────────────────
+
+    private function createManualTaskInDatabase(string $sheetId, array $payload): ?array
+    {
+        $project = $this->projects->findByWorkbookId($sheetId);
+        if (!$project) {
+            return null;
+        }
+
+        $platform = strtolower(trim((string) ($payload['platform'] ?? 'instagram')));
+        $handle = trim((string) ($payload['handle'] ?? ''));
+        $taskType = trim((string) ($payload['taskType'] ?? 'DM_INVITE'));
+        $priority = strtoupper(trim((string) ($payload['priority'] ?? 'MEDIUM')));
+        $dueAt = $payload['dueAt'] ?? null;
+
+        $profile = CreatorProfile::query()
+            ->where('project_id', $project->id)
+            ->where('platform', $platform)
+            ->where('handle', $handle)
+            ->first();
+
+        $task = Task::create([
+            'project_id' => $project->id,
+            'creator_profile_id' => $profile?->id,
+            'external_task_key' => (string) Str::uuid(),
+            'platform' => $platform,
+            'handle' => $handle,
+            'task_type' => $taskType,
+            'priority' => $priority,
+            'status' => 'PENDING',
+            'due_at' => $dueAt ? Carbon::parse((string) $dueAt) : now(),
+            'open_url' => (string) ($payload['profileUrl'] ?? ''),
+            'message_draft' => (string) ($payload['messageText'] ?? ''),
+            'source_provider' => 'manual',
+            'source_reference' => 'manual_task',
+            'notes' => trim('Manual task: ' . (string) ($payload['notes'] ?? '')),
+            'metadata' => [
+                'manual' => true,
+                'created_from' => 'task_queue',
+            ],
+        ]);
+
+        return $this->normalizeDbTask($task->fresh(['creatorProfile']));
+    }
 
     private function generateInitialTasksFromDatabase(string $sheetId, array $options = []): ?array
     {
@@ -672,7 +761,7 @@ class TaskQueueService
             return 'DM_FOLLOWUP';
         }
 
-        if (in_array($status, ['', 'NEW', 'ENRICHED', 'DISCOVERED'], true)) {
+        if (in_array($status, ['', 'NEW', 'ENRICHED', 'DISCOVERED', 'APPROVED_FOR_OUTREACH', 'QUEUED', 'READY', 'APPROVED'], true)) {
             if ($preferredChannel === 'EMAIL' && $hasEmail) {
                 return 'EMAIL_SEND';
             }
@@ -704,7 +793,7 @@ class TaskQueueService
             return 'DM_FOLLOWUP';
         }
 
-        if (in_array($status, ['', 'NEW', 'ENRICHED', 'DISCOVERED'], true)) {
+        if (in_array($status, ['', 'NEW', 'ENRICHED', 'DISCOVERED', 'APPROVED_FOR_OUTREACH', 'QUEUED', 'READY', 'APPROVED'], true)) {
             if ($preferredChannel === 'EMAIL' && $hasEmail) {
                 return 'EMAIL_SEND';
             }

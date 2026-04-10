@@ -20,7 +20,29 @@ class PipelineDiscoveryService
         private EnrichmentProvider $enrichmentProvider,
         private ProjectResolverService $projects,
         private DiscoveryCriteriaService $criteriaService,
+        private ScraperRegistryService $scrapers,
     ) {
+    }
+
+    public function estimate(
+        string $planId,
+        string $platform,
+        int $discoveryLimit,
+        int $enrichmentLimit,
+        int $seedCount = 1,
+        ?string $discoveryModuleKey = null,
+        ?string $enrichmentModuleKey = null,
+    ): array
+    {
+        return $this->scrapers->estimatePipeline(
+            $planId,
+            $platform,
+            $discoveryLimit,
+            $enrichmentLimit,
+            $seedCount,
+            $discoveryModuleKey,
+            $enrichmentModuleKey,
+        );
     }
 
     public function createJob(array $payload): array
@@ -125,7 +147,11 @@ public function getJobState(string $jobId): ?array
                 'brief' => $brief !== '' ? $brief : null,
             ]);
 
-            $discovery = $this->discoveryProvider->discover($platform, $hashtags, $discoveryLimit);
+            $discovery = $this->discoveryProvider->discover($platform, $hashtags, $discoveryLimit, [
+                'workspaceId' => $payload['workspaceId'] ?? null,
+                'planId' => $payload['planId'] ?? 'free',
+                'moduleKey' => $payload['discoveryModuleKey'] ?? null,
+            ]);
             $discoveryItems = $discovery->items;
             $stepResults[] = [
                 'step' => 'discovery_scrape',
@@ -215,7 +241,11 @@ public function getJobState(string $jobId): ?array
                 'enrichmentJobId' => $enrichmentJobId,
             ]);
 
-            $enrichment = $this->enrichmentProvider->enrich($platform, array_column($profiles, 'profileUrl'), $hashtags, $enrichmentLimit);
+            $enrichment = $this->enrichmentProvider->enrich($platform, array_column($profiles, 'profileUrl'), $hashtags, $enrichmentLimit, [
+                'workspaceId' => $payload['workspaceId'] ?? null,
+                'planId' => $payload['planId'] ?? 'free',
+                'moduleKey' => $payload['enrichmentModuleKey'] ?? null,
+            ]);
             $enrichmentItems = $enrichment->items;
             $stepResults[] = [
                 'step' => 'enrichment_scrape',
