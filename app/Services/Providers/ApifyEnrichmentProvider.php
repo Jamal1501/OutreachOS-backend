@@ -19,18 +19,19 @@ class ApifyEnrichmentProvider implements EnrichmentProvider
         $module = $this->scrapers->systemDefaultModule($platform, 'enrichment');
         $actorKey = (string) ($module['actorKey'] ?? ($platform === 'instagram' ? 'instagram_profile' : 'tiktok_profile'));
 
-        if ($platform === 'instagram') {
-            $input = [
-                'addParentData' => false,
-                'directUrls' => array_values($urls),
-                'onlyPostsNewerThan' => '100 days',
-                'resultsLimit' => max(1, min($limit, count($urls))),
-                'resultsType' => 'details',
-                'search' => $hashtags[0] ?? '',
-                'searchLimit' => max(1, min($limit, count($urls))),
-                'searchType' => 'hashtag',
-            ];
-        } else {
+if ($platform === 'instagram') {
+    $cleanUrls = array_values(array_unique(array_filter(array_map(
+        fn (string $url) => trim($url),
+        $urls
+    ))));
+
+    $input = [
+        'addParentData' => false,
+        'directUrls' => $cleanUrls,
+        'resultsType' => 'details',
+        'resultsLimit' => max(1, count($cleanUrls)),
+    ];
+} else {
             $profiles = array_values(array_filter(array_map(function (string $url) {
                 if (preg_match('~tiktok\.com/@([^/?#]+)~i', $url, $matches)) {
                     return $matches[1];
