@@ -2,18 +2,19 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\RunPipelineJob;
+use App\Services\AiDiscoveryBriefService;
 use App\Services\PipelineDiscoveryService;
 use App\Services\WorkspaceContextService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
-use App\Jobs\RunPipelineJob;
 
 class PipelineController extends Controller
 {
     public function __construct(
         private PipelineDiscoveryService $pipeline,
         private WorkspaceContextService $workspaceContext,
+        private AiDiscoveryBriefService $briefs,
     ) {
     }
 
@@ -29,6 +30,8 @@ class PipelineController extends Controller
             'dedupeAgainstCRM' => ['nullable', 'boolean'],
             'rankingMetric' => ['nullable', 'string', Rule::in(['views', 'likes', 'comments', 'shares'])],
             'wait' => ['nullable', 'boolean'],
+            'brief' => ['nullable', 'string'],
+            'criteria' => ['nullable', 'array'],
         ]);
 
         $payload = [
@@ -39,33 +42,47 @@ class PipelineController extends Controller
             'enrichmentLimit' => (int) ($validated['enrichmentLimit'] ?? 20),
             'dedupeAgainstCRM' => (bool) ($validated['dedupeAgainstCRM'] ?? true),
             'rankingMetric' => (string) ($validated['rankingMetric'] ?? ''),
+            'brief' => $validated['brief'] ?? null,
+            'criteria' => $validated['criteria'] ?? null,
         ];
 
-        if ($request->boolean('wait')) {
-            $state = $this->pipeline->createJob($payload);
-            try {
-                $result = $this->pipeline->runJob($state['jobId'], $payload);
-                return response()->json($result);
-            } catch (\Throwable $e) {
-                return response()->json([
-                    'message' => 'Pipeline failed',
-                    'status' => 'failed',
-                    'jobId' => $state['jobId'],
-                    'failedStep' => $this->pipeline->getJobState($state['jobId'])['failedStep'] ?? null,
-                    'error' => $e->getMessage(),
-                ], 500);
-            }
-        }
+        return $this->startPipeline($request, $payload);
+    }
 
-        $state = $this->pipeline->createJob($payload);
+    public function discoverFromBrief(Request $request)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+            'platform' => ['required', 'string', Rule::in(['instagram', 'tiktok'])],
+            'brief' => ['required', 'string', 'min:8', 'max:5000'],
+            'projectContext' => ['nullable', 'string'],
+            'discoveryLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
+            'enrichmentLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
+            'dedupeAgainstCRM' => ['nullable', 'boolean'],
+            'rankingMetric' => ['nullable', 'string', Rule::in(['views', 'likes', 'comments', 'shares'])],
+            'wait' => ['nullable', 'boolean'],
+        ]);
 
-        RunPipelineJob::dispatch($state['jobId'], $payload);
+        $criteria = $this->briefs->parse((string) $validated['brief'], [
+            'platform' => $validated['platform'],
+            'projectContext' => $validated['projectContext'] ?? null,
+        ]);
 
-        return response()->json([
-            'jobId' => $state['jobId'],
-            'status' => 'running',
-            'currentStep' => 'discovery_scrape',
-        ], 202);
+        $payload = [
+            'sheetId' => $this->resolveSheetId($request, $validated['sheetId'] ?? null),
+            'platform' => $validated['platform'],
+            'hashtags' => $criteria['hashtags'] ?? [],
+            'discoveryLimit' => (int) ($validated['discoveryLimit'] ?? ($criteria['recommendedDiscoveryLimit'] ?? 60)),
+            'enrichmentLimit' => (int) ($validated['enrichmentLimit'] ?? ($criteria['recommendedEnrichmentLimit'] ?? 25)),
+            'dedupeAgainstCRM' => (bool) ($validated['dedupeAgainstCRM'] ?? true),
+            'rankingMetric' => (string) ($validated['rankingMetric'] ?? ''),
+            'brief' => (string) $validated['brief'],
+            'criteria' => $criteria,
+        ];
+
+        return $this->startPipeline($request, $payload, [
+            'criteria' => $criteria,
+        ]);
     }
 
     public function status(Request $request)
@@ -91,7 +108,39 @@ class PipelineController extends Controller
             'failedStep' => $state['failedStep'] ?? null,
             'steps' => $state['steps'] ?? [],
             'error' => $state['error'] ?? null,
+            'criteria' => $state['criteria'] ?? null,
+            'filterSummary' => $state['filterSummary'] ?? null,
+            'brief' => $state['brief'] ?? null,
         ]);
+    }
+
+    private function startPipeline(Request $request, array $payload, array $extraResponse = [])
+    {
+        if ($request->boolean('wait')) {
+            $state = $this->pipeline->createJob($payload);
+            try {
+                $result = $this->pipeline->runJob($state['jobId'], $payload);
+                return response()->json(array_merge($result, $extraResponse));
+            } catch (\Throwable $e) {
+                return response()->json(array_merge([
+                    'message' => 'Pipeline failed',
+                    'status' => 'failed',
+                    'jobId' => $state['jobId'],
+                    'failedStep' => $this->pipeline->getJobState($state['jobId'])['failedStep'] ?? null,
+                    'error' => $e->getMessage(),
+                ], $extraResponse), 500);
+            }
+        }
+
+        $state = $this->pipeline->createJob($payload);
+
+        RunPipelineJob::dispatch($state['jobId'], $payload);
+
+        return response()->json(array_merge([
+            'jobId' => $state['jobId'],
+            'status' => 'running',
+            'currentStep' => 'discovery_scrape',
+        ], $extraResponse), 202);
     }
 
     private function resolveSheetId(Request $request, ?string $sheetId): string
