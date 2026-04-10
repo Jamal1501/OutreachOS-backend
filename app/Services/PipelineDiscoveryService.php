@@ -19,6 +19,7 @@ class PipelineDiscoveryService
         private DiscoveryProvider $discoveryProvider,
         private EnrichmentProvider $enrichmentProvider,
         private ProjectResolverService $projects,
+        private DiscoveryCriteriaService $criteriaService,
     ) {
     }
 
@@ -36,6 +37,9 @@ class PipelineDiscoveryService
             'failedStep' => null,
             'error' => null,
             'request' => $payload,
+            'criteria' => $payload['criteria'] ?? null,
+            'brief' => $payload['brief'] ?? null,
+            'filterSummary' => null,
             'projectId' => $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId((string) $payload['sheetId'])->id : null,
             'createdAt' => now()->toDateTimeString(),
             'updatedAt' => now()->toDateTimeString(),
@@ -67,6 +71,9 @@ public function getJobState(string $jobId): ?array
             'error' => $run->error_message,
             'projectId' => $run->project_id,
             'request' => $run->request_payload,
+            'criteria' => $result['criteria'] ?? Arr::get($run->request_payload, 'criteria'),
+            'filterSummary' => $result['filterSummary'] ?? null,
+            'brief' => $result['brief'] ?? Arr::get($run->request_payload, 'brief'),
             'createdAt' => optional($run->created_at)?->toDateTimeString(),
             'updatedAt' => optional($run->updated_at)?->toDateTimeString(),
             'finishedAt' => optional($run->finished_at)?->toDateTimeString(),
@@ -95,6 +102,8 @@ public function getJobState(string $jobId): ?array
         $enrichmentLimit = (int) ($payload['enrichmentLimit'] ?? 20);
         $dedupeAgainstCRM = (bool) ($payload['dedupeAgainstCRM'] ?? true);
         $rankingMetric = $this->resolveRankingMetric($platform, (string) ($payload['rankingMetric'] ?? ''));
+        $criteria = is_array($payload['criteria'] ?? null) ? $payload['criteria'] : [];
+        $brief = trim((string) ($payload['brief'] ?? ''));
         $projectId = $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId($sheetId)->id : null;
 
         if ($projectId) {
@@ -112,6 +121,8 @@ public function getJobState(string $jobId): ?array
                 'status' => 'running',
                 'currentStep' => 'discovery_scrape',
                 'projectId' => $projectId,
+                'criteria' => $criteria,
+                'brief' => $brief !== '' ? $brief : null,
             ]);
 
             $discovery = $this->discoveryProvider->discover($platform, $hashtags, $discoveryLimit);
@@ -179,6 +190,9 @@ public function getJobState(string $jobId): ?array
                     'creators' => [],
                     'totalCreators' => 0,
                     'failedStep' => null,
+                    'criteria' => $criteria !== [] ? $criteria : null,
+                    'filterSummary' => null,
+                    'brief' => $brief !== '' ? $brief : null,
                 ];
 
                 $this->updateJob($jobId, [
@@ -188,6 +202,7 @@ public function getJobState(string $jobId): ?array
                     'creators' => [],
                     'totalCreators' => 0,
                     'failedStep' => null,
+                    'filterSummary' => null,
                     'result' => $final,
                 ]);
 
@@ -224,6 +239,12 @@ public function getJobState(string $jobId): ?array
                 $sourceHashtagsByUrl,
                 $hashtags
             );
+            $filterSummary = null;
+            if ($criteria !== []) {
+                $filtered = $this->criteriaService->apply($creators, $criteria);
+                $creators = $filtered['creators'];
+                $filterSummary = $filtered['summary'];
+            }
             $stepResults[] = [
                 'step' => 'import_profiles',
                 'status' => 'completed',
@@ -238,6 +259,9 @@ public function getJobState(string $jobId): ?array
                 'creators' => $creators,
                 'totalCreators' => count($creators),
                 'failedStep' => null,
+                'criteria' => $criteria !== [] ? $criteria : null,
+                'filterSummary' => $filterSummary,
+                'brief' => $brief !== '' ? $brief : null,
             ];
 
             $this->updateJob($jobId, [
@@ -247,6 +271,7 @@ public function getJobState(string $jobId): ?array
                 'creators' => $creators,
                 'totalCreators' => count($creators),
                 'failedStep' => null,
+                'filterSummary' => $filterSummary,
                 'result' => $final,
             ]);
 
@@ -277,6 +302,9 @@ public function getJobState(string $jobId): ?array
                     'creators' => [],
                     'totalCreators' => 0,
                     'failedStep' => $failedStep,
+                    'criteria' => $criteria !== [] ? $criteria : null,
+                    'filterSummary' => null,
+                    'brief' => $brief !== '' ? $brief : null,
                 ],
             ]);
 
@@ -360,6 +388,9 @@ public function getJobState(string $jobId): ?array
         'creators' => $state['creators'] ?? [],
         'totalCreators' => $state['totalCreators'] ?? 0,
         'failedStep' => $state['failedStep'] ?? null,
+        'criteria' => $state['criteria'] ?? Arr::get($state, 'request.criteria'),
+        'filterSummary' => $state['filterSummary'] ?? null,
+        'brief' => $state['brief'] ?? Arr::get($state, 'request.brief'),
     ],
     is_array($state['result'] ?? null) ? $state['result'] : []
 );
@@ -800,12 +831,19 @@ private function selectProfilesFromRankedPosts(
         }
         $selectedProfile = $selectedProfilesByUrl[$profileKey] ?? null;
 
+$bio = (string) Arr::get($item, 'biography', Arr::get($item, 'bio', ''));
+$fullName = (string) Arr::get($item, 'fullName', Arr::get($item, 'ownerFullName', ''));
+$latestPostAt = $this->resolveLatestPostAt($latestPosts, 'instagram');
+$locationHint = $this->resolveLocationHint($item, 'instagram');
+$languageHints = $this->inferLanguageHints($bio . ' ' . $this->flattenLatestPostText($latestPosts));
+$genderHint = $this->inferGenderHint($bio . ' ' . $fullName);
+
 return [
     'id' => (string) (Arr::get($item, 'id', $username ?: md5($profileUrl))),
     'mergeRef' => 'instagram:source-url:' . rawurlencode(rtrim(strtolower($profileUrl), '/')),
     'platform' => 'instagram',
     'handle' => $this->normalizeHandle($username),
-    'fullName' => $this->nullableString(Arr::get($item, 'fullName', Arr::get($item, 'ownerFullName'))),
+    'fullName' => $this->nullableString($fullName),
     'profileUrl' => $profileUrl,
     'avatarUrl' => $this->nullableString(
         Arr::get(
@@ -824,12 +862,17 @@ return [
     ),
     'followers' => $this->nullableInt(Arr::get($item, 'followersCount', Arr::get($item, 'followers'))),
     'engagementRate' => $this->nullableFloat($this->estimateInstagramEngagementRate($item)),
-    'email' => $this->nullableString(Arr::get($item, 'email_from_bio', $this->extractEmailFromText((string) Arr::get($item, 'biography', Arr::get($item, 'bio', ''))))),
-    'bio' => $this->nullableString(Arr::get($item, 'biography', Arr::get($item, 'bio'))),
+    'email' => $this->nullableString(Arr::get($item, 'email_from_bio', $this->extractEmailFromText($bio))),
+    'bio' => $this->nullableString($bio),
     'postsCount' => $this->nullableInt(Arr::get($item, 'postsCount', Arr::get($item, 'posts_count'))),
     'avgLikes' => $this->nullableFloat($this->averageFromLatestPosts($latestPosts, 'likesCount')),
     'avgComments' => $this->nullableFloat($this->averageFromLatestPosts($latestPosts, 'commentsCount')),
     'isVerified' => $this->nullableBool(Arr::get($item, 'verified', Arr::get($item, 'is_verified'))),
+    'latestPostAt' => $latestPostAt,
+    'locationHint' => $locationHint,
+    'languageHints' => $languageHints,
+    'genderHint' => $genderHint,
+    'nicheHints' => array_values(array_unique(array_slice(array_merge($sourceTags, $this->extractNicheHints($bio)), 0, 12))),
     'readyToMerge' => true,
     'sourceHashtags' => $sourceTags,
     'sourcePostUrl' => $selectedProfile['sourcePostUrl'] ?? null,
@@ -870,12 +913,19 @@ return [
             $engagementRate = round((((float) $avgLikes + (float) $avgComments) / (float) $followers) * 100, 2);
         }
 
+$bio = (string) Arr::get($item, 'bio', Arr::get($item, 'signature', ''));
+$fullName = (string) Arr::get($item, 'nickname', Arr::get($item, 'authorMeta.nickName', ''));
+$latestPostAt = $this->resolveLatestPostAt($latestPosts, 'tiktok');
+$locationHint = $this->resolveLocationHint($item, 'tiktok');
+$languageHints = $this->inferLanguageHints($bio . ' ' . $this->flattenLatestPostText($latestPosts));
+$genderHint = $this->inferGenderHint($bio . ' ' . $fullName);
+
 return [
     'id' => (string) (Arr::get($item, 'id', $username ?: md5($profileUrl))),
     'mergeRef' => 'tiktok:source-url:' . rawurlencode(rtrim(strtolower($profileUrl), '/')),
     'platform' => 'tiktok',
     'handle' => $this->normalizeHandle($username),
-    'fullName' => $this->nullableString(Arr::get($item, 'nickname', Arr::get($item, 'authorMeta.nickName'))),
+    'fullName' => $this->nullableString($fullName),
     'profileUrl' => $profileUrl,
     'avatarUrl' => $this->nullableString(
         Arr::get(
@@ -894,12 +944,17 @@ return [
     ),
     'followers' => $this->nullableInt($followers),
     'engagementRate' => $this->nullableFloat($engagementRate),
-    'email' => $this->nullableString(Arr::get($item, 'email_from_bio', $this->extractEmailFromText((string) Arr::get($item, 'bio', Arr::get($item, 'signature', ''))))),
-    'bio' => $this->nullableString(Arr::get($item, 'bio', Arr::get($item, 'signature'))),
+    'email' => $this->nullableString(Arr::get($item, 'email_from_bio', $this->extractEmailFromText($bio))),
+    'bio' => $this->nullableString($bio),
     'postsCount' => $this->nullableInt(Arr::get($item, 'videoCount', Arr::get($item, 'authorStats.videoCount', Arr::get($item, 'posts')))),
     'avgLikes' => $this->nullableFloat($avgLikes),
     'avgComments' => $this->nullableFloat($avgComments),
     'isVerified' => $this->nullableBool(Arr::get($item, 'verified', Arr::get($item, 'authorMeta.verified', Arr::get($item, 'isVerified')))),
+    'latestPostAt' => $latestPostAt,
+    'locationHint' => $locationHint,
+    'languageHints' => $languageHints,
+    'genderHint' => $genderHint,
+    'nicheHints' => array_values(array_unique(array_slice(array_merge($sourceTags, $this->extractNicheHints($bio)), 0, 12))),
     'readyToMerge' => true,
     'sourceHashtags' => $sourceTags,
     'sourcePostUrl' => $selectedProfile['sourcePostUrl'] ?? null,
@@ -962,6 +1017,147 @@ return [
             }
             if (str_contains($haystack, '#' . strtolower($needle)) || preg_match('/\b' . preg_quote(strtolower($needle), '/') . '\b/', $haystack)) {
                 $matches[] = $needle;
+            }
+        }
+
+        return array_values(array_unique($matches));
+    }
+
+
+    private function resolveLatestPostAt(array $latestPosts, string $platform): ?string
+    {
+        $candidates = [];
+        foreach ($latestPosts as $post) {
+            if (!is_array($post)) {
+                continue;
+            }
+            $value = $platform === 'instagram'
+                ? Arr::get($post, 'timestamp', Arr::get($post, 'takenAtTimestamp', Arr::get($post, 'createdAt')))
+                : Arr::get($post, 'createTimeISO', Arr::get($post, 'createTime', Arr::get($post, 'timestamp')));
+
+            if ($value === null || $value === '') {
+                continue;
+            }
+
+            try {
+                if (is_numeric((string) $value)) {
+                    $timestamp = (int) $value;
+                    if ($timestamp > 1000000000000) {
+                        $timestamp = (int) floor($timestamp / 1000);
+                    }
+                    $candidates[] = date(DATE_ATOM, $timestamp);
+                } else {
+                    $candidates[] = (string) $value;
+                }
+            } catch (\Throwable $e) {
+                continue;
+            }
+        }
+
+        rsort($candidates);
+
+        return $candidates[0] ?? null;
+    }
+
+    private function resolveLocationHint(array $item, string $platform): ?string
+    {
+        $candidates = $platform === 'instagram'
+            ? [
+                Arr::get($item, 'addressCityName'),
+                Arr::get($item, 'cityName'),
+                Arr::get($item, 'businessAddress.cityName'),
+                Arr::get($item, 'businessCategoryName'),
+                Arr::get($item, 'location'),
+            ]
+            : [
+                Arr::get($item, 'region'),
+                Arr::get($item, 'locationCreated'),
+                Arr::get($item, 'country'),
+                Arr::get($item, 'countryCode'),
+            ];
+
+        foreach ($candidates as $candidate) {
+            $value = trim((string) ($candidate ?? ''));
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    private function flattenLatestPostText(array $latestPosts): string
+    {
+        $parts = [];
+        foreach ($latestPosts as $post) {
+            if (!is_array($post)) {
+                continue;
+            }
+            $parts[] = (string) Arr::get($post, 'caption', Arr::get($post, 'text', Arr::get($post, 'desc', '')));
+            $hashtags = Arr::get($post, 'hashtags', []);
+            if (is_array($hashtags) && $hashtags !== []) {
+                $parts[] = implode(' ', $hashtags);
+            }
+        }
+
+        return trim(implode(' ', array_filter($parts)));
+    }
+
+    private function inferLanguageHints(string $text): array
+    {
+        $text = ' ' . strtolower($text) . ' ';
+        $hints = [];
+
+        $germanSignals = [' und ', ' mit ', ' nicht ', ' liebe ', ' für ', ' ä', ' ö', ' ü', ' ß', ' de '];
+        foreach ($germanSignals as $signal) {
+            if (str_contains($text, $signal)) {
+                $hints[] = 'de';
+                break;
+            }
+        }
+
+        $englishSignals = [' the ', ' and ', ' with ', ' for ', ' lifestyle ', ' beauty ', ' travel '];
+        foreach ($englishSignals as $signal) {
+            if (str_contains($text, $signal)) {
+                $hints[] = 'en';
+                break;
+            }
+        }
+
+        return array_values(array_unique($hints));
+    }
+
+    private function inferGenderHint(string $text): ?string
+    {
+        $text = ' ' . strtolower($text) . ' ';
+        $femaleSignals = [' she/her ', ' woman ', ' women ', ' girl ', ' female ', ' mama ', ' mom ', ' frau '];
+        foreach ($femaleSignals as $signal) {
+            if (str_contains($text, trim($signal))) {
+                return 'female';
+            }
+        }
+
+        $maleSignals = [' he/him ', ' man ', ' men ', ' boy ', ' male ', ' dad ', ' papa ', ' herr '];
+        foreach ($maleSignals as $signal) {
+            if (str_contains($text, trim($signal))) {
+                return 'male';
+            }
+        }
+
+        return null;
+    }
+
+    private function extractNicheHints(string $text): array
+    {
+        $text = strtolower($text);
+        $dictionary = [
+            'beauty', 'fashion', 'travel', 'fitness', 'food', 'wellness', 'parenting', 'gaming', 'tech', 'home', 'design', 'lifestyle', 'art', 'music', 'photography', 'books', 'couples', 'wedding', 'skincare', 'makeup'
+        ];
+
+        $matches = [];
+        foreach ($dictionary as $keyword) {
+            if (str_contains($text, $keyword)) {
+                $matches[] = $keyword;
             }
         }
 
