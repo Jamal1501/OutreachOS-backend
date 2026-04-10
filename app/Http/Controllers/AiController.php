@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\AiDiscoveryBriefService;
 use App\Services\AiDuplicateDetectionService;
 use App\Services\AiPersonalizationService;
 use App\Services\AiScoringService;
@@ -9,10 +10,27 @@ use Illuminate\Http\Request;
 
 class AiController extends Controller
 {
+
+    public function parseDiscoveryBrief(Request $request)
+    {
+        $validated = $request->validate([
+            'brief' => ['required', 'string', 'min:8', 'max:5000'],
+            'platform' => ['nullable', 'string', 'in:instagram,tiktok'],
+            'projectContext' => ['nullable', 'string'],
+        ]);
+
+        return response()->json([
+            'criteria' => $this->briefs->parse((string) $validated['brief'], [
+                'platform' => $validated['platform'] ?? 'instagram',
+                'projectContext' => $validated['projectContext'] ?? null,
+            ]),
+        ]);
+    }
     public function __construct(
         private AiScoringService $scoring,
         private AiPersonalizationService $personalization,
         private AiDuplicateDetectionService $duplicates,
+        private AiDiscoveryBriefService $briefs,
     ) {
     }
 
