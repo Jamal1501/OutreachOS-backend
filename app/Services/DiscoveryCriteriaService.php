@@ -23,9 +23,12 @@ class DiscoveryCriteriaService
             ];
         }
 
-        $output = [];
+        $annotated = [];
         $hardFiltered = 0;
         $softFiltered = 0;
+        $fullMatchCount = 0;
+        $partialMatchCount = 0;
+        $weakMatchCount = 0;
 
         foreach ($creators as $creator) {
             if (!is_array($creator)) {
@@ -35,22 +38,42 @@ class DiscoveryCriteriaService
             $evaluation = $this->evaluateCreator($creator, $criteria);
             $creator['fitEvaluation'] = $evaluation;
             $creator['fitScore'] = $evaluation['fitScore'];
+            $creator['matchAccuracy'] = $evaluation['matchAccuracy'];
+            $creator['matchCategory'] = $evaluation['matchCategory'];
+            $creator['recommendedForImport'] = $evaluation['recommendedForImport'];
             $creator['matchReasons'] = $evaluation['matchReasons'];
             $creator['rejectReasons'] = $evaluation['rejectReasons'];
 
-            if ($evaluation['passesHardFilters'] && $evaluation['passesSoftFilters']) {
-                $output[] = $creator;
-                continue;
-            }
-
             if (!$evaluation['passesHardFilters']) {
                 $hardFiltered++;
-            } else {
+            } elseif (!$evaluation['passesSoftFilters']) {
                 $softFiltered++;
             }
+
+            if ($evaluation['matchCategory'] === 'full') {
+                $fullMatchCount++;
+            } elseif ($evaluation['matchCategory'] === 'partial') {
+                $partialMatchCount++;
+            } else {
+                $weakMatchCount++;
+            }
+
+            $annotated[] = $creator;
         }
 
-        usort($output, function (array $a, array $b) {
+        usort($annotated, function (array $a, array $b) {
+            $categoryRank = [
+                'full' => 0,
+                'partial' => 1,
+                'weak' => 2,
+            ];
+
+            $rankA = $categoryRank[(string) ($a['matchCategory'] ?? 'weak')] ?? 9;
+            $rankB = $categoryRank[(string) ($b['matchCategory'] ?? 'weak')] ?? 9;
+            if ($rankA !== $rankB) {
+                return $rankA <=> $rankB;
+            }
+
             $scoreA = (float) ($a['fitScore'] ?? 0);
             $scoreB = (float) ($b['fitScore'] ?? 0);
             if ($scoreA !== $scoreB) {
@@ -60,14 +83,21 @@ class DiscoveryCriteriaService
             return ((int) ($b['followers'] ?? 0)) <=> ((int) ($a['followers'] ?? 0));
         });
 
+        $recommendedCount = $fullMatchCount + $partialMatchCount;
+
         return [
-            'creators' => array_values($output),
+            'creators' => array_values($annotated),
             'summary' => [
                 'inputCount' => count($creators),
-                'outputCount' => count($output),
-                'droppedCount' => count($creators) - count($output),
+                'outputCount' => $recommendedCount,
+                'recommendedCount' => $recommendedCount,
+                'totalReturnedCount' => count($annotated),
+                'droppedCount' => $weakMatchCount,
                 'hardFilteredCount' => $hardFiltered,
                 'softFilteredCount' => $softFiltered,
+                'fullMatchCount' => $fullMatchCount,
+                'partialMatchCount' => $partialMatchCount,
+                'weakMatchCount' => $weakMatchCount,
                 'hardFilters' => $this->hardFilterList($criteria),
                 'softFilters' => $this->softFilterList($criteria),
             ],
@@ -172,6 +202,8 @@ class DiscoveryCriteriaService
         };
         $passesSoftFilters = $softMatches >= $requiredSoftMatches;
 
+        $matchAccuracy = (int) round(($softRequested > 0 ? ($softMatches / $softRequested) : ($passesHardFilters ? 1 : 0)) * 100);
+
         $fitScore = 50;
         if ($passesHardFilters) {
             $fitScore += 20;
@@ -185,6 +217,10 @@ class DiscoveryCriteriaService
         }
         $fitScore = max(0, min(100, $fitScore));
 
+        $matchCategory = $passesHardFilters && $passesSoftFilters
+            ? 'full'
+            : ($passesHardFilters ? 'partial' : 'weak');
+
         return [
             'passesHardFilters' => $passesHardFilters,
             'passesSoftFilters' => $passesSoftFilters,
@@ -192,6 +228,9 @@ class DiscoveryCriteriaService
             'softRequested' => $softRequested,
             'softMatches' => $softMatches,
             'fitScore' => $fitScore,
+            'matchAccuracy' => $matchAccuracy,
+            'matchCategory' => $matchCategory,
+            'recommendedForImport' => $matchCategory !== 'weak',
             'matchReasons' => array_values(array_unique($matchReasons)),
             'rejectReasons' => array_values(array_unique($rejectReasons)),
         ];
