@@ -425,7 +425,11 @@ $tasks = $this->normalizeDbTasks(
                 ])),
                 'confidenceSummary' => [
                     'score' => min(100, count($confidenceReasons) * 25),
-                    'label' => count($confidenceReasons) >= 3 ? 'usable' : 'fragile',
+                    'label' => count($hardDisqualifiers) > 1
+                        ? 'fragile'
+                        : (count($confidenceReasons) >= 4
+                            ? 'strong'
+                            : (count($confidenceReasons) >= 3 ? 'usable' : 'fragile')),
                     'reasons' => $confidenceReasons,
                 ],
                 'lastRealActivity' => $creator['lastContentDate'] ?: 'unknown',
