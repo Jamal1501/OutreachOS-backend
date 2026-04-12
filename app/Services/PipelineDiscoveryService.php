@@ -177,13 +177,14 @@ public function getJobState(string $jobId): ?array
             $this->completeStep($jobId, 'import_posts', end($stepResults));
 
             $this->updateJob($jobId, ['currentStep' => 'extract_urls']);
+            $selectionPoolLimit = $this->resolveSelectionPoolLimit($enrichmentLimit, $criteria);
             [$profiles, $sourceHashtagsByUrl] = $this->selectProfilesFromRankedPosts(
                 $platform,
                 $discoveryItems,
                 $hashtags,
-                $enrichmentLimit,
+                $selectionPoolLimit,
                 $rankingMetric,
-                $criteria,
+                $criteria
             );
             $crmMatchesByProfileUrl = $this->findExistingCrmMatches($projectId, $sheetId, $platform, $profiles);
             foreach ($profiles as &$profile) {
@@ -242,7 +243,7 @@ public function getJobState(string $jobId): ?array
                 'enrichmentJobId' => $enrichmentJobId,
             ]);
 
-            $enrichment = $this->enrichmentProvider->enrich($platform, array_column($profiles, 'profileUrl'), $hashtags, $enrichmentLimit, [
+            $enrichment = $this->enrichmentProvider->enrich($platform, array_column($profiles, 'profileUrl'), $hashtags, $selectionPoolLimit, [
                 'workspaceId' => $payload['workspaceId'] ?? null,
                 'planId' => $payload['planId'] ?? 'free',
                 'moduleKey' => $payload['enrichmentModuleKey'] ?? null,
@@ -273,8 +274,12 @@ public function getJobState(string $jobId): ?array
             $filterSummary = null;
             if ($criteria !== []) {
                 $filtered = $this->criteriaService->apply($creators, $criteria);
-                $creators = $filtered['creators'];
-                $filterSummary = $filtered['summary'];
+                $creators = $this->shortlistCreatorsForOutput($filtered['creators'], $enrichmentLimit, $criteria);
+                $refined = $this->criteriaService->apply($creators, $criteria);
+                $creators = $refined['creators'];
+                $filterSummary = $refined['summary'];
+            } elseif ($enrichmentLimit > 0) {
+                $creators = array_slice($creators, 0, $enrichmentLimit);
             }
             $stepResults[] = [
                 'step' => 'import_profiles',
@@ -607,31 +612,23 @@ private function selectProfilesFromRankedPosts(
         string $platform,
         array $items,
         array $inputHashtags,
-        int $enrichmentLimit,
+        int $selectionLimit,
         string $rankingMetric,
-        array $criteria = [],
+        array $criteria = []
     ): array {
         $rankedPosts = [];
         $sourceHashtagsByUrl = [];
         $matchedPostCounts = [];
 
         foreach ($items as $index => $item) {
+            if (!$this->passesDiscoveryThresholds($item, $criteria)) {
+                continue;
+            }
+
             $username = $this->extractUsernameFromDiscoveryItem($platform, $item);
             $profileUrl = $this->profileUrlFor($platform, $username, $item);
 
             if ($profileUrl === '') {
-                continue;
-            }
-
-            $metrics = [
-                'likes' => $this->nullableInt(Arr::get($item, 'likesCount', Arr::get($item, 'diggCount'))),
-                'comments' => $this->nullableInt(Arr::get($item, 'commentsCount', Arr::get($item, 'commentCount'))),
-                'views' => $this->nullableInt(Arr::get($item, 'playCount')),
-                'shares' => $this->nullableInt(Arr::get($item, 'shareCount')),
-            ];
-            $followers = $this->nullableInt(Arr::get($item, 'followersCount', Arr::get($item, 'authorStats.followerCount', Arr::get($item, 'followers'))));
-
-            if (!$this->matchesCandidatePreFilters($followers, $metrics, $criteria)) {
                 continue;
             }
 
@@ -650,15 +647,26 @@ private function selectProfilesFromRankedPosts(
                 'profileUrl' => $profileUrl,
                 'profileKey' => $profileKey,
                 'postUrl' => $this->postUrlFor($platform, $item),
-                'metricType' => $rankingMetric,
-                'metricValue' => $this->metricValueForDiscoveryItem($platform, $item, $rankingMetric),
-                'metrics' => $metrics,
-                'followers' => $followers,
-                'discoveryIndex' => $index,
+                'metricType' => $rankingMetric === 'none' ? null : $rankingMetric,
+                'metricValue' => $rankingMetric === 'none' ? 0 : $this->metricValueForDiscoveryItem($platform, $item, $rankingMetric),
+                'metrics' => [
+                    'likes' => $this->nullableInt(Arr::get($item, 'likesCount', Arr::get($item, 'diggCount'))),
+                    'comments' => $this->nullableInt(Arr::get($item, 'commentsCount', Arr::get($item, 'commentCount'))),
+                    'views' => $this->nullableInt(Arr::get($item, 'playCount')),
+                    'shares' => $this->nullableInt(Arr::get($item, 'shareCount')),
+                ],
+                'followerEstimate' => $this->extractDiscoveryFollowerEstimate($item),
+                'rangeBucket' => $this->rangeBucketForFollowerEstimate($this->extractDiscoveryFollowerEstimate($item), $criteria),
+                'originalIndex' => $index,
             ];
         }
 
         usort($rankedPosts, function (array $a, array $b) use ($rankingMetric) {
+            $bucketCompare = ((int) ($a['rangeBucket'] ?? 9)) <=> ((int) ($b['rangeBucket'] ?? 9));
+            if ($bucketCompare !== 0) {
+                return $bucketCompare;
+            }
+
             if ($rankingMetric !== 'none') {
                 $scoreCompare = ((int) ($b['metricValue'] ?? 0)) <=> ((int) ($a['metricValue'] ?? 0));
                 if ($scoreCompare !== 0) {
@@ -666,12 +674,7 @@ private function selectProfilesFromRankedPosts(
                 }
             }
 
-            $indexCompare = ((int) ($a['discoveryIndex'] ?? 0)) <=> ((int) ($b['discoveryIndex'] ?? 0));
-            if ($indexCompare !== 0) {
-                return $indexCompare;
-            }
-
-            return strcmp((string) ($a['profileUrl'] ?? ''), (string) ($b['profileUrl'] ?? ''));
+            return ((int) ($a['originalIndex'] ?? 0)) <=> ((int) ($b['originalIndex'] ?? 0));
         });
 
         $profiles = [];
@@ -688,48 +691,17 @@ private function selectProfilesFromRankedPosts(
                 'profileUrl' => $post['profileUrl'],
                 'sourcePostUrl' => $post['postUrl'] ?: null,
                 'sourceMetricType' => $post['metricType'],
-                'sourceMetricValue' => (int) ($post['metricValue'] ?? 0),
+                'sourceMetricValue' => $rankingMetric === 'none' ? null : (int) ($post['metricValue'] ?? 0),
                 'sourcePostMetrics' => $post['metrics'],
                 'matchedPostCount' => (int) ($matchedPostCounts[$profileKey] ?? 1),
             ];
 
-            if ($enrichmentLimit > 0 && count($profiles) >= $enrichmentLimit) {
+            if ($selectionLimit > 0 && count($profiles) >= $selectionLimit) {
                 break;
             }
         }
 
         return [array_values($profiles), $sourceHashtagsByUrl];
-    }
-
-
-    private function matchesCandidatePreFilters(?int $followers, array $metrics, array $criteria): bool
-    {
-        $followerMin = max(0, (int) ($criteria['followerMin'] ?? 0));
-        $followerMax = max(0, (int) ($criteria['followerMax'] ?? 0));
-        if ($followers !== null) {
-            if ($followerMin > 0 && $followers < $followerMin) {
-                return false;
-            }
-            if ($followerMax > 0 && $followers > $followerMax) {
-                return false;
-            }
-        }
-
-        $minimumLikes = max(0, (int) ($criteria['minimumLikes'] ?? 0));
-        $minimumComments = max(0, (int) ($criteria['minimumComments'] ?? 0));
-        $minimumViews = max(0, (int) ($criteria['minimumViews'] ?? 0));
-
-        if ($minimumLikes > 0 && ((int) ($metrics['likes'] ?? 0)) < $minimumLikes) {
-            return false;
-        }
-        if ($minimumComments > 0 && ((int) ($metrics['comments'] ?? 0)) < $minimumComments) {
-            return false;
-        }
-        if ($minimumViews > 0 && ((int) ($metrics['views'] ?? 0)) < $minimumViews) {
-            return false;
-        }
-
-        return true;
     }
 
     private function extractUsernameFromDiscoveryItem(string $platform, array $item): string
@@ -788,6 +760,129 @@ private function selectProfilesFromRankedPosts(
             'shares' => (int) ($this->nullableInt(Arr::get($item, 'shareCount')) ?? 0),
             default => 0,
         };
+    }
+
+    private function resolveSelectionPoolLimit(int $enrichmentLimit, array $criteria = []): int
+    {
+        $base = max(1, $enrichmentLimit);
+        $needsQualityBuffer = !empty($criteria['followerMin']) || !empty($criteria['followerMax'])
+            || !empty($criteria['minimumLikes']) || !empty($criteria['minimumComments']) || !empty($criteria['minimumViews']);
+
+        if (!$needsQualityBuffer) {
+            return $base;
+        }
+
+        return min(max($base * 2, $base + 20), 120);
+    }
+
+    private function passesDiscoveryThresholds(array $item, array $criteria): bool
+    {
+        $minimumLikes = max(0, (int) ($criteria['minimumLikes'] ?? 0));
+        $minimumComments = max(0, (int) ($criteria['minimumComments'] ?? 0));
+        $minimumViews = max(0, (int) ($criteria['minimumViews'] ?? 0));
+
+        $likes = (int) ($this->nullableInt(Arr::get($item, 'likesCount', Arr::get($item, 'diggCount'))) ?? 0);
+        $comments = (int) ($this->nullableInt(Arr::get($item, 'commentsCount', Arr::get($item, 'commentCount'))) ?? 0);
+        $views = (int) ($this->nullableInt(Arr::get($item, 'playCount')) ?? 0);
+
+        if ($minimumLikes > 0 && $likes < $minimumLikes) {
+            return false;
+        }
+        if ($minimumComments > 0 && $comments < $minimumComments) {
+            return false;
+        }
+        if ($minimumViews > 0 && $views < $minimumViews) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private function extractDiscoveryFollowerEstimate(array $item): ?int
+    {
+        return $this->nullableInt(
+            Arr::get($item, 'owner.followersCount', Arr::get($item, 'ownerFollowersCount', Arr::get($item, 'authorMeta.fans', Arr::get($item, 'authorStats.followerCount', Arr::get($item, 'followersCount', Arr::get($item, 'followers'))))))
+        );
+    }
+
+    private function rangeBucketForFollowerEstimate(?int $followers, array $criteria): int
+    {
+        $min = max(0, (int) ($criteria['followerMin'] ?? 0));
+        $max = max(0, (int) ($criteria['followerMax'] ?? 0));
+
+        if ($min === 0 && $max === 0) {
+            return 0;
+        }
+        if ($followers === null) {
+            return 2;
+        }
+        if (($min === 0 || $followers >= $min) && ($max === 0 || $followers <= $max)) {
+            return 0;
+        }
+
+        $targetFloor = $min > 0 ? $min : $max;
+        $targetCeil = $max > 0 ? $max : $min;
+        $distance = $followers < $targetFloor ? ($targetFloor - $followers) : ($followers - $targetCeil);
+        $base = max(1, $targetCeil > 0 ? $targetCeil : $targetFloor);
+        $ratio = $distance / $base;
+
+        return $ratio <= 0.35 ? 1 : 3;
+    }
+
+    private function shortlistCreatorsForOutput(array $creators, int $finalLimit, array $criteria = []): array
+    {
+        if ($finalLimit <= 0 || count($creators) <= $finalLimit) {
+            return array_values($creators);
+        }
+
+        usort($creators, function (array $a, array $b) use ($criteria) {
+            $rank = ['full' => 0, 'partial' => 1, 'weak' => 2];
+            $catA = $rank[(string) ($a['matchCategory'] ?? 'weak')] ?? 9;
+            $catB = $rank[(string) ($b['matchCategory'] ?? 'weak')] ?? 9;
+            if ($catA !== $catB) {
+                return $catA <=> $catB;
+            }
+
+            $distanceA = $this->followerDistanceFromRange((int) ($a['followers'] ?? 0), $criteria);
+            $distanceB = $this->followerDistanceFromRange((int) ($b['followers'] ?? 0), $criteria);
+            if ($distanceA !== $distanceB) {
+                return $distanceA <=> $distanceB;
+            }
+
+            $scoreA = (float) ($a['fitScore'] ?? 0);
+            $scoreB = (float) ($b['fitScore'] ?? 0);
+            if ($scoreA !== $scoreB) {
+                return $scoreB <=> $scoreA;
+            }
+
+            return ((int) ($b['followers'] ?? 0)) <=> ((int) ($a['followers'] ?? 0));
+        });
+
+        return array_slice(array_values($creators), 0, $finalLimit);
+    }
+
+    private function followerDistanceFromRange(int $followers, array $criteria): int
+    {
+        $min = max(0, (int) ($criteria['followerMin'] ?? 0));
+        $max = max(0, (int) ($criteria['followerMax'] ?? 0));
+
+        if ($min === 0 && $max === 0) {
+            return 0;
+        }
+        if ($followers <= 0) {
+            return 1000000000;
+        }
+        if (($min === 0 || $followers >= $min) && ($max === 0 || $followers <= $max)) {
+            return 0;
+        }
+        if ($max > 0 && $followers > $max) {
+            return $followers - $max;
+        }
+        if ($min > 0 && $followers < $min) {
+            return $min - $followers;
+        }
+
+        return 1000000000;
     }
 
     private function normalizeProfileUrlKey(string $profileUrl): string

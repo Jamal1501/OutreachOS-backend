@@ -86,7 +86,7 @@ class AiDiscoveryBriefService
         $platform = strtolower(trim((string) ($context['platform'] ?? 'instagram')));
         $projectContext = trim((string) ($context['projectContext'] ?? ''));
 
-        $systemPrompt = 'You turn a messy creator-search brief into strict structured discovery criteria for an outreach tool. Be literal, commercially useful, and skeptical. Do not invent impossible certainty. For gender, location, and language, mark inferred fields honestly. Return exactly 1 primary hashtag and up to 3 optional hashtags tailored to the product and platform. Keep hashtags short and public-search friendly. Prefer micro-creator discovery, not celebrity tags. Keep nicheKeywords, mustHaveSignals, and avoidSignals to at most 1 item each. Do not flood the response with redundant synonyms.';
+        $systemPrompt = 'You turn a messy creator-search brief into strict structured discovery criteria for an outreach tool. Be literal, commercially useful, and skeptical. Do not invent impossible certainty. For gender, location, and language, mark inferred fields honestly. Always return 5-10 realistic hashtags tailored to the product and platform. Keep hashtags short and public-search friendly. Prefer micro-creator discovery, not celebrity tags.';
 
         $userPrompt = "Platform: {$platform}\n"
             . ($projectContext !== '' ? "Project context:\n{$projectContext}\n\n" : '')
@@ -114,12 +114,12 @@ class AiDiscoveryBriefService
 
     private function normalizeCriteria(array $criteria, string $brief, array $context, ?string $fallbackNote = null): array
     {
-        $hashtags = $this->normalizeStringList($criteria['hashtags'] ?? [], 4, true);
+        $hashtags = $this->normalizeStringList($criteria['hashtags'] ?? [], 10, true);
         $searchTerms = $this->normalizeStringList($criteria['searchTerms'] ?? [], 10, false);
-        $nicheKeywords = $this->normalizeStringList($criteria['nicheKeywords'] ?? [], 1, false);
+        $nicheKeywords = $this->normalizeStringList($criteria['nicheKeywords'] ?? [], 12, false);
         $languageHints = $this->normalizeLanguageHints($criteria['languageHints'] ?? []);
-        $mustHaveSignals = $this->normalizeStringList($criteria['mustHaveSignals'] ?? [], 1, false);
-        $avoidSignals = $this->normalizeStringList($criteria['avoidSignals'] ?? [], 1, false);
+        $mustHaveSignals = $this->normalizeStringList($criteria['mustHaveSignals'] ?? [], 8, false);
+        $avoidSignals = $this->normalizeStringList($criteria['avoidSignals'] ?? [], 8, false);
         $notes = $this->normalizeStringList($criteria['notes'] ?? [], 8, false);
 
         if ($hashtags === []) {
@@ -128,11 +128,6 @@ class AiDiscoveryBriefService
 
         $followerMin = max(0, (int) ($criteria['followerMin'] ?? 0));
         $followerMax = max(0, (int) ($criteria['followerMax'] ?? 0));
-        $explicitFollowerBounds = $this->extractFollowerBoundsFromBrief($brief);
-        if ($explicitFollowerBounds !== null) {
-            $followerMin = $explicitFollowerBounds['min'];
-            $followerMax = $explicitFollowerBounds['max'];
-        }
         if ($followerMax > 0 && $followerMin > 0 && $followerMax < $followerMin) {
             [$followerMin, $followerMax] = [$followerMax, $followerMin];
         }
@@ -171,8 +166,6 @@ class AiDiscoveryBriefService
             'followerMax' => $followerMax,
             'activeWithinDays' => $activeWithinDays,
             'hashtags' => $hashtags,
-            'primaryHashtag' => $hashtags[0] ?? null,
-            'optionalHashtags' => array_values(array_slice($hashtags, 1, 3)),
             'searchTerms' => $searchTerms,
             'nicheKeywords' => $nicheKeywords,
             'languageHints' => $languageHints,
@@ -184,60 +177,6 @@ class AiDiscoveryBriefService
         ];
 
         return $normalized;
-    }
-
-
-    private function extractFollowerBoundsFromBrief(string $brief): ?array
-    {
-        $brief = strtolower(trim($brief));
-        if ($brief === '') {
-            return null;
-        }
-
-        $patterns = [
-            '/(?:between|from)\s+([\d.,]+\s*[km]?)\s*(?:and|to|-)\s*([\d.,]+\s*[km]?)/iu',
-            '/([\d.,]+\s*[km]?)\s*(?:-|to)\s*([\d.,]+\s*[km]?)\s+followers?/iu',
-            '/followers?\s*(?:between|from)?\s*([\d.,]+\s*[km]?)\s*(?:and|to|-)\s*([\d.,]+\s*[km]?)/iu',
-        ];
-
-        foreach ($patterns as $pattern) {
-            if (preg_match($pattern, $brief, $matches) === 1) {
-                $min = $this->parseHumanNumber((string) ($matches[1] ?? ''));
-                $max = $this->parseHumanNumber((string) ($matches[2] ?? ''));
-                if ($min > 0 && $max > 0) {
-                    if ($max < $min) {
-                        [$min, $max] = [$max, $min];
-                    }
-                    return ['min' => $min, 'max' => $max];
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private function parseHumanNumber(string $value): int
-    {
-        $normalized = strtolower(trim(str_replace(['followers', 'follower', 'subs', 'subscribers', ' ', ','], '', $value)));
-        if ($normalized === '') {
-            return 0;
-        }
-
-        $multiplier = 1;
-        if (str_ends_with($normalized, 'k')) {
-            $multiplier = 1000;
-            $normalized = substr($normalized, 0, -1);
-        } elseif (str_ends_with($normalized, 'm')) {
-            $multiplier = 1000000;
-            $normalized = substr($normalized, 0, -1);
-        }
-
-        $normalized = str_replace('.', '.', $normalized);
-        if (!is_numeric($normalized)) {
-            return 0;
-        }
-
-        return (int) round(((float) $normalized) * $multiplier);
     }
 
     private function fallbackCriteria(string $brief, array $context, ?string $failureMessage = null): array
@@ -271,8 +210,6 @@ class AiDiscoveryBriefService
             'followerMax' => 0,
             'activeWithinDays' => 30,
             'hashtags' => $hashtags,
-            'primaryHashtag' => $hashtags[0] ?? null,
-            'optionalHashtags' => array_values(array_slice($hashtags, 1, 3)),
             'searchTerms' => $keywords,
             'nicheKeywords' => $keywords,
             'languageHints' => [],
@@ -357,6 +294,6 @@ class AiDiscoveryBriefService
             }
         }
 
-        return array_values(array_slice(array_unique($hashtags), 0, 4));
+        return array_values(array_slice(array_unique($hashtags), 0, 10));
     }
 }
