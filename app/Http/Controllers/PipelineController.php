@@ -67,6 +67,8 @@ class PipelineController extends Controller
             'dedupeAgainstCRM' => ['nullable', 'boolean'],
             'rankingMetric' => ['nullable', 'string', Rule::in(['none', 'views', 'likes', 'comments', 'shares'])],
             'wait' => ['nullable', 'boolean'],
+            'selectedHashtags' => ['nullable', 'array', 'min:1', 'max:4'],
+            'selectedHashtags.*' => ['string'],
             'discoveryModuleKey' => ['nullable', 'string'],
             'enrichmentModuleKey' => ['nullable', 'string'],
         ]);
@@ -76,10 +78,22 @@ class PipelineController extends Controller
             'projectContext' => $validated['projectContext'] ?? null,
         ]);
 
+        $availableHashtags = array_values(array_filter(array_map(fn ($value) => $this->normalizeHashtag((string) $value), (array) ($criteria['hashtags'] ?? []))));
+        $requestedHashtags = array_values(array_filter(array_map(fn ($value) => $this->normalizeHashtag((string) $value), (array) ($validated['selectedHashtags'] ?? []))));
+        $selectedHashtags = $requestedHashtags === []
+            ? array_values(array_slice($availableHashtags, 0, 1))
+            : array_values(array_intersect($availableHashtags, $requestedHashtags));
+
+        if ($selectedHashtags === []) {
+            $selectedHashtags = array_values(array_slice($availableHashtags, 0, 1));
+        }
+
+        $criteria['selectedHashtags'] = $selectedHashtags;
+
         $payload = [
             'sheetId' => $this->resolveSheetId($request, $validated['sheetId'] ?? null),
             'platform' => $validated['platform'],
-            'hashtags' => $criteria['hashtags'] ?? [],
+            'hashtags' => $selectedHashtags,
             'discoveryLimit' => (int) ($validated['discoveryLimit'] ?? ($criteria['recommendedDiscoveryLimit'] ?? 60)),
             'enrichmentLimit' => (int) ($validated['enrichmentLimit'] ?? ($criteria['recommendedEnrichmentLimit'] ?? 25)),
             'dedupeAgainstCRM' => (bool) ($validated['dedupeAgainstCRM'] ?? true),

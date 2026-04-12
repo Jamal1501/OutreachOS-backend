@@ -182,7 +182,8 @@ public function getJobState(string $jobId): ?array
                 $discoveryItems,
                 $hashtags,
                 $enrichmentLimit,
-                $rankingMetric
+                $rankingMetric,
+                $criteria,
             );
             $crmMatchesByProfileUrl = $this->findExistingCrmMatches($projectId, $sheetId, $platform, $profiles);
             foreach ($profiles as &$profile) {
@@ -607,17 +608,30 @@ private function selectProfilesFromRankedPosts(
         array $items,
         array $inputHashtags,
         int $enrichmentLimit,
-        string $rankingMetric
+        string $rankingMetric,
+        array $criteria = [],
     ): array {
         $rankedPosts = [];
         $sourceHashtagsByUrl = [];
         $matchedPostCounts = [];
 
-        foreach ($items as $item) {
+        foreach ($items as $index => $item) {
             $username = $this->extractUsernameFromDiscoveryItem($platform, $item);
             $profileUrl = $this->profileUrlFor($platform, $username, $item);
 
             if ($profileUrl === '') {
+                continue;
+            }
+
+            $metrics = [
+                'likes' => $this->nullableInt(Arr::get($item, 'likesCount', Arr::get($item, 'diggCount'))),
+                'comments' => $this->nullableInt(Arr::get($item, 'commentsCount', Arr::get($item, 'commentCount'))),
+                'views' => $this->nullableInt(Arr::get($item, 'playCount')),
+                'shares' => $this->nullableInt(Arr::get($item, 'shareCount')),
+            ];
+            $followers = $this->nullableInt(Arr::get($item, 'followersCount', Arr::get($item, 'authorStats.followerCount', Arr::get($item, 'followers'))));
+
+            if (!$this->matchesCandidatePreFilters($followers, $metrics, $criteria)) {
                 continue;
             }
 
@@ -636,26 +650,29 @@ private function selectProfilesFromRankedPosts(
                 'profileUrl' => $profileUrl,
                 'profileKey' => $profileKey,
                 'postUrl' => $this->postUrlFor($platform, $item),
-                'metricType' => $rankingMetric === 'none' ? null : $rankingMetric,
-                'metricValue' => $rankingMetric === 'none' ? null : $this->metricValueForDiscoveryItem($platform, $item, $rankingMetric),
-                'metrics' => [
-                    'likes' => $this->nullableInt(Arr::get($item, 'likesCount', Arr::get($item, 'diggCount'))),
-                    'comments' => $this->nullableInt(Arr::get($item, 'commentsCount', Arr::get($item, 'commentCount'))),
-                    'views' => $this->nullableInt(Arr::get($item, 'playCount')),
-                    'shares' => $this->nullableInt(Arr::get($item, 'shareCount')),
-                ],
+                'metricType' => $rankingMetric,
+                'metricValue' => $this->metricValueForDiscoveryItem($platform, $item, $rankingMetric),
+                'metrics' => $metrics,
+                'followers' => $followers,
+                'discoveryIndex' => $index,
             ];
         }
 
-        if ($rankingMetric !== 'none') {
-            usort($rankedPosts, function (array $a, array $b) {
+        usort($rankedPosts, function (array $a, array $b) use ($rankingMetric) {
+            if ($rankingMetric !== 'none') {
                 $scoreCompare = ((int) ($b['metricValue'] ?? 0)) <=> ((int) ($a['metricValue'] ?? 0));
                 if ($scoreCompare !== 0) {
                     return $scoreCompare;
                 }
-                return strcmp((string) ($a['profileUrl'] ?? ''), (string) ($b['profileUrl'] ?? ''));
-            });
-        }
+            }
+
+            $indexCompare = ((int) ($a['discoveryIndex'] ?? 0)) <=> ((int) ($b['discoveryIndex'] ?? 0));
+            if ($indexCompare !== 0) {
+                return $indexCompare;
+            }
+
+            return strcmp((string) ($a['profileUrl'] ?? ''), (string) ($b['profileUrl'] ?? ''));
+        });
 
         $profiles = [];
         foreach ($rankedPosts as $post) {
@@ -671,7 +688,7 @@ private function selectProfilesFromRankedPosts(
                 'profileUrl' => $post['profileUrl'],
                 'sourcePostUrl' => $post['postUrl'] ?: null,
                 'sourceMetricType' => $post['metricType'],
-                'sourceMetricValue' => $post['metricValue'] !== null ? (int) $post['metricValue'] : null,
+                'sourceMetricValue' => (int) ($post['metricValue'] ?? 0),
                 'sourcePostMetrics' => $post['metrics'],
                 'matchedPostCount' => (int) ($matchedPostCounts[$profileKey] ?? 1),
             ];
@@ -682,6 +699,37 @@ private function selectProfilesFromRankedPosts(
         }
 
         return [array_values($profiles), $sourceHashtagsByUrl];
+    }
+
+
+    private function matchesCandidatePreFilters(?int $followers, array $metrics, array $criteria): bool
+    {
+        $followerMin = max(0, (int) ($criteria['followerMin'] ?? 0));
+        $followerMax = max(0, (int) ($criteria['followerMax'] ?? 0));
+        if ($followers !== null) {
+            if ($followerMin > 0 && $followers < $followerMin) {
+                return false;
+            }
+            if ($followerMax > 0 && $followers > $followerMax) {
+                return false;
+            }
+        }
+
+        $minimumLikes = max(0, (int) ($criteria['minimumLikes'] ?? 0));
+        $minimumComments = max(0, (int) ($criteria['minimumComments'] ?? 0));
+        $minimumViews = max(0, (int) ($criteria['minimumViews'] ?? 0));
+
+        if ($minimumLikes > 0 && ((int) ($metrics['likes'] ?? 0)) < $minimumLikes) {
+            return false;
+        }
+        if ($minimumComments > 0 && ((int) ($metrics['comments'] ?? 0)) < $minimumComments) {
+            return false;
+        }
+        if ($minimumViews > 0 && ((int) ($metrics['views'] ?? 0)) < $minimumViews) {
+            return false;
+        }
+
+        return true;
     }
 
     private function extractUsernameFromDiscoveryItem(string $platform, array $item): string
@@ -720,17 +768,13 @@ private function selectProfilesFromRankedPosts(
     {
         $requested = strtolower(trim($requested));
 
-        if ($requested === 'none') {
-            return 'none';
-        }
-
         if ($platform === 'tiktok') {
-            return in_array($requested, ['views', 'likes', 'comments', 'shares'], true)
+            return in_array($requested, ['none', 'views', 'likes', 'comments', 'shares'], true)
                 ? $requested
                 : 'views';
         }
 
-        return in_array($requested, ['views', 'likes', 'comments'], true)
+        return in_array($requested, ['none', 'views', 'likes', 'comments'], true)
             ? $requested
             : 'likes';
     }
@@ -738,7 +782,7 @@ private function selectProfilesFromRankedPosts(
     private function metricValueForDiscoveryItem(string $platform, array $item, string $metric): int
     {
         return match ($metric) {
-            'views' => (int) ($this->nullableInt(Arr::get($item, 'playCount', Arr::get($item, 'videoViewCount', Arr::get($item, 'viewCount', Arr::get($item, 'videoPlayCount'))))) ?? 0),
+            'views' => (int) ($this->nullableInt(Arr::get($item, 'playCount')) ?? 0),
             'likes' => (int) ($this->nullableInt(Arr::get($item, 'likesCount', Arr::get($item, 'diggCount'))) ?? 0),
             'comments' => (int) ($this->nullableInt(Arr::get($item, 'commentsCount', Arr::get($item, 'commentCount'))) ?? 0),
             'shares' => (int) ($this->nullableInt(Arr::get($item, 'shareCount')) ?? 0),
