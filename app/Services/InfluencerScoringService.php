@@ -175,6 +175,7 @@ class InfluencerScoringService
     {
         $min = max(0, (int) ($criteria['followerMin'] ?? 0));
         $max = max(0, (int) ($criteria['followerMax'] ?? 0));
+        $minimumFollowerFloor = $this->minimumFollowerFloor($criteria);
 
         if ($followers <= 0) {
             return [0, null, 'Follower count missing.'];
@@ -200,20 +201,26 @@ class InfluencerScoringService
             };
         }
 
-        $score = match (true) {
-            $followers < 1000 => 8,
-            $followers < 5000 => 18,
-            $followers < 25000 => 28,
-            $followers < 100000 => 24,
-            $followers < 500000 => 16,
-            default => 10,
-        };
+        if ($minimumFollowerFloor > 0 && $followers < $minimumFollowerFloor) {
+            return [0, null, 'Below the default 1k follower floor.'];
+        }
 
-        $signal = $followers >= 1000 && $followers < 25000
-            ? 'Follower range fits typical micro-influencer outreach.'
-            : null;
+        if ($followers < 1000) {
+            return [6, 'Emerging creator under 1k followers.', null];
+        }
 
-        return [$score, $signal, null];
+        $score = (int) round(min(24, max(12, 12 + ((log10(max(1000, $followers)) - 3) * 4.5))));
+
+        return [$score, 'Follower base is established enough for outreach.', null];
+    }
+
+    private function minimumFollowerFloor(array $criteria): int
+    {
+        if ((bool) ($criteria['includeSub1kCreators'] ?? false)) {
+            return 0;
+        }
+
+        return max(0, (int) ($criteria['minimumFollowerFloor'] ?? 1000));
     }
 
     private function resolveEngagementRate(array $creator, ?array $sourceRow = null): float

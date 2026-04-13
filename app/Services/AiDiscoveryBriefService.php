@@ -86,13 +86,13 @@ class AiDiscoveryBriefService
         $platform = strtolower(trim((string) ($context['platform'] ?? 'instagram')));
         $projectContext = trim((string) ($context['projectContext'] ?? ''));
 
-        $systemPrompt = 'You turn a messy creator-search brief into strict structured discovery criteria for an outreach tool. Be literal, commercially useful, and skeptical. Do not invent impossible certainty. For gender, location, and language, mark inferred fields honestly. Always return 5-10 realistic hashtags tailored to the product and platform. Keep hashtags short and public-search friendly. Prefer micro-creator discovery, not celebrity tags.';
+        $systemPrompt = 'You turn a messy creator-search brief into strict structured discovery criteria for an outreach tool. Be literal, commercially useful, and skeptical. Do not invent impossible certainty. For gender, location, and language, mark inferred fields honestly. Always return 5-10 realistic hashtags tailored to the product and platform. Keep hashtags short and public-search friendly. Do not set follower targeting for this workflow; return followerMin=0 and followerMax=0 unless the system explicitly asks for strict follower targeting.';
 
         $userPrompt = "Platform: {$platform}\n"
             . ($projectContext !== '' ? "Project context:\n{$projectContext}\n\n" : '')
             . "User brief:\n{$brief}\n\n"
             . "Return structured discovery criteria for an influencer discovery pipeline."
-            . "Follower bounds should be integers or 0 if not specified."
+            . "Follower bounds should be 0 for this workflow unless strict follower targeting is explicitly required."
             . "If activity recency is missing, use 30."
             . "If gender or location is not explicit, keep the target but mark it inferred if the user wording strongly implies it; otherwise return 'any' or empty location.";
 
@@ -126,11 +126,8 @@ class AiDiscoveryBriefService
             $hashtags = $this->hashtagsFromTerms(array_merge($searchTerms, $nicheKeywords));
         }
 
-        $followerMin = max(0, (int) ($criteria['followerMin'] ?? 0));
-        $followerMax = max(0, (int) ($criteria['followerMax'] ?? 0));
-        if ($followerMax > 0 && $followerMin > 0 && $followerMax < $followerMin) {
-            [$followerMin, $followerMax] = [$followerMax, $followerMin];
-        }
+                $followerMin = 0;
+        $followerMax = 0;
 
         $activeWithinDays = max(0, min(365, (int) ($criteria['activeWithinDays'] ?? 30)));
         $genderTarget = $this->normalizeGenderTarget((string) ($criteria['genderTarget'] ?? 'any'));
@@ -164,6 +161,8 @@ class AiDiscoveryBriefService
             'genderInferred' => (bool) ($criteria['genderInferred'] ?? false),
             'followerMin' => $followerMin,
             'followerMax' => $followerMax,
+            'includeSub1kCreators' => false,
+            'minimumFollowerFloor' => 1000,
             'activeWithinDays' => $activeWithinDays,
             'hashtags' => $hashtags,
             'searchTerms' => $searchTerms,
@@ -208,6 +207,7 @@ class AiDiscoveryBriefService
             'genderInferred' => false,
             'followerMin' => 0,
             'followerMax' => 0,
+            'minimumFollowerFloor' => 1000,
             'activeWithinDays' => 30,
             'hashtags' => $hashtags,
             'searchTerms' => $keywords,

@@ -38,6 +38,8 @@ class PipelineController extends Controller
             'enrichmentModuleKey' => ['nullable', 'string'],
         ]);
 
+        $criteria = $this->normalizeDiscoveryCriteria((array) ($validated['criteria'] ?? []));
+
         $payload = [
             'sheetId' => $this->resolveSheetId($request, $validated['sheetId'] ?? null),
             'platform' => $validated['platform'],
@@ -47,7 +49,7 @@ class PipelineController extends Controller
             'dedupeAgainstCRM' => (bool) ($validated['dedupeAgainstCRM'] ?? true),
             'rankingMetric' => (string) ($validated['rankingMetric'] ?? ''),
             'brief' => $validated['brief'] ?? null,
-            'criteria' => $validated['criteria'] ?? null,
+            'criteria' => $criteria !== [] ? $criteria : null,
             'discoveryModuleKey' => $validated['discoveryModuleKey'] ?? null,
             'enrichmentModuleKey' => $validated['enrichmentModuleKey'] ?? null,
         ];
@@ -71,10 +73,10 @@ class PipelineController extends Controller
             'enrichmentModuleKey' => ['nullable', 'string'],
         ]);
 
-        $criteria = $this->briefs->parse((string) $validated['brief'], [
+        $criteria = $this->normalizeDiscoveryCriteria($this->briefs->parse((string) $validated['brief'], [
             'platform' => $validated['platform'],
             'projectContext' => $validated['projectContext'] ?? null,
-        ]);
+        ]));
 
         $payload = [
             'sheetId' => $this->resolveSheetId($request, $validated['sheetId'] ?? null),
@@ -204,4 +206,19 @@ class PipelineController extends Controller
     {
         return $this->workspaceContext->resolveWorkbookId($request, $sheetId);
     }
+
+    private function normalizeDiscoveryCriteria(array $criteria): array
+    {
+        $includeSub1kCreators = (bool) ($criteria['includeSub1kCreators'] ?? false);
+
+        $criteria['includeSub1kCreators'] = $includeSub1kCreators;
+        $criteria['minimumFollowerFloor'] = $includeSub1kCreators
+            ? 0
+            : max(0, (int) ($criteria['minimumFollowerFloor'] ?? 1000));
+        $criteria['followerMin'] = 0;
+        $criteria['followerMax'] = 0;
+
+        return $criteria;
+    }
 }
+

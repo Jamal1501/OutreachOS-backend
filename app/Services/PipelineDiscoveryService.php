@@ -125,7 +125,7 @@ public function getJobState(string $jobId): ?array
         $enrichmentLimit = (int) ($payload['enrichmentLimit'] ?? 20);
         $dedupeAgainstCRM = (bool) ($payload['dedupeAgainstCRM'] ?? true);
         $rankingMetric = $this->resolveRankingMetric($platform, (string) ($payload['rankingMetric'] ?? ''));
-        $criteria = is_array($payload['criteria'] ?? null) ? $payload['criteria'] : [];
+        $criteria = $this->normalizeDiscoveryCriteria(is_array($payload['criteria'] ?? null) ? $payload['criteria'] : []);
         $brief = trim((string) ($payload['brief'] ?? ''));
         $projectId = $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId($sheetId)->id : null;
 
@@ -768,8 +768,7 @@ private function selectProfilesFromRankedPosts(
     private function resolveSelectionPoolLimit(int $enrichmentLimit, array $criteria = []): int
     {
         $base = max(1, $enrichmentLimit);
-        $needsQualityBuffer = !empty($criteria['followerMin']) || !empty($criteria['followerMax'])
-            || !empty($criteria['minimumLikes']) || !empty($criteria['minimumComments']) || !empty($criteria['minimumViews']);
+        $needsQualityBuffer = !empty($criteria['minimumLikes']) || !empty($criteria['minimumComments']) || !empty($criteria['minimumViews']);
 
         if (!$needsQualityBuffer) {
             return $base;
@@ -787,6 +786,12 @@ private function selectProfilesFromRankedPosts(
         $likes = (int) ($this->nullableInt(Arr::get($item, 'likesCount', Arr::get($item, 'diggCount'))) ?? 0);
         $comments = (int) ($this->nullableInt(Arr::get($item, 'commentsCount', Arr::get($item, 'commentCount'))) ?? 0);
         $views = (int) ($this->nullableInt(Arr::get($item, 'playCount')) ?? 0);
+        $followerEstimate = $this->extractDiscoveryFollowerEstimate($item);
+        $minimumFollowerFloor = $this->minimumFollowerFloor($criteria);
+
+        if ($minimumFollowerFloor > 0 && $followerEstimate !== null && $followerEstimate < $minimumFollowerFloor) {
+            return false;
+        }
 
         if ($minimumLikes > 0 && $likes < $minimumLikes) {
             return false;
@@ -810,26 +815,19 @@ private function selectProfilesFromRankedPosts(
 
     private function rangeBucketForFollowerEstimate(?int $followers, array $criteria): int
     {
-        $min = max(0, (int) ($criteria['followerMin'] ?? 0));
-        $max = max(0, (int) ($criteria['followerMax'] ?? 0));
+        $minimumFollowerFloor = $this->minimumFollowerFloor($criteria);
 
-        if ($min === 0 && $max === 0) {
+        if ($minimumFollowerFloor <= 0) {
             return 0;
         }
         if ($followers === null) {
-            return 2;
+            return 1;
         }
-        if (($min === 0 || $followers >= $min) && ($max === 0 || $followers <= $max)) {
-            return 0;
+        if ($followers < $minimumFollowerFloor) {
+            return 3;
         }
 
-        $targetFloor = $min > 0 ? $min : $max;
-        $targetCeil = $max > 0 ? $max : $min;
-        $distance = $followers < $targetFloor ? ($targetFloor - $followers) : ($followers - $targetCeil);
-        $base = max(1, $targetCeil > 0 ? $targetCeil : $targetFloor);
-        $ratio = $distance / $base;
-
-        return $ratio <= 0.35 ? 1 : 3;
+        return 0;
     }
 
     private function shortlistCreatorsForOutput(array $creators, int $finalLimit, array $criteria = []): array
@@ -919,6 +917,40 @@ private function selectProfilesFromRankedPosts(
         }
 
         return 1000000000;
+    }
+
+    private function normalizeDiscoveryCriteria(array $criteria): array
+    {
+        $includeSub1kCreators = (bool) ($criteria['includeSub1kCreators'] ?? false);
+        $criteria['includeSub1kCreators'] = $includeSub1kCreators;
+        $criteria['minimumFollowerFloor'] = $includeSub1kCreators
+            ? 0
+            : max(0, (int) ($criteria['minimumFollowerFloor'] ?? 1000));
+        $criteria['followerMin'] = 0;
+        $criteria['followerMax'] = 0;
+
+        return $criteria;
+    }
+
+    private function minimumFollowerFloor(array $criteria): int
+    {
+        if ((bool) ($criteria['includeSub1kCreators'] ?? false)) {
+            return 0;
+        }
+
+        return max(0, (int) ($criteria['minimumFollowerFloor'] ?? 1000));
+    }
+
+    private function passesCreatorFollowerFloor(array $creator, array $criteria): bool
+    {
+        $minimumFollowerFloor = $this->minimumFollowerFloor($criteria);
+        if ($minimumFollowerFloor <= 0) {
+            return true;
+        }
+
+        $followers = $this->nullableInt($creator['followers'] ?? null);
+
+        return $followers !== null && $followers >= $minimumFollowerFloor;
     }
 
     private function normalizeProfileUrlKey(string $profileUrl): string
@@ -1011,6 +1043,10 @@ private function selectProfilesFromRankedPosts(
             $creator = $platform === 'instagram'
                 ? $this->normalizeInstagramCreator($item, $selectedProfilesByUrl, $sourceHashtagsByUrl, $inputHashtags)
                 : $this->normalizeTikTokCreator($item, $selectedProfilesByUrl, $sourceHashtagsByUrl, $inputHashtags);
+
+            if ($creator !== null && !$this->passesCreatorFollowerFloor($creator, $criteria)) {
+                $creator = null;
+            }
 
             if ($creator !== null) {
                 $scoreDetail = $this->scoring->detailedScore($creator, null, $criteria);

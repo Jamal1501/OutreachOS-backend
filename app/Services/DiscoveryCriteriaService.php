@@ -129,6 +129,23 @@ class DiscoveryCriteriaService
         $weightedScore = 0.0;
 
         $followers = $this->nullableInt($creator['followers'] ?? null);
+        $minimumFollowerFloor = $this->minimumFollowerFloor($criteria);
+        if ($minimumFollowerFloor > 0) {
+            $hardRequested++;
+            $weightedTotal += 25;
+
+            if ($followers === null) {
+                $hardFailures[] = 'missing_followers';
+                $rejectReasons[] = 'Follower count is missing.';
+            } elseif ($followers < $minimumFollowerFloor) {
+                $hardFailures[] = 'below_default_follower_floor';
+                $rejectReasons[] = 'Below the default 1k follower floor.';
+            } else {
+                $weightedScore += 25;
+                $matchReasons[] = 'Passed the default 1k follower floor.';
+            }
+        }
+
         $followerMin = max(0, (int) ($criteria['followerMin'] ?? 0));
         $followerMax = max(0, (int) ($criteria['followerMax'] ?? 0));
         if ($followerMin > 0 || $followerMax > 0) {
@@ -420,6 +437,15 @@ class DiscoveryCriteriaService
         return is_numeric($value) ? (int) $value : null;
     }
 
+    private function minimumFollowerFloor(array $criteria): int
+    {
+        if ((bool) ($criteria['includeSub1kCreators'] ?? false)) {
+            return 0;
+        }
+
+        return max(0, (int) ($criteria['minimumFollowerFloor'] ?? 1000));
+    }
+
     private function locationTokens(string $locationText, array $languageHints): array
     {
         $normalized = strtolower(trim($locationText));
@@ -449,6 +475,9 @@ class DiscoveryCriteriaService
     private function hardFilterList(array $criteria): array
     {
         $filters = [];
+        if ($this->minimumFollowerFloor($criteria) > 0) {
+            $filters[] = 'minimum_followers';
+        }
         if ((int) ($criteria['followerMin'] ?? 0) > 0 || (int) ($criteria['followerMax'] ?? 0) > 0) {
             $filters[] = 'followers';
         }
