@@ -1001,7 +1001,8 @@ private function selectProfilesFromRankedPosts(
         array $enrichmentItems,
         array $selectedProfilesByUrl,
         array $sourceHashtagsByUrl,
-        array $inputHashtags
+        array $inputHashtags,
+        array $criteria = []
     ): array
     {
         $creators = [];
