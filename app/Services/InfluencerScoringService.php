@@ -6,12 +6,12 @@ use Carbon\Carbon;
 
 class InfluencerScoringService
 {
-    public function score(array $creator, ?array $sourceRow = null): int
+    public function score(array $creator, ?array $sourceRow = null, array $criteria = []): int
     {
-        return $this->detailedScore($creator, $sourceRow)['score'];
+        return $this->detailedScore($creator, $sourceRow, $criteria)['score'];
     }
 
-    public function detailedScore(array $creator, ?array $sourceRow = null): array
+    public function detailedScore(array $creator, ?array $sourceRow = null, array $criteria = []): array
     {
         $followers = $this->toFloat($creator['followers'] ?? $creator['Followers'] ?? $sourceRow['followersCount'] ?? $sourceRow['Followers'] ?? 0);
         $engagement = $this->resolveEngagementRate($creator, $sourceRow);
@@ -30,24 +30,23 @@ class InfluencerScoringService
         $isVerified = (bool) ($creator['isVerified'] ?? $sourceRow['isVerified'] ?? false);
         $bio = strtolower(trim((string) ($creator['bio'] ?? $sourceRow['bio'] ?? '')));
         $sourceHashtags = array_map('strtolower', array_values(array_filter((array) ($creator['sourceHashtags'] ?? []))));
+        $nicheHints = array_map('strtolower', array_values(array_filter((array) ($creator['nicheHints'] ?? []))));
+        $briefKeywords = array_map('strtolower', array_values(array_filter(array_merge(
+            (array) ($criteria['hashtags'] ?? []),
+            (array) ($criteria['nicheKeywords'] ?? []),
+            (array) ($criteria['mustHaveSignals'] ?? []),
+        ))));
         $recencyDays = $this->resolveRecencyDays($creator, $sourceRow);
 
         $signals = [];
         $risks = [];
 
-        $followerScore = match (true) {
-            $followers <= 0 => 0,
-            $followers < 1000 => 8,
-            $followers < 5000 => 18,
-            $followers < 25000 => 28,
-            $followers < 100000 => 24,
-            $followers < 500000 => 16,
-            default => 10,
-        };
-        if ($followers >= 1000 && $followers < 25000) {
-            $signals[] = 'Follower range fits micro-influencer outreach.';
-        } elseif ($followers <= 0) {
-            $risks[] = 'Follower count missing.';
+        [$followerScore, $followerSignal, $followerRisk] = $this->scoreFollowerFit($followers, $criteria);
+        if ($followerSignal) {
+            $signals[] = $followerSignal;
+        }
+        if ($followerRisk) {
+            $risks[] = $followerRisk;
         }
 
         $engagementScore = match (true) {
@@ -71,7 +70,9 @@ class InfluencerScoringService
             $contentQuantity >= 1 => 3,
             default => 0,
         };
-        if ($contentQuantity < 3) {
+        if ($contentQuantity >= 12) {
+            $signals[] = 'Content output is consistently usable.';
+        } elseif ($contentQuantity < 3) {
             $risks[] = 'Very thin recent content sample.';
         }
 
@@ -82,7 +83,9 @@ class InfluencerScoringService
             $recencyDays <= 60 => 3,
             default => 0,
         };
-        if ($recencyDays !== null && $recencyDays > 60) {
+        if ($recencyDays !== null && $recencyDays <= 30) {
+            $signals[] = 'Recent posting activity is healthy.';
+        } elseif ($recencyDays !== null && $recencyDays > 60) {
             $risks[] = 'Recent activity looks stale.';
         }
 
@@ -99,13 +102,23 @@ class InfluencerScoringService
         }
 
         $nicheScore = 0;
-        if ($bio !== '' && $sourceHashtags !== []) {
-            foreach ($sourceHashtags as $tag) {
+        $nicheUniverse = array_values(array_unique(array_filter(array_merge($sourceHashtags, $nicheHints, $briefKeywords))));
+        if ($bio !== '' && $nicheUniverse !== []) {
+            $matches = 0;
+            foreach ($nicheUniverse as $tag) {
                 if ($tag !== '' && str_contains($bio, $tag)) {
-                    $nicheScore = 8;
-                    $signals[] = 'Bio matches campaign niche signals.';
-                    break;
+                    $matches++;
                 }
+            }
+            $nicheScore = match (true) {
+                $matches >= 2 => 8,
+                $matches === 1 => 5,
+                default => 0,
+            };
+            if ($nicheScore >= 8) {
+                $signals[] = 'Bio strongly reflects the campaign niche.';
+            } elseif ($nicheScore > 0) {
+                $signals[] = 'Bio shows some niche alignment.';
             }
         }
 
@@ -156,6 +169,51 @@ class InfluencerScoringService
         $score = max(0, min(100, (float) $score));
         $filled = (int) round($score / 10);
         return str_repeat('█', $filled) . str_repeat('░', max(0, 10 - $filled));
+    }
+
+    private function scoreFollowerFit(float $followers, array $criteria): array
+    {
+        $min = max(0, (int) ($criteria['followerMin'] ?? 0));
+        $max = max(0, (int) ($criteria['followerMax'] ?? 0));
+
+        if ($followers <= 0) {
+            return [0, null, 'Follower count missing.'];
+        }
+
+        if ($min > 0 || $max > 0) {
+            $lower = $min > 0 ? $min : 0;
+            $upper = $max > 0 ? $max : PHP_INT_MAX;
+            if ($followers >= $lower && $followers <= $upper) {
+                return [28, 'Follower range fits the requested brief.', null];
+            }
+
+            $target = $followers < $lower ? $lower : $upper;
+            $distance = abs($followers - $target);
+            $base = max(1, $target);
+            $ratio = $distance / $base;
+
+            return match (true) {
+                $ratio <= 0.15 => [20, 'Follower range is close to the requested brief.', null],
+                $ratio <= 0.35 => [12, null, 'Follower range is slightly outside the requested brief.'],
+                $ratio <= 0.60 => [5, null, 'Follower range is noticeably outside the requested brief.'],
+                default => [0, null, 'Follower range is far outside the requested brief.'],
+            };
+        }
+
+        $score = match (true) {
+            $followers < 1000 => 8,
+            $followers < 5000 => 18,
+            $followers < 25000 => 28,
+            $followers < 100000 => 24,
+            $followers < 500000 => 16,
+            default => 10,
+        };
+
+        $signal = $followers >= 1000 && $followers < 25000
+            ? 'Follower range fits typical micro-influencer outreach.'
+            : null;
+
+        return [$score, $signal, null];
     }
 
     private function resolveEngagementRate(array $creator, ?array $sourceRow = null): float

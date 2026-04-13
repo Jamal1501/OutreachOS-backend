@@ -43,6 +43,7 @@ class DiscoveryCriteriaService
             $creator['recommendedForImport'] = $evaluation['recommendedForImport'];
             $creator['matchReasons'] = $evaluation['matchReasons'];
             $creator['rejectReasons'] = $evaluation['rejectReasons'];
+            $creator['priorityScore'] = $this->priorityScoreFor($creator, $evaluation);
 
             if (!$evaluation['passesHardFilters']) {
                 $hardFiltered++;
@@ -74,10 +75,22 @@ class DiscoveryCriteriaService
                 return $rankA <=> $rankB;
             }
 
+            $priorityA = (float) ($a['priorityScore'] ?? 0);
+            $priorityB = (float) ($b['priorityScore'] ?? 0);
+            if ($priorityA !== $priorityB) {
+                return $priorityB <=> $priorityA;
+            }
+
             $scoreA = (float) ($a['fitScore'] ?? 0);
             $scoreB = (float) ($b['fitScore'] ?? 0);
             if ($scoreA !== $scoreB) {
                 return $scoreB <=> $scoreA;
+            }
+
+            $valueA = (float) ($a['valueScore'] ?? 0);
+            $valueB = (float) ($b['valueScore'] ?? 0);
+            if ($valueA !== $valueB) {
+                return $valueB <=> $valueA;
             }
 
             return ((int) ($b['followers'] ?? 0)) <=> ((int) ($a['followers'] ?? 0));
@@ -109,33 +122,51 @@ class DiscoveryCriteriaService
         $matchReasons = [];
         $rejectReasons = [];
         $hardFailures = [];
+        $hardRequested = 0;
         $softRequested = 0;
         $softMatches = 0;
+        $weightedTotal = 0.0;
+        $weightedScore = 0.0;
 
         $followers = $this->nullableInt($creator['followers'] ?? null);
         $followerMin = max(0, (int) ($criteria['followerMin'] ?? 0));
         $followerMax = max(0, (int) ($criteria['followerMax'] ?? 0));
-        if ($followerMin > 0 && ($followers === null || $followers < $followerMin)) {
-            $hardFailures[] = 'followers_below_min';
-            $rejectReasons[] = 'Followers below requested minimum.';
-        }
-        if ($followerMax > 0 && ($followers === null || $followers > $followerMax)) {
-            $hardFailures[] = 'followers_above_max';
-            $rejectReasons[] = 'Followers above requested maximum.';
-        }
-        if ($followers !== null && ($followerMin > 0 || $followerMax > 0) && $hardFailures === []) {
-            $matchReasons[] = 'Follower range matches.';
+        if ($followerMin > 0 || $followerMax > 0) {
+            $hardRequested++;
+            $weightedTotal += 45;
+            $rangeAccuracy = $this->followerRangeAccuracy($followers, $followerMin, $followerMax);
+            $weightedScore += $rangeAccuracy * 0.45;
+
+            if ($followers === null) {
+                $hardFailures[] = 'missing_followers';
+                $rejectReasons[] = 'Follower count is missing.';
+            } elseif ($followerMin > 0 && $followers < $followerMin) {
+                $hardFailures[] = 'followers_below_min';
+                $rejectReasons[] = 'Followers below requested minimum.';
+            } elseif ($followerMax > 0 && $followers > $followerMax) {
+                $hardFailures[] = 'followers_above_max';
+                $rejectReasons[] = 'Followers above requested maximum.';
+            } else {
+                $matchReasons[] = 'Follower range matches.';
+            }
         }
 
         $activeWithinDays = max(0, (int) ($criteria['activeWithinDays'] ?? 0));
         $latestPostAt = trim((string) ($creator['latestPostAt'] ?? ''));
         if ($activeWithinDays > 0) {
+            $hardRequested++;
+            $weightedTotal += 20;
             $latest = $latestPostAt !== '' ? $this->parseDate($latestPostAt) : null;
             if (!$latest) {
                 $hardFailures[] = 'missing_recent_post';
                 $rejectReasons[] = 'Recent activity could not be verified.';
             } else {
                 $ageDays = $latest->diffInDays(CarbonImmutable::now(), false);
+                $activityAccuracy = $ageDays <= $activeWithinDays
+                    ? 100
+                    : max(0, 100 - ((int) ceil((($ageDays - $activeWithinDays) / max(7, $activeWithinDays)) * 100)));
+                $weightedScore += $activityAccuracy * 0.20;
+
                 if ($ageDays > $activeWithinDays) {
                     $hardFailures[] = 'stale_activity';
                     $rejectReasons[] = 'Latest post is older than requested.';
@@ -148,8 +179,10 @@ class DiscoveryCriteriaService
         $locationText = trim((string) ($criteria['locationText'] ?? ''));
         if ($locationText !== '') {
             $softRequested++;
+            $weightedTotal += 10;
             if ($this->matchesLocation($creator, $locationText, (array) ($criteria['languageHints'] ?? []))) {
                 $softMatches++;
+                $weightedScore += 10;
                 $matchReasons[] = 'Location signals fit.';
             } else {
                 $rejectReasons[] = 'No convincing location signal found.';
@@ -159,8 +192,10 @@ class DiscoveryCriteriaService
         $genderTarget = strtolower(trim((string) ($criteria['genderTarget'] ?? 'any')));
         if ($genderTarget !== '' && $genderTarget !== 'any') {
             $softRequested++;
+            $weightedTotal += 10;
             if ($this->matchesGender($creator, $genderTarget)) {
                 $softMatches++;
+                $weightedScore += 10;
                 $matchReasons[] = 'Gender signals fit.';
             } else {
                 $rejectReasons[] = 'No convincing gender signal found.';
@@ -170,8 +205,10 @@ class DiscoveryCriteriaService
         $languageHints = array_values(array_filter((array) ($criteria['languageHints'] ?? [])));
         if ($languageHints !== []) {
             $softRequested++;
+            $weightedTotal += 15;
             if ($this->matchesLanguage($creator, $languageHints)) {
                 $softMatches++;
+                $weightedScore += 15;
                 $matchReasons[] = 'Language signals fit.';
             } else {
                 $rejectReasons[] = 'Language signals do not fit.';
@@ -183,10 +220,15 @@ class DiscoveryCriteriaService
             (array) ($criteria['hashtags'] ?? []),
             (array) ($criteria['mustHaveSignals'] ?? []),
         )));
-        if ($nicheKeywords !== []) {
+        $nicheRequested = $nicheKeywords !== [];
+        $nicheMatched = false;
+        if ($nicheRequested) {
             $softRequested++;
+            $weightedTotal += 25;
             if ($this->matchesNiche($creator, $nicheKeywords, (array) ($criteria['avoidSignals'] ?? []))) {
                 $softMatches++;
+                $nicheMatched = true;
+                $weightedScore += 25;
                 $matchReasons[] = 'Bio/content signals fit the niche.';
             } else {
                 $rejectReasons[] = 'Niche match looks weak.';
@@ -202,24 +244,33 @@ class DiscoveryCriteriaService
         };
         $passesSoftFilters = $softMatches >= $requiredSoftMatches;
 
-        $matchAccuracy = (int) round(($softRequested > 0 ? ($softMatches / $softRequested) : ($passesHardFilters ? 1 : 0)) * 100);
+        $rawAccuracy = $weightedTotal > 0 ? ($weightedScore / $weightedTotal) * 100 : ($passesHardFilters ? 60 : 0);
+        $evidenceCap = match (true) {
+            $softRequested <= 0 && $hardRequested > 0 => 84,
+            $softRequested <= 0 && $hardRequested <= 0 => 60,
+            $softRequested === 1 => 92,
+            default => 100,
+        };
+        $matchAccuracy = (int) round(min($evidenceCap, $rawAccuracy));
 
-        $fitScore = 50;
-        if ($passesHardFilters) {
-            $fitScore += 20;
-        }
-        $fitScore += (int) round(($softRequested > 0 ? ($softMatches / $softRequested) : 1) * 30);
+        $fitScore = $matchAccuracy;
         if (!$passesHardFilters) {
-            $fitScore -= 40;
-        }
-        if (!$passesSoftFilters) {
-            $fitScore -= 15;
+            $fitScore = max(0, $fitScore - 25);
+        } elseif ($softRequested > 0 && !$passesSoftFilters) {
+            $fitScore = max(0, $fitScore - 10);
         }
         $fitScore = max(0, min(100, $fitScore));
 
-        $matchCategory = $passesHardFilters && $passesSoftFilters
-            ? 'full'
-            : ($passesHardFilters ? 'partial' : 'weak');
+        $matchCategory = 'weak';
+        if ($passesHardFilters) {
+            if ($softRequested === 0) {
+                $matchCategory = 'partial';
+            } elseif ($passesSoftFilters && (!$nicheRequested || $nicheMatched) && $matchAccuracy >= 75) {
+                $matchCategory = 'full';
+            } elseif ($softMatches > 0 || $matchAccuracy >= 55) {
+                $matchCategory = 'partial';
+            }
+        }
 
         return [
             'passesHardFilters' => $passesHardFilters,
@@ -234,6 +285,43 @@ class DiscoveryCriteriaService
             'matchReasons' => array_values(array_unique($matchReasons)),
             'rejectReasons' => array_values(array_unique($rejectReasons)),
         ];
+    }
+
+    private function priorityScoreFor(array $creator, array $evaluation): int
+    {
+        $fitScore = (float) ($evaluation['fitScore'] ?? 0);
+        $valueScore = max(0, min(100, (float) ($creator['valueScore'] ?? 0)));
+
+        return (int) round(($fitScore * 0.70) + ($valueScore * 0.30));
+    }
+
+    private function followerRangeAccuracy(?int $followers, int $min, int $max): int
+    {
+        if ($min === 0 && $max === 0) {
+            return $followers !== null ? 70 : 0;
+        }
+
+        if ($followers === null || $followers <= 0) {
+            return 0;
+        }
+
+        $lower = $min > 0 ? $min : 0;
+        $upper = $max > 0 ? $max : PHP_INT_MAX;
+        if ($followers >= $lower && $followers <= $upper) {
+            return 100;
+        }
+
+        $target = $followers < $lower ? $lower : $upper;
+        $distance = abs($followers - $target);
+        $base = max(1, $target);
+        $ratio = $distance / $base;
+
+        return match (true) {
+            $ratio <= 0.15 => 70,
+            $ratio <= 0.35 => 40,
+            $ratio <= 0.60 => 15,
+            default => 0,
+        };
     }
 
     private function matchesLocation(array $creator, string $locationText, array $languageHints): bool

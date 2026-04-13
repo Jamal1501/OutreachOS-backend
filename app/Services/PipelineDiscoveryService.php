@@ -21,6 +21,7 @@ class PipelineDiscoveryService
         private ProjectResolverService $projects,
         private DiscoveryCriteriaService $criteriaService,
         private ScraperRegistryService $scrapers,
+        private InfluencerScoringService $scoring,
     ) {
     }
 
@@ -269,8 +270,10 @@ public function getJobState(string $jobId): ?array
                 $enrichmentItems,
                 $this->profilesByProfileUrl($profiles),
                 $sourceHashtagsByUrl,
-                $hashtags
+                $hashtags,
+                $criteria
             );
+            $creators = $this->sortCreatorsByPriority($creators);
             $filterSummary = null;
             if ($criteria !== []) {
                 $filtered = $this->criteriaService->apply($creators, $criteria);
@@ -843,6 +846,12 @@ private function selectProfilesFromRankedPosts(
                 return $catA <=> $catB;
             }
 
+            $priorityA = (float) ($a['priorityScore'] ?? 0);
+            $priorityB = (float) ($b['priorityScore'] ?? 0);
+            if ($priorityA !== $priorityB) {
+                return $priorityB <=> $priorityA;
+            }
+
             $distanceA = $this->followerDistanceFromRange((int) ($a['followers'] ?? 0), $criteria);
             $distanceB = $this->followerDistanceFromRange((int) ($b['followers'] ?? 0), $criteria);
             if ($distanceA !== $distanceB) {
@@ -855,10 +864,37 @@ private function selectProfilesFromRankedPosts(
                 return $scoreB <=> $scoreA;
             }
 
+            $valueA = (float) ($a['valueScore'] ?? 0);
+            $valueB = (float) ($b['valueScore'] ?? 0);
+            if ($valueA !== $valueB) {
+                return $valueB <=> $valueA;
+            }
+
             return ((int) ($b['followers'] ?? 0)) <=> ((int) ($a['followers'] ?? 0));
         });
 
         return array_slice(array_values($creators), 0, $finalLimit);
+    }
+
+    private function sortCreatorsByPriority(array $creators): array
+    {
+        usort($creators, function (array $a, array $b) {
+            $priorityA = (float) ($a['priorityScore'] ?? 0);
+            $priorityB = (float) ($b['priorityScore'] ?? 0);
+            if ($priorityA !== $priorityB) {
+                return $priorityB <=> $priorityA;
+            }
+
+            $valueA = (float) ($a['valueScore'] ?? 0);
+            $valueB = (float) ($b['valueScore'] ?? 0);
+            if ($valueA !== $valueB) {
+                return $valueB <=> $valueA;
+            }
+
+            return ((int) ($b['followers'] ?? 0)) <=> ((int) ($a['followers'] ?? 0));
+        });
+
+        return array_values($creators);
     }
 
     private function followerDistanceFromRange(int $followers, array $criteria): int
@@ -974,6 +1010,15 @@ private function selectProfilesFromRankedPosts(
             $creator = $platform === 'instagram'
                 ? $this->normalizeInstagramCreator($item, $selectedProfilesByUrl, $sourceHashtagsByUrl, $inputHashtags)
                 : $this->normalizeTikTokCreator($item, $selectedProfilesByUrl, $sourceHashtagsByUrl, $inputHashtags);
+
+            if ($creator !== null) {
+                $scoreDetail = $this->scoring->detailedScore($creator, null, $criteria);
+                $creator['valueScore'] = (int) ($scoreDetail['score'] ?? 0);
+                $creator['valueTier'] = strtolower((string) ($scoreDetail['tier'] ?? $this->scoring->tier($creator['valueScore'])));
+                $creator['valueSignals'] = $scoreDetail['signals'] ?? [];
+                $creator['valueRisks'] = $scoreDetail['risks'] ?? [];
+                $creator['priorityScore'] = (int) ($creator['valueScore'] ?? 0);
+            }
 
             if ($creator === null) {
                 continue;
