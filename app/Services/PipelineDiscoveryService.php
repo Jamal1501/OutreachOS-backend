@@ -124,7 +124,7 @@ public function getJobState(string $jobId): ?array
         $discoveryLimit = (int) ($payload['discoveryLimit'] ?? 50);
         $enrichmentLimit = (int) ($payload['enrichmentLimit'] ?? 20);
         $dedupeAgainstCRM = (bool) ($payload['dedupeAgainstCRM'] ?? true);
-        $rankingMetric = $this->resolveRankingMetric($platform, (string) ($payload['rankingMetric'] ?? ''));
+        [$rankingMetric, $rankingDirection] = $this->resolveRankingPreference($platform, (string) ($payload['rankingMetric'] ?? ''));
         $criteria = $this->normalizeDiscoveryCriteria(is_array($payload['criteria'] ?? null) ? $payload['criteria'] : []);
         $brief = trim((string) ($payload['brief'] ?? ''));
         $projectId = $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId($sheetId)->id : null;
@@ -185,6 +185,7 @@ public function getJobState(string $jobId): ?array
                 $hashtags,
                 $selectionPoolLimit,
                 $rankingMetric,
+                $rankingDirection,
                 $criteria
             );
             $crmMatchesByProfileUrl = $this->findExistingCrmMatches($projectId, $sheetId, $platform, $profiles);
@@ -197,6 +198,7 @@ public function getJobState(string $jobId): ?array
                 'jobId' => $jobId,
                 'platform' => $platform,
                 'rankingMetric' => $rankingMetric,
+                'rankingDirection' => $rankingDirection,
                 'discoveryItemCount' => count($discoveryItems),
                 'selectedProfileCount' => count($profiles),
                 'sampleDiscoveryItems' => array_slice($discoveryItems, 0, 2),
@@ -206,6 +208,7 @@ public function getJobState(string $jobId): ?array
                 'step' => 'extract_urls',
                 'status' => 'completed',
                 'rankingMetric' => $rankingMetric,
+                'rankingDirection' => $rankingDirection,
                 'uniqueProfiles' => count($profiles),
             ];
             $this->completeStep($jobId, 'extract_urls', end($stepResults));
@@ -617,6 +620,7 @@ private function selectProfilesFromRankedPosts(
         array $inputHashtags,
         int $selectionLimit,
         string $rankingMetric,
+        string $rankingDirection = 'desc',
         array $criteria = []
     ): array {
         $rankedPosts = [];
@@ -664,14 +668,16 @@ private function selectProfilesFromRankedPosts(
             ];
         }
 
-        usort($rankedPosts, function (array $a, array $b) use ($rankingMetric) {
+        usort($rankedPosts, function (array $a, array $b) use ($rankingMetric, $rankingDirection) {
             $bucketCompare = ((int) ($a['rangeBucket'] ?? 9)) <=> ((int) ($b['rangeBucket'] ?? 9));
             if ($bucketCompare !== 0) {
                 return $bucketCompare;
             }
 
             if ($rankingMetric !== 'none') {
-                $scoreCompare = ((int) ($b['metricValue'] ?? 0)) <=> ((int) ($a['metricValue'] ?? 0));
+                $scoreCompare = $rankingDirection === 'asc'
+                    ? (((int) ($a['metricValue'] ?? 0)) <=> ((int) ($b['metricValue'] ?? 0)))
+                    : (((int) ($b['metricValue'] ?? 0)) <=> ((int) ($a['metricValue'] ?? 0)));
                 if ($scoreCompare !== 0) {
                     return $scoreCompare;
                 }
@@ -739,19 +745,33 @@ private function selectProfilesFromRankedPosts(
         return trim((string) Arr::get($item, 'webVideoUrl', Arr::get($item, 'url', '')));
     }
 
-    private function resolveRankingMetric(string $platform, string $requested): string
+    private function resolveRankingPreference(string $platform, string $requested): array
     {
         $requested = strtolower(trim($requested));
 
-        if ($platform === 'tiktok') {
-            return in_array($requested, ['none', 'views', 'likes', 'comments', 'shares'], true)
-                ? $requested
-                : 'views';
+        $allowedMetrics = $platform === 'tiktok'
+            ? ['views', 'likes', 'comments', 'shares']
+            : ['views', 'likes', 'comments'];
+        $defaultMetric = $platform === 'tiktok' ? 'views' : 'likes';
+
+        if ($requested === 'none') {
+            return ['none', 'desc'];
         }
 
-        return in_array($requested, ['none', 'views', 'likes', 'comments'], true)
-            ? $requested
-            : 'likes';
+        if (preg_match('/^(views|likes|comments|shares)_(asc|desc)$/', $requested, $matches) === 1) {
+            $metric = $matches[1];
+            $direction = $matches[2];
+
+            if (in_array($metric, $allowedMetrics, true)) {
+                return [$metric, $direction];
+            }
+        }
+
+        if (in_array($requested, $allowedMetrics, true)) {
+            return [$requested, 'desc'];
+        }
+
+        return [$defaultMetric, 'desc'];
     }
 
     private function metricValueForDiscoveryItem(string $platform, array $item, string $metric): int
