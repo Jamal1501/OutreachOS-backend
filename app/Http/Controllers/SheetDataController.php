@@ -1278,45 +1278,71 @@ public function creatorDecisionSheet(Request $request, string $id)
         $project = $this->projects->findByWorkbookId($sheetId);
 
         if ($project) {
-            $profiles = CreatorProfile::query()->where('project_id', $project->id)->get();
-            $tasks = Task::query()->where('project_id', $project->id)->get();
-            $outreachEvents = OutreachEvent::query()->where('project_id', $project->id)->get();
-            $discoveredCount = DiscoveryItem::query()
-    ->where('project_id', $project->id)
-    ->selectRaw("
-        COUNT(DISTINCT COALESCE(
-            NULLIF(duplicate_key, ''),
-            NULLIF(handle, ''),
-            NULLIF(username, ''),
-            NULLIF(post_url, ''),
-            id::text
-        )) as aggregate
-    ")
-    ->value('aggregate') ?? 0;
-
+            $projectId = $project->id;
             $today = now()->toDateString();
-            $normalizedStates = $profiles->map(function (CreatorProfile $profile) {
-                $rawState = (string) ($profile->lifecycle_state ?: $profile->status ?: '');
-                return $this->lifecycle->normalizeState($rawState, 'enriched');
-            });
 
-            $readyForOutreach = $profiles->filter(function (CreatorProfile $profile) {
-                $state = $this->lifecycle->normalizeState((string) ($profile->lifecycle_state ?: $profile->status ?: ''), 'enriched');
-                return in_array($state, ['approved_for_outreach', 'queued'], true)
-                    || ($state === 'enriched' && (float) ($profile->value_score ?? 0) >= 55);
-            })->count();
+            $creatorsEnriched = CreatorProfile::query()
+                ->where('project_id', $projectId)
+                ->count();
+
+            $readyForOutreach = CreatorProfile::query()
+                ->where('project_id', $projectId)
+                ->where(function ($query) {
+                    $query->whereIn('lifecycle_state', ['approved_for_outreach', 'queued'])
+                        ->orWhere(function ($nested) {
+                            $nested->where('lifecycle_state', 'enriched')
+                                ->where('value_score', '>=', 55);
+                        })
+                        ->orWhere(function ($nested) {
+                            $nested->whereNull('lifecycle_state')
+                                ->whereIn('status', ['APPROVED_FOR_OUTREACH', 'QUEUED']);
+                        });
+                })
+                ->count();
+
+            $tasksDueToday = Task::query()
+                ->where('project_id', $projectId)
+                ->whereDate('due_at', $today)
+                ->whereNotIn(DB::raw("UPPER(COALESCE(status, 'PENDING'))"), ['DONE', 'COMPLETED', 'SKIPPED'])
+                ->count();
+
+            $outreachSent = OutreachEvent::query()
+                ->where('project_id', $projectId)
+                ->where(function ($query) {
+                    $query->where('event_type', 'ILIKE', '%sent%')
+                        ->orWhere('event_type', 'ILIKE', '%outreach%');
+                })
+                ->count();
+
+            $repliesReceived = OutreachEvent::query()
+                ->where('project_id', $projectId)
+                ->where(function ($query) {
+                    $query->where('event_type', 'ILIKE', '%reply%')
+                        ->orWhere('event_type', 'ILIKE', '%accepted%')
+                        ->orWhere('event_type', 'ILIKE', '%deal_won%');
+                })
+                ->count();
+
+            $discoveredCount = DiscoveryItem::query()
+                ->where('project_id', $projectId)
+                ->selectRaw("
+                    COUNT(DISTINCT COALESCE(
+                        NULLIF(duplicate_key, ''),
+                        NULLIF(handle, ''),
+                        NULLIF(username, ''),
+                        NULLIF(post_url, ''),
+                        id::text
+                    )) as aggregate
+                ")
+                ->value('aggregate') ?? 0;
 
             $metrics = [
                 'creatorsDiscovered' => $discoveredCount,
-                'creatorsEnriched' => $profiles->count(),
+                'creatorsEnriched' => $creatorsEnriched,
                 'readyForOutreach' => $readyForOutreach,
-                'tasksDueToday' => $tasks->filter(function (Task $task) use ($today) {
-                    $status = strtoupper(trim((string) ($task->status ?: 'PENDING')));
-                    $dueDate = optional($task->due_at)?->toDateString() ?? '';
-                    return $dueDate === $today && !in_array($status, ['DONE', 'COMPLETED', 'SKIPPED'], true);
-                })->count(),
-                'outreachSent' => $outreachEvents->filter(fn (OutreachEvent $event) => Str::contains(Str::upper((string) $event->event_type), ['SENT', 'OUTREACH']))->count(),
-                'repliesReceived' => $outreachEvents->filter(fn (OutreachEvent $event) => Str::contains(Str::upper((string) $event->event_type), ['REPLY', 'ACCEPTED', 'DEAL_WON']))->count(),
+                'tasksDueToday' => $tasksDueToday,
+                'outreachSent' => $outreachSent,
+                'repliesReceived' => $repliesReceived,
                 'scrapeSpend' => $providerSpendUsd,
                 'scrapeCreditsUsed' => $consumedScrapeCredits,
             ];

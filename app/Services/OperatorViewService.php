@@ -170,7 +170,7 @@ class OperatorViewService
             'platform' => $creator['platform'],
         ]);
 
-        return $this->buildDecisionPayload($creator, $duplicates, $relatedTasks, $timeline);
+        return $this->buildDecisionPayload($creator, $duplicates, $relatedTasks, $timeline, $linkedProfiles);
     }
 
 public function buildDecisionSheetForProfileId(string $sheetId, string $profileId): array
@@ -205,6 +205,17 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
             ->contains(fn (array $item) => $item['id'] === $creator['id'])
     ));
 
+    $linkedProfiles = array_values(array_filter(
+        $allCreators,
+        fn (array $item) => ($item['creatorIdentityId'] ?? null) !== null
+            && ($creator['creatorIdentityId'] ?? null) !== null
+            && (string) $item['creatorIdentityId'] === (string) $creator['creatorIdentityId']
+    ));
+
+    if ($linkedProfiles === []) {
+        $linkedProfiles = [$creator];
+    }
+
     $relatedTasks = $this->normalizeDbTasks(
         Task::query()
             ->where('project_id', $project->id)
@@ -237,7 +248,7 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         'platform' => $creator['platform'],
     ]);
 
-    return $this->buildDecisionPayload($creator, $duplicates, $relatedTasks, $timeline);
+    return $this->buildDecisionPayload($creator, $duplicates, $relatedTasks, $timeline, $linkedProfiles);
 }
 
     private function buildFromDatabase(int $projectId): array
@@ -300,9 +311,22 @@ $tasks = $this->normalizeDbTasks(
             OutreachEvent::query()->where('project_id', $projectId)->orderByDesc('sent_at')->limit(100)->get()->all()
         );
 
-        $outreachEvents = OutreachEvent::query()->where('project_id', $projectId)->get();
-        $outreachSent = $outreachEvents->filter(fn (OutreachEvent $event) => Str::contains(Str::upper((string) $event->event_type), ['SENT', 'OUTREACH']))->count();
-        $replies = $outreachEvents->filter(fn (OutreachEvent $event) => Str::contains(Str::upper((string) $event->event_type), ['REPLY', 'ACCEPTED', 'DEAL_WON']))->count();
+        $outreachSent = OutreachEvent::query()
+            ->where('project_id', $projectId)
+            ->where(function (Builder $query) {
+                $query->where('event_type', 'ILIKE', '%sent%')
+                    ->orWhere('event_type', 'ILIKE', '%outreach%');
+            })
+            ->count();
+
+        $replies = OutreachEvent::query()
+            ->where('project_id', $projectId)
+            ->where(function (Builder $query) {
+                $query->where('event_type', 'ILIKE', '%reply%')
+                    ->orWhere('event_type', 'ILIKE', '%accepted%')
+                    ->orWhere('event_type', 'ILIKE', '%deal_won%');
+            })
+            ->count();
 
         return [
             'metrics' => [
@@ -344,6 +368,17 @@ $tasks = $this->normalizeDbTasks(
             fn (array $warning) => collect($warning['creators'])->contains(fn (array $item) => $item['id'] === $creator['id'])
         ));
 
+        $linkedProfiles = array_values(array_filter(
+            $allCreators,
+            fn (array $item) => ($item['creatorIdentityId'] ?? null) !== null
+                && ($creator['creatorIdentityId'] ?? null) !== null
+                && (string) $item['creatorIdentityId'] === (string) $creator['creatorIdentityId']
+        ));
+
+        if ($linkedProfiles === []) {
+            $linkedProfiles = [$creator];
+        }
+
         $relatedTasks = $this->normalizeDbTasks(
             Task::query()
                 ->where('project_id', $projectId)
@@ -376,10 +411,10 @@ $tasks = $this->normalizeDbTasks(
             'platform' => $creator['platform'],
         ]);
 
-        return $this->buildDecisionPayload($creator, $duplicates, $relatedTasks, $timeline);
+        return $this->buildDecisionPayload($creator, $duplicates, $relatedTasks, $timeline, $linkedProfiles);
     }
 
-    private function buildDecisionPayload(array $creator, array $duplicates, array $relatedTasks, array $timeline): array
+    private function buildDecisionPayload(array $creator, array $duplicates, array $relatedTasks, array $timeline, array $linkedProfiles = []): array
     {
         $hardDisqualifiers = [];
         if (($creator['duplicateRisk'] ?? 'low') === 'high' || count($duplicates) > 0) {
@@ -411,6 +446,7 @@ $tasks = $this->normalizeDbTasks(
 
         return [
             'creator' => $creator,
+            'linkedProfiles' => array_values($linkedProfiles),
             'decisionSheet' => [
                 'whoTheyAre' => trim(implode(' · ', array_filter([
                     $creator['fullName'] ?: $creator['handle'],
