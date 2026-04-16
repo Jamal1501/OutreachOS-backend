@@ -54,6 +54,8 @@ Route::middleware(['api.auth', 'workspace.context'])->group(function () {
     Route::get('/creators/{id}/decision-sheet', [SheetDataController::class, 'creatorDecisionSheet']);
     Route::post('/creators/{id}/transition', [SheetDataController::class, 'transitionCreator']);
 
+    Route::get('/tasks/settings', [ApifyController::class, 'taskSettings']);
+    Route::put('/tasks/settings', [ApifyController::class, 'updateTaskSettings']);
     Route::post('/tasks/generate', [ApifyController::class, 'generateTasks']);
     Route::post('/tasks/create', [ApifyController::class, 'createTask']);
     Route::get('/tasks/cold-retry', [ApifyController::class, 'coldRetryTasks']);

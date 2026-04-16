@@ -13,6 +13,7 @@ use App\Services\ScraperRegistryService;
 use App\Services\ProviderUsageLogger;
 use App\Services\WorkspaceBillingService;
 use App\Services\WorkspaceContextService;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
@@ -429,6 +430,39 @@ public function mergeEnrichedToCreators(Request $request)
     }
 }
 
+    public function taskSettings(Request $request)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+        ]);
+
+        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
+        $data = $this->taskQueue->getTaskSettings($sheetId);
+
+        return response()->json([
+            'message' => 'Task settings fetched',
+            'sheetId' => $sheetId,
+            ...$data,
+        ]);
+    }
+
+    public function updateTaskSettings(Request $request)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+            'settings' => ['required', 'array'],
+        ]);
+
+        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
+        $data = $this->taskQueue->updateTaskSettings($sheetId, $validated['settings']);
+
+        return response()->json([
+            'message' => 'Task settings updated',
+            'sheetId' => $sheetId,
+            ...$data,
+        ]);
+    }
+
     public function generateTasks(Request $request)
     {
         $validated = $request->validate([
@@ -455,7 +489,7 @@ public function mergeEnrichedToCreators(Request $request)
             'platform' => ['required', 'string', Rule::in(['instagram', 'tiktok', 'email'])],
             'handle' => ['required', 'string', 'max:255'],
             'taskType' => ['required', 'string', Rule::in(['FOLLOW_REQUEST', 'DM_INVITE', 'DM_FOLLOWUP', 'EMAIL_SEND', 'REVIEW_CREATOR', 'COMMENT_ON_POST', 'NEGOTIATE_TERMS', 'CHECK_IN', 'CONFIRM_POSTED', 'CONFIRM_ACCEPTED', 'ARCHIVE_CREATOR'])],
-            'priority' => ['nullable', 'string', Rule::in(['LOW', 'MEDIUM', 'HIGH', 'URGENT'])],
+            'priority' => ['nullable', 'string', Rule::in(['LOW', 'MEDIUM', 'HIGH', 'URGENT', 'low', 'medium', 'high', 'urgent'])],
             'profileUrl' => ['nullable', 'string'],
             'messageText' => ['nullable', 'string'],
             'notes' => ['nullable', 'string'],
@@ -474,20 +508,46 @@ public function mergeEnrichedToCreators(Request $request)
 
     public function completeTask(Request $request, string $taskId)
     {
-$validated = $request->validate([
-    'sheetId' => ['nullable', 'string'],
-    'status' => ['nullable', 'string'],
-    'notes' => ['nullable', 'string'],
-    'sender_account' => ['nullable', 'string'],
-    'template_id' => ['nullable', 'string'],
-    'message_draft' => ['nullable', 'string'],
-]);
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+            'status' => ['nullable', 'string'],
+            'outcome' => ['nullable', 'string'],
+            'notes' => ['nullable', 'string'],
+            'sender_account' => ['nullable', 'string'],
+            'template_id' => ['nullable', 'string'],
+            'message_draft' => ['nullable', 'string'],
+            'skipReason' => ['nullable', 'string'],
+            'skipReasonDetail' => ['nullable', 'string'],
+            'externalChannel' => ['nullable', 'string'],
+            'responseChannel' => ['nullable', 'string'],
+            'conversationUrl' => ['nullable', 'string'],
+            'markReplied' => ['nullable', 'boolean'],
+        ]);
 
         $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
         $result = $this->taskQueue->completeTask($sheetId, $taskId, $validated);
 
         return response()->json([
             'message' => 'Task completed and logged',
+            'sheetId' => $sheetId,
+            'result' => $result,
+        ]);
+    }
+
+    public function snoozeTask(Request $request, string $taskId)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+            'until' => ['required', 'string'],
+            'reason' => ['nullable', 'string'],
+        ]);
+
+        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
+        $until = Carbon::parse((string) $validated['until']);
+        $result = $this->taskQueue->snoozeTask($sheetId, $taskId, $until, $validated['reason'] ?? null);
+
+        return response()->json([
+            'message' => 'Task snoozed',
             'sheetId' => $sheetId,
             'result' => $result,
         ]);
