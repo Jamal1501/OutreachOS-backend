@@ -641,18 +641,24 @@ class TaskQueueService
                 );
             }
 
+            $followUpTaskType = $this->determineFollowUpTaskTypeFromProfile($profile, $settings, $state);
+            $followUpChannel = $followUpTaskType === 'EMAIL_SEND'
+                ? 'email'
+                : strtolower((string) ($profile->conversation_channel ?: $profile->preferred_channel ?: $profile->platform ?: 'instagram'));
+
             return $this->candidateArray(
                 profile: $profile,
-                taskType: 'DM_FOLLOWUP',
+                taskType: $followUpTaskType,
                 priority: $this->priorityFromProfile($profile, true),
                 dueAt: $profile->follow_up_due_at,
-                actionableChannel: strtolower((string) ($profile->preferred_channel ?: $profile->platform ?: 'instagram')),
-                conversationUrl: (string) ($profile->dm_link ?: $profile->profile_url ?: ''),
-                notes: 'No reply logged. Send a structured follow-up or explicitly snooze/skip with a reason.',
+                actionableChannel: $followUpChannel,
+                conversationUrl: (string) ($profile->conversation_url ?: $profile->dm_link ?: $profile->profile_url ?: ''),
+                notes: $this->followUpNotesForProfile($profile, $followUpTaskType),
                 metadata: [
                     'source_rule' => 'follow_up_due',
                     'group_context' => 'follow_up',
                     'follow_up_attempts' => $attempts,
+                    'follow_up_variant' => true,
                 ]
             );
         }
@@ -686,6 +692,46 @@ class TaskQueueService
                 'time_pressure_mode' => $this->timePressureEnabled($settings),
             ]
         );
+    }
+
+    private function determineFollowUpTaskTypeFromProfile(CreatorProfile $profile, array $settings = [], array $state = []): string
+    {
+        $platform = strtolower(trim((string) ($profile->platform ?: '')));
+        $preferredChannel = strtoupper(trim((string) ($profile->preferred_channel ?: 'DM')));
+        $hasEmail = filled(optional($profile->creator)->primary_email);
+        $timePressure = $this->timePressureEnabled($settings);
+
+        if ($preferredChannel === 'EMAIL' && $hasEmail) {
+            return 'EMAIL_SEND';
+        }
+
+        if ($platform === 'instagram') {
+            if (!$timePressure && empty($state['warmup_follow_request_completed']) && empty($state['warmup_follow_request_sent'])) {
+                return 'FOLLOW_REQUEST';
+            }
+
+            return 'COMMENT_ON_POST';
+        }
+
+        if ($platform === 'tiktok') {
+            return 'COMMENT_ON_POST';
+        }
+
+        if ($platform === 'email' && $hasEmail) {
+            return 'EMAIL_SEND';
+        }
+
+        return 'DM_FOLLOWUP';
+    }
+
+    private function followUpNotesForProfile(CreatorProfile $profile, string $taskType): string
+    {
+        return match ($taskType) {
+            'FOLLOW_REQUEST' => 'This creator has not replied. Send a follow request to warm the relationship before trying again.',
+            'COMMENT_ON_POST' => 'This creator has not replied. Leave a natural comment on a recent post and reference that you sent a DM a few days ago if it fits.',
+            'EMAIL_SEND' => 'No reply yet. Use the available email instead of forcing another DM attempt.',
+            default => 'No reply logged yet. Send a thoughtful follow-up or explicitly snooze or skip with a reason.',
+        };
     }
 
     private function determineInitialTaskTypeFromProfile(CreatorProfile $profile, array $settings = []): ?string
@@ -784,6 +830,24 @@ class TaskQueueService
                 $profile->lifecycle_state = 'warming';
                 $state['warmup_follow_request_sent'] = true;
                 $state['warmup_follow_request_completed'] = true;
+                if (!empty(($task->metadata ?? [])['follow_up_variant'])) {
+                    if ($markReplied || in_array($outcome, ['creator_replied', 'replied_elsewhere', 'conversation_active_elsewhere'], true)) {
+                        $this->markExternalConversationActive($profile, $state, $settings, $externalChannel ?: (string) ($task->actionable_channel ?: $task->platform), $conversationUrl ?: (string) ($task->conversation_url ?: $task->open_url));
+                        $profile->responded_at = $profile->responded_at ?: $now;
+                        $profile->status = 'REPLIED';
+                        $profile->lifecycle_state = 'replied';
+                        break;
+                    }
+                    $attempts = max(1, ((int) ($state['follow_up_attempts'] ?? 1)) + 1);
+                    $state['follow_up_attempts'] = $attempts;
+                    $profile->last_outreach_at = $now;
+                    $profile->last_outreach_channel = (string) ($task->actionable_channel ?: $task->platform ?: 'instagram');
+                    $profile->conversation_channel = $profile->last_outreach_channel;
+                    $profile->conversation_url = $conversationUrl !== '' ? $conversationUrl : (string) ($task->conversation_url ?: $task->open_url ?: $profile->conversation_url ?: '');
+                    $profile->waiting_until = $now->copy()->addDays((int) ($settings['reply_check_in_delay_days'] ?? 2));
+                    $profile->next_action_at = $profile->waiting_until;
+                    $profile->follow_up_due_at = $profile->waiting_until;
+                }
                 break;
 
             case 'COMMENT_ON_POST':
@@ -791,6 +855,24 @@ class TaskQueueService
                 $profile->status = 'COMMENT_ATTEMPTED';
                 $profile->lifecycle_state = 'warming';
                 $state['warmup_comment_completed'] = true;
+                if (!empty(($task->metadata ?? [])['follow_up_variant'])) {
+                    if ($markReplied || in_array($outcome, ['creator_replied', 'replied_elsewhere', 'conversation_active_elsewhere'], true)) {
+                        $this->markExternalConversationActive($profile, $state, $settings, $externalChannel ?: (string) ($task->actionable_channel ?: $task->platform), $conversationUrl ?: (string) ($task->conversation_url ?: $task->open_url));
+                        $profile->responded_at = $profile->responded_at ?: $now;
+                        $profile->status = 'REPLIED';
+                        $profile->lifecycle_state = 'replied';
+                        break;
+                    }
+                    $attempts = max(1, ((int) ($state['follow_up_attempts'] ?? 1)) + 1);
+                    $state['follow_up_attempts'] = $attempts;
+                    $profile->last_outreach_at = $now;
+                    $profile->last_outreach_channel = (string) ($task->actionable_channel ?: $task->platform ?: 'instagram');
+                    $profile->conversation_channel = $profile->last_outreach_channel;
+                    $profile->conversation_url = $conversationUrl !== '' ? $conversationUrl : (string) ($task->conversation_url ?: $task->open_url ?: $profile->conversation_url ?: '');
+                    $profile->waiting_until = $now->copy()->addDays((int) ($settings['reply_check_in_delay_days'] ?? 2));
+                    $profile->next_action_at = $profile->waiting_until;
+                    $profile->follow_up_due_at = $profile->waiting_until;
+                }
                 break;
 
             case 'DM_INVITE':
@@ -901,6 +983,9 @@ class TaskQueueService
         $nextTaskType = null;
 
         if (in_array($taskType, ['FOLLOW_REQUEST', 'COMMENT_ON_POST'], true)) {
+            if (!empty(($task->metadata ?? [])['follow_up_variant'])) {
+                return;
+            }
             if (!$this->timePressureEnabled($settings) && !in_array($outcome, ['not_a_fit', 'archive', 'lost'], true)) {
                 $nextTaskType = $this->determineInitialTaskTypeFromProfile($profile, array_merge($settings, ['high_value_warmup_enabled' => false]));
             }
@@ -1200,7 +1285,11 @@ class TaskQueueService
         }
 
         return match ($taskType) {
-            'FOLLOW_REQUEST', 'COMMENT_ON_POST' => [
+            'FOLLOW_REQUEST', 'COMMENT_ON_POST' => !empty($metadata['group_context']) && $metadata['group_context'] === 'follow_up' ? [
+                'group_key' => 'follow-up-soft-touch:' . strtolower($taskType),
+                'group_label' => 'Use softer follow-ups on no-reply creators',
+                'group_type' => 'follow_up',
+            ] : [
                 'group_key' => 'warmup:' . strtolower($taskType),
                 'group_label' => 'Warm high-value creators',
                 'group_type' => 'warmup',
@@ -1248,13 +1337,13 @@ class TaskQueueService
     private function defaultNotesForTaskType(string $taskType): string
     {
         return match ($taskType) {
-            'FOLLOW_REQUEST' => 'Start warming this creator before direct outreach.',
-            'COMMENT_ON_POST' => 'Use a real comment or meaningful warm interaction first.',
-            'DM_FOLLOWUP' => 'No reply logged yet. Follow up or explicitly snooze/skip.',
-            'EMAIL_SEND' => 'Lead with the email angle because contact data exists.',
-            'REVIEW_CREATOR' => 'A creator engaged. Review the thread and pick the next move.',
-            'CHECK_IN' => 'The conversation is ongoing somewhere else. Log where it lives and how it is going.',
-            default => 'This creator is ready for a first direct outreach attempt.',
+            'FOLLOW_REQUEST' => 'Follow this creator to start warming the relationship.',
+            'COMMENT_ON_POST' => 'Leave a natural comment or warm interaction before pushing the conversation forward.',
+            'DM_FOLLOWUP' => 'Take the next follow-up step that actually makes sense on this platform.',
+            'EMAIL_SEND' => 'Use email for this outreach because direct contact data exists.',
+            'REVIEW_CREATOR' => 'Review the conversation and decide the next move.',
+            'CHECK_IN' => 'Check where the conversation currently lives and log what happened.',
+            default => 'This creator is ready for the next outreach step.',
         };
     }
 
@@ -1349,7 +1438,11 @@ class TaskQueueService
             'conversationUrl' => (string) ($task->conversation_url ?: $task->creatorProfile?->conversation_url ?: $task->open_url ?: ''),
             'creatorProfileId' => (string) ($task->creator_profile_id ?: ''),
             'valueScore' => (int) ($task->creatorProfile?->value_score ?? 0),
-            'metadata' => (array) ($task->metadata ?? []),
+            'email' => (string) ($task->creatorProfile?->creator?->primary_email ?: ''),
+            'lastOutreachAt' => optional($task->creatorProfile?->last_outreach_at)?->toIso8601String() ?? '',
+            'metadata' => array_merge((array) ($task->metadata ?? []), [
+                'last_outreach_at' => optional($task->creatorProfile?->last_outreach_at)?->toIso8601String() ?? null,
+            ]),
         ];
     }
 
@@ -1387,6 +1480,8 @@ class TaskQueueService
             'conversationUrl' => (string) ($row['Open_URL'] ?? ''),
             'creatorProfileId' => '',
             'valueScore' => 0,
+            'email' => '',
+            'lastOutreachAt' => '',
             'metadata' => [],
         ];
     }
