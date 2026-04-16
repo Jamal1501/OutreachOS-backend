@@ -632,13 +632,13 @@ class TaskQueueService
                 taskType: 'CHECK_IN',
                 priority: $this->priorityFromProfile($profile, true),
                 dueAt: $due ?: $now,
-                actionableChannel: (string) ($state['external_channel'] ?? $profile->conversation_channel ?: $profile->platform),
+                actionableChannel: $this->resolveExecutionChannel($profile, $state),
                 conversationUrl: (string) ($state['external_conversation_url'] ?? $profile->conversation_url ?: $profile->dm_link ?: $profile->profile_url ?: ''),
                 notes: 'Check the outside-app conversation and log the latest status.',
                 metadata: [
                     'source_rule' => 'external_conversation_check_in',
                     'group_context' => 'external_conversation',
-                    'conversation_provider' => (string) ($state['external_channel'] ?? $profile->conversation_channel ?: $profile->platform ?: ''),
+                    'conversation_provider' => $this->resolveExecutionChannel($profile, $state),
                     'thread_reference' => (string) ($state['external_thread_id'] ?? $profile->conversation_url ?: ''),
                 ]
             );
@@ -650,9 +650,7 @@ class TaskQueueService
                 return null;
             }
 
-            $actionableChannel = $profile->preferred_channel && strtoupper((string) $profile->preferred_channel) === 'EMAIL' && filled(optional($profile->creator)->primary_email)
-                ? 'email'
-                : strtolower((string) ($profile->conversation_channel ?: $profile->preferred_channel ?: $profile->platform ?: 'instagram'));
+            $actionableChannel = $this->resolveExecutionChannel($profile, $state);
 
             return $this->candidateArray(
                 profile: $profile,
@@ -665,7 +663,7 @@ class TaskQueueService
                 metadata: [
                     'source_rule' => 'accepted_follow_through',
                     'group_context' => 'after_accept',
-                    'conversation_provider' => (string) ($profile->conversation_channel ?: $profile->preferred_channel ?: $profile->platform ?: ''),
+                    'conversation_provider' => $this->resolveExecutionChannel($profile, $state),
                     'thread_reference' => (string) ($profile->conversation_url ?: ''),
                 ]
             );
@@ -677,9 +675,7 @@ class TaskQueueService
                 return null;
             }
 
-            $actionableChannel = $profile->preferred_channel && strtoupper((string) $profile->preferred_channel) === 'EMAIL' && filled(optional($profile->creator)->primary_email)
-                ? 'email'
-                : strtolower((string) ($profile->conversation_channel ?: $profile->preferred_channel ?: $profile->platform ?: 'instagram'));
+            $actionableChannel = $this->resolveExecutionChannel($profile, $state);
 
             return $this->candidateArray(
                 profile: $profile,
@@ -692,25 +688,31 @@ class TaskQueueService
                 metadata: [
                     'source_rule' => 'negotiation_follow_through',
                     'group_context' => 'negotiation',
-                    'conversation_provider' => (string) ($profile->conversation_channel ?: $profile->preferred_channel ?: $profile->platform ?: ''),
+                    'conversation_provider' => $this->resolveExecutionChannel($profile, $state),
                     'thread_reference' => (string) ($profile->conversation_url ?: ''),
                 ]
             );
         }
 
-        if ($profile->responded_at !== null && !$profile->accepted_flag && !in_array('NEGOTIATING', $statusValues, true) && !in_array('ACCEPTED', $statusValues, true)) {
+        if (
+            $profile->responded_at !== null
+            && !$profile->accepted_flag
+            && (($state['needs_reply_review'] ?? true) !== false)
+            && !in_array('NEGOTIATING', $statusValues, true)
+            && !in_array('ACCEPTED', $statusValues, true)
+        ) {
             return $this->candidateArray(
                 profile: $profile,
                 taskType: 'REVIEW_CREATOR',
                 priority: 'URGENT',
                 dueAt: $now,
-                actionableChannel: (string) ($profile->conversation_channel ?: $profile->platform),
+                actionableChannel: $this->resolveExecutionChannel($profile, $state),
                 conversationUrl: (string) ($profile->conversation_url ?: $profile->dm_link ?: $profile->profile_url ?: ''),
                 notes: 'The creator replied. Decide the next move and keep the thread organized.',
                 metadata: [
                     'source_rule' => 'reply_review',
                     'group_context' => 'reply_review',
-                    'conversation_provider' => (string) ($profile->conversation_channel ?: $profile->platform ?: ''),
+                    'conversation_provider' => $this->resolveExecutionChannel($profile, $state),
                     'thread_reference' => (string) ($profile->conversation_url ?: ''),
                 ]
             );
@@ -729,7 +731,7 @@ class TaskQueueService
                     taskType: 'CHECK_IN',
                     priority: $this->priorityFromProfile($profile, true),
                     dueAt: $profile->follow_up_due_at,
-                    actionableChannel: (string) ($profile->conversation_channel ?: $profile->platform),
+                    actionableChannel: $this->resolveExecutionChannel($profile, $state),
                     conversationUrl: (string) ($profile->conversation_url ?: $profile->dm_link ?: $profile->profile_url ?: ''),
                     notes: 'No reply after several attempts. Decide whether to keep watching or archive.',
                     metadata: [
@@ -742,7 +744,7 @@ class TaskQueueService
             $followUpTaskType = $this->determineFollowUpTaskTypeFromProfile($profile, $settings, $state);
             $followUpChannel = $followUpTaskType === 'EMAIL_SEND'
                 ? 'email'
-                : strtolower((string) ($profile->conversation_channel ?: $profile->preferred_channel ?: $profile->platform ?: 'instagram'));
+                : $this->resolveExecutionChannel($profile, $state);
 
             return $this->candidateArray(
                 profile: $profile,
@@ -794,16 +796,16 @@ class TaskQueueService
 
     private function determineFollowUpTaskTypeFromProfile(CreatorProfile $profile, array $settings = [], array $state = []): string
     {
-        $platform = strtolower(trim((string) ($profile->platform ?: '')));
-        $preferredChannel = strtoupper(trim((string) ($profile->preferred_channel ?: 'DM')));
+        $platform = $this->normalizeExecutionChannel((string) ($profile->platform ?: ''), 'instagram');
         $hasEmail = filled(optional($profile->creator)->primary_email);
         $timePressure = $this->timePressureEnabled($settings);
+        $executionChannel = $this->resolveExecutionChannel($profile, $state);
 
-        if ($preferredChannel === 'EMAIL' && $hasEmail) {
+        if ($executionChannel === 'email' && $hasEmail) {
             return 'EMAIL_SEND';
         }
 
-        if ($platform === 'instagram') {
+        if ($executionChannel === 'instagram') {
             if (!$timePressure && empty($state['warmup_follow_request_completed']) && empty($state['warmup_follow_request_sent'])) {
                 return 'FOLLOW_REQUEST';
             }
@@ -811,7 +813,7 @@ class TaskQueueService
             return 'COMMENT_ON_POST';
         }
 
-        if ($platform === 'tiktok') {
+        if ($executionChannel === 'tiktok' || $platform === 'tiktok') {
             return 'COMMENT_ON_POST';
         }
 
@@ -835,7 +837,7 @@ class TaskQueueService
     private function determineInitialTaskTypeFromProfile(CreatorProfile $profile, array $settings = []): ?string
     {
         $preferredChannel = strtoupper(trim((string) ($profile->preferred_channel ?: 'DM')));
-        $platform = strtolower(trim((string) ($profile->platform ?: '')));
+        $platform = $this->normalizeExecutionChannel((string) ($profile->platform ?: ''), '');
         $hasEmail = filled(optional($profile->creator)->primary_email);
         $state = $this->profileAutomationState($profile);
         $timePressure = $this->timePressureEnabled($settings);
@@ -843,16 +845,18 @@ class TaskQueueService
         $highValueThreshold = (int) ($settings['high_value_threshold'] ?? 75);
         $mediumValueThreshold = (int) ($settings['medium_value_threshold'] ?? 50);
         $warmupEnabled = (bool) ($settings['high_value_warmup_enabled'] ?? true);
+        $executionChannel = $this->resolveExecutionChannel($profile, $state);
+        $needsReplyReview = ($state['needs_reply_review'] ?? true) !== false;
 
         if ($profile->accepted_flag && $profile->dm_sent_at === null) {
-            return 'DM_INVITE';
+            return $executionChannel === 'email' && $hasEmail ? 'EMAIL_SEND' : 'DM_INVITE';
         }
 
         if ($profile->follow_up_due_at && $profile->responded_at === null) {
-            return 'DM_FOLLOWUP';
+            return $executionChannel === 'email' && $hasEmail ? 'EMAIL_SEND' : 'DM_FOLLOWUP';
         }
 
-        if ($profile->responded_at !== null && !$profile->accepted_flag) {
+        if ($profile->responded_at !== null && !$profile->accepted_flag && $needsReplyReview) {
             return 'REVIEW_CREATOR';
         }
 
@@ -869,6 +873,10 @@ class TaskQueueService
             }
         }
 
+        if ($executionChannel === 'email' && $hasEmail) {
+            return 'EMAIL_SEND';
+        }
+
         if ($preferredChannel === 'EMAIL' && $hasEmail) {
             return 'EMAIL_SEND';
         }
@@ -883,7 +891,7 @@ class TaskQueueService
             return null;
         }
 
-        return 'DM_INVITE';
+        return $executionChannel === 'email' && $hasEmail ? 'EMAIL_SEND' : 'DM_INVITE';
     }
 
     private function applyTaskResultToProfile(CreatorProfile $profile, Task $task, array $payload, array $settings): void
@@ -936,6 +944,7 @@ class TaskQueueService
                 if (!empty(($task->metadata ?? [])['follow_up_variant'])) {
                     if ($markReplied || in_array($outcome, ['creator_replied', 'replied_elsewhere', 'conversation_active_elsewhere'], true)) {
                         $this->markExternalConversationActive($profile, $state, $settings, $externalChannel ?: (string) ($task->actionable_channel ?: $task->platform), $conversationUrl ?: (string) ($task->conversation_url ?: $task->open_url));
+                        $state['needs_reply_review'] = true;
                         $profile->responded_at = $profile->responded_at ?: $now;
                         $profile->status = 'REPLIED';
                         $profile->lifecycle_state = 'replied';
@@ -961,6 +970,7 @@ class TaskQueueService
                 if (!empty(($task->metadata ?? [])['follow_up_variant'])) {
                     if ($markReplied || in_array($outcome, ['creator_replied', 'replied_elsewhere', 'conversation_active_elsewhere'], true)) {
                         $this->markExternalConversationActive($profile, $state, $settings, $externalChannel ?: (string) ($task->actionable_channel ?: $task->platform), $conversationUrl ?: (string) ($task->conversation_url ?: $task->open_url));
+                        $state['needs_reply_review'] = true;
                         $profile->responded_at = $profile->responded_at ?: $now;
                         $profile->status = 'REPLIED';
                         $profile->lifecycle_state = 'replied';
@@ -1002,6 +1012,7 @@ class TaskQueueService
                 $profile->next_action_at = $profile->follow_up_due_at;
                 $state['follow_up_attempts'] = max(1, (int) ($state['follow_up_attempts'] ?? 0));
                 $state['external_conversation_active'] = false;
+                $state['needs_reply_review'] = false;
                 break;
 
             case 'DM_FOLLOWUP':
@@ -1017,6 +1028,8 @@ class TaskQueueService
                 $profile->lifecycle_state = 'contacted';
                 $profile->last_outreach_at = $now;
                 $profile->last_outreach_channel = (string) ($task->actionable_channel ?: $task->platform ?: 'instagram');
+                $profile->conversation_channel = $profile->last_outreach_channel;
+                $profile->conversation_url = $conversationUrl !== '' ? $conversationUrl : (string) ($task->conversation_url ?: $task->open_url ?: $profile->conversation_url ?: '');
                 $attempts = ((int) ($state['follow_up_attempts'] ?? 1)) + 1;
                 $state['follow_up_attempts'] = $attempts;
                 $maxFollowUps = (int) ($settings['max_follow_up_attempts'] ?? 2);
@@ -1201,14 +1214,14 @@ class TaskQueueService
             taskType: $nextTaskType,
             priority: $this->priorityFromProfile($profile, true),
             dueAt: $dueAt,
-            actionableChannel: $nextTaskType === 'EMAIL_SEND' ? 'email' : strtolower((string) ($profile->conversation_channel ?: $profile->preferred_channel ?: $profile->platform ?: 'instagram')),
+            actionableChannel: $nextTaskType === 'EMAIL_SEND' ? 'email' : $this->resolveExecutionChannel($profile, $this->profileAutomationState($profile)),
             conversationUrl: (string) ($profile->conversation_url ?: $profile->dm_link ?: $profile->profile_url ?: ''),
             notes: 'Auto-promoted after completing ' . $taskType,
             metadata: [
                 'source_rule' => 'immediate_next_step',
                 'parent_task_id' => (string) ($task->external_task_key ?: $task->id),
                 'group_context' => $nextTaskType === 'CONFIRM_POSTED' ? 'after_accept' : 'next_step',
-                'conversation_provider' => (string) ($profile->conversation_channel ?: $profile->preferred_channel ?: $profile->platform ?: ''),
+                'conversation_provider' => $this->resolveExecutionChannel($profile, $this->profileAutomationState($profile)),
                 'thread_reference' => (string) ($profile->conversation_url ?: ''),
             ]
         );
@@ -1425,10 +1438,47 @@ class TaskQueueService
 
         $profile->conversation_channel = $state['external_channel'];
         $profile->conversation_url = $state['external_conversation_url'];
+        $state['needs_reply_review'] = true;
         $profile->waiting_until = $nextCheck;
         $profile->next_action_at = $nextCheck;
         $profile->follow_up_due_at = null;
         $profile->follow_up_needed = false;
+    }
+
+    private function normalizeExecutionChannel(?string $channel, string $fallback = 'instagram'): string
+    {
+        $value = strtolower(trim((string) $channel));
+
+        return match ($value) {
+            '', 'dm' => $fallback,
+            'e-mail', 'mail' => 'email',
+            'ig', 'insta' => 'instagram',
+            default => $value,
+        };
+    }
+
+    private function resolveExecutionChannel(CreatorProfile $profile, array $state = []): string
+    {
+        $hasEmail = filled(optional($profile->creator)->primary_email);
+        $platform = $this->normalizeExecutionChannel((string) ($profile->platform ?: ''), 'instagram');
+
+        foreach ([
+            $state['external_channel'] ?? null,
+            $profile->conversation_channel,
+            $profile->last_outreach_channel,
+        ] as $candidate) {
+            $normalized = $this->normalizeExecutionChannel(is_string($candidate) ? $candidate : null, $platform);
+            if ($normalized !== '') {
+                return $normalized;
+            }
+        }
+
+        $preferredChannel = strtoupper(trim((string) ($profile->preferred_channel ?: '')));
+        if ($preferredChannel === 'EMAIL' && $hasEmail) {
+            return 'email';
+        }
+
+        return $platform;
     }
 
     private function profileAutomationState(CreatorProfile $profile): array
