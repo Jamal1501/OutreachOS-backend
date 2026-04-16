@@ -61,25 +61,61 @@ class TaskQueueService
             return [];
         }
 
-        return Task::query()
-            ->where('tasks.project_id', $project->id)
-            ->coldRetry()
+        $settings = $this->resolveTaskSettings($this->resolveWorkspaceForSheet($sheetId, $project));
+        if (!(bool) ($settings['revival_review_enabled'] ?? true)) {
+            return [];
+        }
+
+        $intervalDays = max(1, (int) ($settings['revival_review_interval_days'] ?? 90));
+        $now = now();
+
+        return CreatorProfile::query()
+            ->with('creator')
+            ->where('project_id', $project->id)
+            ->where(function ($query) {
+                $query
+                    ->whereIn('lifecycle_state', ['archived', 'declined', 'lost'])
+                    ->orWhereIn('status', ['ARCHIVED', 'DECLINED', 'LOST'])
+                    ->orWhereRaw("coalesce(automation_state->>'revival_bucket', '') in ('archived','declined','lost','not_a_fit')");
+            })
+            ->orderByDesc('value_score')
+            ->orderByDesc('followers_count')
             ->get()
-            ->map(function (Task $task) {
+            ->filter(function (CreatorProfile $profile) use ($intervalDays, $now) {
+                $state = $this->profileAutomationState($profile);
+                $explicitReviewAt = $this->coerceCarbon($state['revival_review_at'] ?? null);
+                if ($explicitReviewAt) {
+                    return $explicitReviewAt->lessThanOrEqualTo($now);
+                }
+
+                $baseline = $this->coerceCarbon($profile->last_outreach_at)
+                    ?: $this->coerceCarbon($profile->updated_at)
+                    ?: $now;
+
+                return $baseline->copy()->addDays($intervalDays)->lessThanOrEqualTo($now);
+            })
+            ->map(function (CreatorProfile $profile) use ($intervalDays) {
+                $state = $this->profileAutomationState($profile);
+                $bucket = (string) ($state['revival_bucket'] ?? $profile->lifecycle_state ?? strtolower((string) ($profile->status ?? 'archived')));
+                $reviewAt = $this->coerceCarbon($state['revival_review_at'] ?? null)
+                    ?: $this->coerceCarbon($profile->last_outreach_at)
+                    ?: $this->coerceCarbon($profile->updated_at)
+                    ?: now()->subDays($intervalDays);
+
                 return [
-                    'taskId'        => (string) ($task->external_task_key ?: $task->id),
-                    'taskType'      => (string) $task->task_type,
-                    'platform'      => strtolower((string) ($task->platform ?: 'instagram')),
-                    'handle'        => (string) ($task->handle ?: ''),
-                    'profileUrl'    => (string) ($task->open_url ?: ''),
-                    'status'        => 'archived',
-                    'priority'      => $this->normalizePriority(strtoupper((string) ($task->priority ?: 'LOW'))),
-                    'valueScore'    => (int) ($task->cp_value_score ?? 0),
-                    'followers'     => (int) ($task->cp_followers_count ?? 0),
-                    'profilePicUrl' => (string) ($task->cp_profile_pic_url ?? ''),
-                    'followUpCount' => (int) ($task->follow_up_count ?? 0),
-                    'notes'         => (string) ($task->notes ?: ''),
-                    'completedAt'   => optional($task->completed_at)?->toDateTimeString() ?? '',
+                    'taskId'        => (string) $profile->id,
+                    'taskType'      => 'CHECK_IN',
+                    'platform'      => strtolower((string) ($profile->platform ?: 'instagram')),
+                    'handle'        => (string) ($profile->handle ?: ''),
+                    'profileUrl'    => (string) ($profile->profile_url ?: $profile->dm_link ?: $profile->conversation_url ?: ''),
+                    'status'        => $bucket,
+                    'priority'      => $this->normalizePriority($this->priorityFromProfile($profile)),
+                    'valueScore'    => (int) ($profile->value_score ?? 0),
+                    'followers'     => (int) ($profile->followers_count ?? 0),
+                    'profilePicUrl' => (string) ($profile->profile_pic_url ?: ''),
+                    'followUpCount' => (int) ($state['follow_up_attempts'] ?? 0),
+                    'notes'         => sprintf('Review this %s creator. They have been parked long enough to be worth a fresh look.', str_replace('_', ' ', $bucket)),
+                    'completedAt'   => optional($reviewAt)->toDateTimeString() ?? '',
                 ];
             })
             ->values()
@@ -568,8 +604,12 @@ class TaskQueueService
 
     private function buildCandidateForProfile(CreatorProfile $profile, array $settings): ?array
     {
-        $status = strtoupper(trim((string) ($profile->status ?: $profile->lifecycle_state ?: '')));
-        if (in_array($status, self::TERMINAL_PROFILE_STATES, true)) {
+        $statusValues = array_values(array_filter(array_unique([
+            strtoupper(trim((string) ($profile->status ?: ''))),
+            strtoupper(trim((string) ($profile->lifecycle_state ?: ''))),
+        ])));
+        $status = $statusValues[0] ?? '';
+        if (array_intersect($statusValues, self::TERMINAL_PROFILE_STATES) !== []) {
             return null;
         }
 
@@ -598,11 +638,67 @@ class TaskQueueService
                 metadata: [
                     'source_rule' => 'external_conversation_check_in',
                     'group_context' => 'external_conversation',
+                    'conversation_provider' => (string) ($state['external_channel'] ?? $profile->conversation_channel ?: $profile->platform ?: ''),
+                    'thread_reference' => (string) ($state['external_thread_id'] ?? $profile->conversation_url ?: ''),
                 ]
             );
         }
 
-        if ($profile->responded_at !== null && !$profile->accepted_flag && !in_array($status, ['NEGOTIATING', 'ACCEPTED'], true)) {
+        if ($profile->accepted_flag || in_array('ACCEPTED', $statusValues, true)) {
+            $due = $this->coerceCarbon($profile->next_action_at ?: $profile->waiting_until);
+            if ($due && $due->isFuture()) {
+                return null;
+            }
+
+            $actionableChannel = $profile->preferred_channel && strtoupper((string) $profile->preferred_channel) === 'EMAIL' && filled(optional($profile->creator)->primary_email)
+                ? 'email'
+                : strtolower((string) ($profile->conversation_channel ?: $profile->preferred_channel ?: $profile->platform ?: 'instagram'));
+
+            return $this->candidateArray(
+                profile: $profile,
+                taskType: 'CONFIRM_POSTED',
+                priority: $this->priorityFromProfile($profile, true),
+                dueAt: $due ?: $now,
+                actionableChannel: $actionableChannel,
+                conversationUrl: (string) ($profile->conversation_url ?: $profile->dm_link ?: $profile->profile_url ?: ''),
+                notes: 'Check whether the agreed deliverable actually went live and log the result.',
+                metadata: [
+                    'source_rule' => 'accepted_follow_through',
+                    'group_context' => 'after_accept',
+                    'conversation_provider' => (string) ($profile->conversation_channel ?: $profile->preferred_channel ?: $profile->platform ?: ''),
+                    'thread_reference' => (string) ($profile->conversation_url ?: ''),
+                ]
+            );
+        }
+
+        if (in_array('NEGOTIATING', $statusValues, true)) {
+            $due = $this->coerceCarbon($profile->next_action_at ?: $profile->waiting_until);
+            if ($due && $due->isFuture()) {
+                return null;
+            }
+
+            $actionableChannel = $profile->preferred_channel && strtoupper((string) $profile->preferred_channel) === 'EMAIL' && filled(optional($profile->creator)->primary_email)
+                ? 'email'
+                : strtolower((string) ($profile->conversation_channel ?: $profile->preferred_channel ?: $profile->platform ?: 'instagram'));
+
+            return $this->candidateArray(
+                profile: $profile,
+                taskType: 'NEGOTIATE_TERMS',
+                priority: $this->priorityFromProfile($profile, true),
+                dueAt: $due ?: $now,
+                actionableChannel: $actionableChannel,
+                conversationUrl: (string) ($profile->conversation_url ?: $profile->dm_link ?: $profile->profile_url ?: ''),
+                notes: 'Keep the negotiation moving. Clarify deliverables, timing, budget, or next approval steps.',
+                metadata: [
+                    'source_rule' => 'negotiation_follow_through',
+                    'group_context' => 'negotiation',
+                    'conversation_provider' => (string) ($profile->conversation_channel ?: $profile->preferred_channel ?: $profile->platform ?: ''),
+                    'thread_reference' => (string) ($profile->conversation_url ?: ''),
+                ]
+            );
+        }
+
+        if ($profile->responded_at !== null && !$profile->accepted_flag && !in_array('NEGOTIATING', $statusValues, true) && !in_array('ACCEPTED', $statusValues, true)) {
             return $this->candidateArray(
                 profile: $profile,
                 taskType: 'REVIEW_CREATOR',
@@ -614,6 +710,8 @@ class TaskQueueService
                 metadata: [
                     'source_rule' => 'reply_review',
                     'group_context' => 'reply_review',
+                    'conversation_provider' => (string) ($profile->conversation_channel ?: $profile->platform ?: ''),
+                    'thread_reference' => (string) ($profile->conversation_url ?: ''),
                 ]
             );
         }
@@ -809,7 +907,12 @@ class TaskQueueService
             $profile->last_task_outcome = $skipReason !== '' ? $skipReason : 'skipped';
             if (in_array($skipReason, ['replied_elsewhere', 'conversation_active_elsewhere'], true)) {
                 $this->markExternalConversationActive($profile, $state, $settings, $externalChannel, $conversationUrl);
-            } elseif (in_array($skipReason, ['not_a_fit', 'low_priority', 'inactive_creator', 'duplicate'], true)) {
+            } elseif ($skipReason === 'not_a_fit') {
+                $profile->task_suppressed_until = $now->copy()->addYears(5);
+                $state['revival_bucket'] = 'not_a_fit';
+                $state['revival_review_at'] = $now->copy()->addDays((int) ($settings['revival_review_interval_days'] ?? 90))->toIso8601String();
+                $state['revival_reason'] = $skipReason;
+            } elseif (in_array($skipReason, ['low_priority', 'inactive_creator', 'duplicate'], true)) {
                 $profile->task_suppressed_until = $now->copy()->addDays((int) ($settings['archive_snooze_days'] ?? 30));
             } elseif ($skipReason === 'missing_info') {
                 $profile->waiting_until = $now->copy()->addDays(2);
@@ -933,7 +1036,10 @@ class TaskQueueService
                 if (in_array($outcome, ['approved', 'move_to_outreach'], true)) {
                     $state['needs_reply_review'] = false;
                 } elseif (in_array($outcome, ['rejected', 'not_a_fit'], true)) {
-                    $profile->task_suppressed_until = $now->copy()->addDays((int) ($settings['archive_snooze_days'] ?? 30));
+                    $profile->task_suppressed_until = $now->copy()->addYears(5);
+                    $state['revival_bucket'] = 'not_a_fit';
+                    $state['revival_review_at'] = $now->copy()->addDays((int) ($settings['revival_review_interval_days'] ?? 90))->toIso8601String();
+                    $state['revival_reason'] = $outcome;
                 }
                 break;
 
@@ -941,9 +1047,15 @@ class TaskQueueService
                 if (in_array($outcome, ['needs_reply', 'conversation_active_elsewhere'], true)) {
                     $this->markExternalConversationActive($profile, $state, $settings, $externalChannel ?: (string) ($profile->conversation_channel ?: $profile->platform), $conversationUrl ?: (string) ($profile->conversation_url ?: $task->conversation_url ?: $task->open_url));
                 } elseif (in_array($outcome, ['archive', 'lost'], true)) {
-                    $profile->status = 'ARCHIVED';
-                    $profile->lifecycle_state = 'archived';
+                    $profile->status = $outcome === 'lost' ? 'LOST' : 'ARCHIVED';
+                    $profile->lifecycle_state = $outcome === 'lost' ? 'lost' : 'archived';
                     $profile->task_suppressed_until = $now->copy()->addYears(5);
+                    $profile->follow_up_due_at = null;
+                    $profile->waiting_until = null;
+                    $profile->next_action_at = null;
+                    $state['revival_bucket'] = $outcome === 'lost' ? 'lost' : 'archived';
+                    $state['revival_review_at'] = $now->copy()->addDays((int) ($settings['revival_review_interval_days'] ?? 90))->toIso8601String();
+                    $state['revival_reason'] = $outcome;
                 } else {
                     $profile->waiting_until = $now->copy()->addDays((int) ($settings['external_check_in_days'] ?? 3));
                     $profile->next_action_at = $profile->waiting_until;
@@ -951,20 +1063,76 @@ class TaskQueueService
                 break;
 
             case 'NEGOTIATE_TERMS':
-                $profile->status = 'NEGOTIATING';
-                $profile->lifecycle_state = 'negotiating';
+                if (in_array($outcome, ['accepted'], true)) {
+                    $profile->accepted_flag = true;
+                    $profile->status = 'ACCEPTED';
+                    $profile->lifecycle_state = 'accepted';
+                    $profile->follow_up_due_at = null;
+                    $profile->waiting_until = $now->copy()->addDays((int) ($settings['accepted_follow_up_delay_days'] ?? 7));
+                    $profile->next_action_at = $profile->waiting_until;
+                    $state['negotiation_open'] = false;
+                    $state['pending_post_confirmation'] = true;
+                } elseif (in_array($outcome, ['declined', 'lost'], true)) {
+                    $profile->accepted_flag = false;
+                    $profile->status = strtoupper($outcome);
+                    $profile->lifecycle_state = $outcome;
+                    $profile->task_suppressed_until = $now->copy()->addYears(5);
+                    $profile->follow_up_due_at = null;
+                    $profile->waiting_until = null;
+                    $profile->next_action_at = null;
+                    $state['revival_bucket'] = $outcome;
+                    $state['revival_review_at'] = $now->copy()->addDays((int) ($settings['revival_review_interval_days'] ?? 90))->toIso8601String();
+                    $state['revival_reason'] = $outcome;
+                    $state['negotiation_open'] = false;
+                } elseif (in_array($outcome, ['replied_elsewhere', 'conversation_active_elsewhere'], true)) {
+                    $profile->status = 'NEGOTIATING';
+                    $profile->lifecycle_state = 'negotiating';
+                    $state['negotiation_open'] = true;
+                    $this->markExternalConversationActive($profile, $state, $settings, $externalChannel ?: (string) ($task->actionable_channel ?: $task->platform), $conversationUrl ?: (string) ($task->conversation_url ?: $task->open_url));
+                } else {
+                    $profile->status = 'NEGOTIATING';
+                    $profile->lifecycle_state = 'negotiating';
+                    $profile->waiting_until = $now->copy()->addDays((int) ($settings['negotiation_check_in_delay_days'] ?? 3));
+                    $profile->next_action_at = $profile->waiting_until;
+                    $state['negotiation_open'] = true;
+                }
                 break;
 
             case 'CONFIRM_ACCEPTED':
                 $profile->accepted_flag = true;
                 $profile->status = 'ACCEPTED';
                 $profile->lifecycle_state = 'accepted';
+                $profile->waiting_until = $now->copy()->addDays((int) ($settings['accepted_follow_up_delay_days'] ?? 7));
+                $profile->next_action_at = $profile->waiting_until;
+                $state['pending_post_confirmation'] = true;
+                break;
+
+            case 'CONFIRM_POSTED':
+                if (in_array($outcome, ['posted', 'live', 'won'], true)) {
+                    $profile->status = 'WON';
+                    $profile->lifecycle_state = 'won';
+                    $profile->task_suppressed_until = $now->copy()->addYears(5);
+                    $profile->follow_up_due_at = null;
+                    $profile->waiting_until = null;
+                    $profile->next_action_at = null;
+                    $state['pending_post_confirmation'] = false;
+                } else {
+                    $profile->accepted_flag = true;
+                    $profile->status = 'ACCEPTED';
+                    $profile->lifecycle_state = 'accepted';
+                    $profile->waiting_until = $now->copy()->addDays((int) ($settings['accepted_follow_up_delay_days'] ?? 7));
+                    $profile->next_action_at = $profile->waiting_until;
+                    $state['pending_post_confirmation'] = true;
+                }
                 break;
 
             case 'ARCHIVE_CREATOR':
                 $profile->status = 'ARCHIVED';
                 $profile->lifecycle_state = 'archived';
                 $profile->task_suppressed_until = $now->copy()->addYears(5);
+                $profile->follow_up_due_at = null;
+                $profile->waiting_until = null;
+                $profile->next_action_at = null;
                 break;
         }
 
@@ -999,6 +1167,12 @@ class TaskQueueService
             if (in_array($outcome, ['needs_reply', 'conversation_active_elsewhere'], true)) {
                 $nextTaskType = 'REVIEW_CREATOR';
             }
+        } elseif ($taskType === 'NEGOTIATE_TERMS') {
+            if ($outcome === 'accepted') {
+                $nextTaskType = 'CONFIRM_POSTED';
+            }
+        } elseif ($taskType === 'CONFIRM_ACCEPTED' && $outcome === 'accepted') {
+            $nextTaskType = 'CONFIRM_POSTED';
         } elseif (in_array($taskType, ['DM_INVITE', 'EMAIL_SEND', 'DM_FOLLOWUP'], true) && in_array($outcome, ['creator_replied'], true)) {
             $nextTaskType = 'REVIEW_CREATOR';
         }
@@ -1018,18 +1192,24 @@ class TaskQueueService
             return;
         }
 
+        $dueAt = $nextTaskType === 'CONFIRM_POSTED'
+            ? now()->addDays((int) ($settings['accepted_follow_up_delay_days'] ?? 7))
+            : now()->addHours((int) ($settings['warmup_gap_hours'] ?? 12));
+
         $candidate = $this->candidateArray(
             profile: $profile,
             taskType: $nextTaskType,
             priority: $this->priorityFromProfile($profile, true),
-            dueAt: now()->addHours((int) ($settings['warmup_gap_hours'] ?? 12)),
-            actionableChannel: $nextTaskType === 'EMAIL_SEND' ? 'email' : strtolower((string) ($profile->conversation_channel ?: $profile->platform ?: 'instagram')),
+            dueAt: $dueAt,
+            actionableChannel: $nextTaskType === 'EMAIL_SEND' ? 'email' : strtolower((string) ($profile->conversation_channel ?: $profile->preferred_channel ?: $profile->platform ?: 'instagram')),
             conversationUrl: (string) ($profile->conversation_url ?: $profile->dm_link ?: $profile->profile_url ?: ''),
             notes: 'Auto-promoted after completing ' . $taskType,
             metadata: [
                 'source_rule' => 'immediate_next_step',
                 'parent_task_id' => (string) ($task->external_task_key ?: $task->id),
-                'group_context' => 'next_step',
+                'group_context' => $nextTaskType === 'CONFIRM_POSTED' ? 'after_accept' : 'next_step',
+                'conversation_provider' => (string) ($profile->conversation_channel ?: $profile->preferred_channel ?: $profile->platform ?: ''),
+                'thread_reference' => (string) ($profile->conversation_url ?: ''),
             ]
         );
 
@@ -1136,6 +1316,8 @@ class TaskQueueService
             'aggressive_follow_up_delay_days' => 2,
             'reply_check_in_delay_days' => 2,
             'external_check_in_days' => 3,
+            'negotiation_check_in_delay_days' => 3,
+            'accepted_follow_up_delay_days' => 7,
             'max_follow_up_attempts' => 2,
             'high_value_warmup_enabled' => true,
             'high_value_threshold' => 75,
@@ -1143,6 +1325,8 @@ class TaskQueueService
             'warmup_gap_hours' => 12,
             'time_pressure_mode' => false,
             'archive_snooze_days' => 30,
+            'revival_review_enabled' => true,
+            'revival_review_interval_days' => 90,
         ];
     }
 
@@ -1161,11 +1345,14 @@ class TaskQueueService
             'aggressive_follow_up_delay_days',
             'reply_check_in_delay_days',
             'external_check_in_days',
+            'negotiation_check_in_delay_days',
+            'accepted_follow_up_delay_days',
             'max_follow_up_attempts',
             'high_value_threshold',
             'medium_value_threshold',
             'warmup_gap_hours',
             'archive_snooze_days',
+            'revival_review_interval_days',
         ];
         foreach ($ints as $key) {
             $merged[$key] = max(0, (int) ($merged[$key] ?? $defaults[$key]));
@@ -1173,6 +1360,7 @@ class TaskQueueService
 
         $merged['high_value_warmup_enabled'] = (bool) ($merged['high_value_warmup_enabled'] ?? $defaults['high_value_warmup_enabled']);
         $merged['time_pressure_mode'] = (bool) ($merged['time_pressure_mode'] ?? $defaults['time_pressure_mode']);
+        $merged['revival_review_enabled'] = (bool) ($merged['revival_review_enabled'] ?? $defaults['revival_review_enabled']);
         $merged['settings_edit_scope'] = in_array(($merged['settings_edit_scope'] ?? 'admins'), ['admins', 'all_seats'], true)
             ? $merged['settings_edit_scope']
             : 'admins';
@@ -1313,13 +1501,25 @@ class TaskQueueService
                 'group_key' => 'check-in:' . strtolower((string) ($metadata['group_context'] ?? 'general')),
                 'group_label' => !empty($metadata['group_context']) && $metadata['group_context'] === 'external_conversation'
                     ? 'Check outside-app conversations'
-                    : 'Check creator progress',
+                    : (!empty($metadata['group_context']) && $metadata['group_context'] === 'revival_review'
+                        ? 'Review older lost and archived creators'
+                        : 'Check creator progress'),
                 'group_type' => 'check_in',
             ],
             'NEGOTIATE_TERMS' => [
                 'group_key' => 'negotiation',
                 'group_label' => 'Advance active conversations',
                 'group_type' => 'negotiation',
+            ],
+            'CONFIRM_ACCEPTED' => [
+                'group_key' => 'after-accept:confirm-accepted',
+                'group_label' => 'Lock in accepted creators',
+                'group_type' => 'after_accept',
+            ],
+            'CONFIRM_POSTED' => [
+                'group_key' => 'after-accept:confirm-posted',
+                'group_label' => 'Track accepted creators to posting',
+                'group_type' => 'after_accept',
             ],
             'ARCHIVE_CREATOR' => [
                 'group_key' => 'cleanup',
@@ -1343,6 +1543,8 @@ class TaskQueueService
             'EMAIL_SEND' => 'Use email for this outreach because contact data exists.',
             'REVIEW_CREATOR' => 'Review the conversation and decide the next move.',
             'CHECK_IN' => 'Check where the conversation currently lives and log what happened.',
+            'CONFIRM_ACCEPTED' => 'Confirm the creator accepted and tee up the next delivery step.',
+            'CONFIRM_POSTED' => 'Check whether the agreed deliverable is live yet and log the result.',
             default => 'This creator is ready for the next outreach step.',
         };
     }
@@ -1380,6 +1582,7 @@ class TaskQueueService
             'NEGOTIATE_TERMS' => 'negotiation',
             'CHECK_IN' => 'check_in',
             'CONFIRM_ACCEPTED' => 'after_accept',
+            'CONFIRM_POSTED' => 'post_confirmation',
             default => 'cold_invite',
         };
     }
@@ -1401,6 +1604,8 @@ class TaskQueueService
             'COMMENT_ON_POST' => 'Love this post. The framing is strong.',
             'NEGOTIATE_TERMS' => 'Hey {{handle}}, excited to move this forward. Here are the details.',
             'CHECK_IN' => 'Quick check-in: where does the conversation stand right now?',
+            'CONFIRM_ACCEPTED' => 'Great to hear this is moving ahead. Here is the cleanest next step from our side.',
+            'CONFIRM_POSTED' => 'Quick check: did the agreed post or deliverable go live yet?',
             default => 'Hey {{handle}}, loved your content and think there could be a good fit here.',
         };
     }
@@ -1640,6 +1845,7 @@ class TaskQueueService
             'CHECK_IN' => 'CHECK_IN_LOGGED',
             'NEGOTIATE_TERMS' => 'TERMS_SENT',
             'CONFIRM_ACCEPTED' => 'FOLLOW_ACCEPTED_CONFIRMED',
+            'CONFIRM_POSTED' => 'POST_STATUS_CONFIRMED',
             'ARCHIVE_CREATOR' => 'CREATOR_ARCHIVED',
             default => 'TASK_COMPLETED',
         };
