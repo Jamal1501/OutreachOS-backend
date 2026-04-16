@@ -58,6 +58,7 @@ class AiController extends Controller
             'projectContext' => ['nullable', 'string'],
             'templateContext' => ['nullable', 'array'],
             'messageType' => ['nullable', 'string'],
+            'taskContext' => ['nullable', 'array'],
             'replyContext' => ['nullable', 'array'],
             'previousMessage' => ['nullable', 'string'],
             'conversationGoal' => ['nullable', 'string'],

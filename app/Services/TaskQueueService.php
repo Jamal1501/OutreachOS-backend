@@ -728,8 +728,8 @@ class TaskQueueService
     {
         return match ($taskType) {
             'FOLLOW_REQUEST' => 'This creator has not replied. Send a follow request to warm the relationship before trying again.',
-            'COMMENT_ON_POST' => 'This creator has not replied. Leave a natural comment on a recent post and reference that you sent a DM a few days ago if it fits.',
-            'EMAIL_SEND' => 'No reply yet. Use the available email as the next clean outreach step.',
+            'COMMENT_ON_POST' => 'This creator has not replied. Leave a natural public comment on a recent post as the next soft touch instead of forcing another DM.',
+            'EMAIL_SEND' => 'No reply yet. Use the available email as the next direct outreach channel.',
             default => 'No reply logged yet. Send a thoughtful follow-up or explicitly snooze or skip with a reason.',
         };
     }
@@ -1339,7 +1339,7 @@ class TaskQueueService
         return match ($taskType) {
             'FOLLOW_REQUEST' => 'Follow this creator to start warming the relationship.',
             'COMMENT_ON_POST' => 'Leave a natural comment or warm interaction before pushing the conversation forward.',
-            'DM_FOLLOWUP' => 'Take the next platform-safe follow-up step for this creator.',
+            'DM_FOLLOWUP' => 'Take the next platform-safe follow-up step for this creator. On Instagram or TikTok that often means a soft public touch, not another cold DM.',
             'EMAIL_SEND' => 'Use email for this outreach because contact data exists.',
             'REVIEW_CREATOR' => 'Review the conversation and decide the next move.',
             'CHECK_IN' => 'Check where the conversation currently lives and log what happened.',

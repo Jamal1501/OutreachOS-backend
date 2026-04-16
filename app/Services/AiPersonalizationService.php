@@ -16,6 +16,7 @@ class AiPersonalizationService
         $projectContext = trim((string) ($payload['projectContext'] ?? ''));
         $templateContext = (array) ($payload['templateContext'] ?? []);
         $replyContext = (array) ($payload['replyContext'] ?? []);
+        $taskContext = (array) ($payload['taskContext'] ?? []);
         $previousMessage = trim((string) ($payload['previousMessage'] ?? ''));
         $conversationGoal = trim((string) ($payload['conversationGoal'] ?? ''));
         $messageType = trim((string) ($payload['messageType'] ?? '')) ?: $this->defaultMessageType((string) ($creator['platform'] ?? 'instagram'));
@@ -59,6 +60,10 @@ class AiPersonalizationService
 Stage: " . ($stage !== '' ? $stage : 'unspecified')
             . "
 Message type: {$messageType}"
+            . (!empty($taskContext) ? "
+
+Task context:
+" . json_encode($taskContext, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) : '')
             . "
 
 Creator profile:
@@ -85,7 +90,7 @@ Conversation goal:
 {$conversationGoal}" : '')
             . "
 
-Return a sharp, usable draft with concise notes about why it fits.";
+Use the task context as the primary instruction for what this draft must actually do. If the task says warm-up comment, write a comment. If it says cold email, write an email. If it says soft-touch follow-up, do not write a DM. Return a sharp, usable draft with concise notes about why it fits.";
 
         $result = $this->ai->structured(
             $systemPrompt,
