@@ -66,37 +66,48 @@ class ScraperRegistryService
         $effectiveDiscoveryLimit = $this->normalizeDiscoveryLimitForSeeds($discoveryLimit, $seedCount, $discoveryModule);
         $effectiveEnrichmentLimit = $this->clampBatchSize($enrichmentLimit, $enrichmentModule);
 
-        $discoveryEstimate = $this->estimateCredits($discoveryModule['key'], null, null, [
-            'hashtags' => array_fill(0, $seedCount, 'seed'),
-            'resultsLimit' => $effectiveDiscoveryLimit,
-        ]);
+$discoveryEstimatePerSeed = $this->estimateCredits($discoveryModule['key'], null, null, [
+    'resultsLimit' => $effectiveDiscoveryLimit,
+]);
 
-        $enrichmentEstimate = $this->estimateCredits($enrichmentModule['key'], null, null, [
-            'directUrls' => array_fill(0, $effectiveEnrichmentLimit, 'profile-url'),
-            'resultsLimit' => $effectiveEnrichmentLimit,
-        ]);
+$discoveryCreditPerSeed = (int) ($discoveryEstimatePerSeed['credit_cost'] ?? 0);
+$discoveryUnitsPerSeed = (int) ($discoveryEstimatePerSeed['units'] ?? 0);
 
-        return [
-            'planId' => $planId,
-            'platform' => $platform,
-            'seedCount' => $seedCount,
-            'discovery' => [
-                'requestedLimit' => max(1, $discoveryLimit),
-                'effectiveLimitPerSeed' => $effectiveDiscoveryLimit,
-                'effectiveTotalRequested' => $effectiveDiscoveryLimit * $seedCount,
-                'module' => $discoveryModule,
-                'estimate' => $discoveryEstimate,
-            ],
-            'enrichment' => [
-                'requestedLimit' => max(1, $enrichmentLimit),
-                'effectiveLimit' => $effectiveEnrichmentLimit,
-                'module' => $enrichmentModule,
-                'estimate' => $enrichmentEstimate,
-            ],
-            'totals' => [
-                'scrapeCredits' => (int) ($discoveryEstimate['credit_cost'] ?? 0) + (int) ($enrichmentEstimate['credit_cost'] ?? 0),
-            ],
-        ];
+$totalDiscoveryCreditCost = $discoveryCreditPerSeed * $seedCount;
+$totalDiscoveryUnits = $discoveryUnitsPerSeed * $seedCount;
+
+$discoveryEstimate = $discoveryEstimatePerSeed;
+$discoveryEstimate['units_per_seed'] = $discoveryUnitsPerSeed;
+$discoveryEstimate['credit_cost_per_seed'] = $discoveryCreditPerSeed;
+$discoveryEstimate['units'] = $totalDiscoveryUnits;
+$discoveryEstimate['credit_cost'] = $totalDiscoveryCreditCost;
+
+$enrichmentEstimate = $this->estimateCredits($enrichmentModule['key'], null, null, [
+    'directUrls' => array_fill(0, $effectiveEnrichmentLimit, 'profile-url'),
+    'resultsLimit' => $effectiveEnrichmentLimit,
+]);
+
+return [
+    'planId' => $planId,
+    'platform' => $platform,
+    'seedCount' => $seedCount,
+    'discovery' => [
+        'requestedLimit' => max(1, $discoveryLimit),
+        'effectiveLimitPerSeed' => $effectiveDiscoveryLimit,
+        'effectiveTotalRequested' => $effectiveDiscoveryLimit * $seedCount,
+        'module' => $discoveryModule,
+        'estimate' => $discoveryEstimate,
+    ],
+    'enrichment' => [
+        'requestedLimit' => max(1, $enrichmentLimit),
+        'effectiveLimit' => $effectiveEnrichmentLimit,
+        'module' => $enrichmentModule,
+        'estimate' => $enrichmentEstimate,
+    ],
+    'totals' => [
+        'scrapeCredits' => $totalDiscoveryCreditCost + (int) ($enrichmentEstimate['credit_cost'] ?? 0),
+    ],
+];
     }
 
     public function resolvePipelineModule(string $planId, string $platform, string $stage, ?string $preferredModuleKey = null, bool $configuredOnly = true): array
