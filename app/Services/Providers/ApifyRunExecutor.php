@@ -108,7 +108,13 @@ class ApifyRunExecutor
 
             $runData = $this->pollRun($token, $runId);
             $datasetId = (string) ($runData['defaultDatasetId'] ?? '');
-            $items = $this->fetchDatasetItems($token, $datasetId);
+            $datasetFetchLimit = isset($context['fetchLimit']) && is_numeric($context['fetchLimit'])
+                ? max(1, (int) $context['fetchLimit'])
+                : (isset($input['resultsLimit']) && is_numeric($input['resultsLimit'])
+                    ? max(1, (int) $input['resultsLimit'])
+                    : (isset($input['directUrls']) && is_array($input['directUrls']) ? max(1, count($input['directUrls'])) : null));
+
+            $items = $this->fetchDatasetItems($token, $datasetId, $datasetFetchLimit);
 
             $this->usageLogger->logApify([
                 'actor_id' => $actorId,
@@ -180,19 +186,26 @@ class ApifyRunExecutor
         throw new RuntimeException('Timed out while waiting for Apify run ' . $runId);
     }
 
-    private function fetchDatasetItems(string $token, string $datasetId): array
+    private function fetchDatasetItems(string $token, string $datasetId, ?int $limit = null): array
     {
         if ($datasetId === '') {
             return [];
         }
 
+        $query = [
+            'clean' => 'true',
+            'format' => 'json',
+        ];
+
+        if ($limit !== null && $limit > 0) {
+            $query['limit'] = $limit;
+            $query['offset'] = 0;
+        }
+
         $response = Http::withToken($token)
             ->acceptJson()
             ->timeout(90)
-            ->get("https://api.apify.com/v2/datasets/{$datasetId}/items", [
-                'clean' => 'true',
-                'format' => 'json',
-            ]);
+            ->get("https://api.apify.com/v2/datasets/{$datasetId}/items", $query);
 
         if (!$response->successful()) {
             throw new RuntimeException('Failed to fetch dataset items: ' . $response->body());

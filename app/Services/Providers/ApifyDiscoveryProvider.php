@@ -30,6 +30,7 @@ class ApifyDiscoveryProvider implements DiscoveryProvider
         ], array_merge($context, [
             'moduleKey' => $module['key'],
             'stage' => 'discovery',
+            'fetchLimit' => $effectiveResultsLimit,
         ]));
 
         $trimmedItems = count($result->items) > $limit ? array_slice($result->items, 0, $limit) : $result->items;

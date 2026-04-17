@@ -63,6 +63,7 @@ class PipelineDiscoveryService
             'criteria' => $payload['criteria'] ?? null,
             'brief' => $payload['brief'] ?? null,
             'filterSummary' => null,
+            'resultsPreviewReady' => false,
             'projectId' => $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId((string) $payload['sheetId'])->id : null,
             'createdAt' => now()->toDateTimeString(),
             'updatedAt' => now()->toDateTimeString(),
@@ -97,6 +98,7 @@ public function getJobState(string $jobId): ?array
             'criteria' => $result['criteria'] ?? Arr::get($run->request_payload, 'criteria'),
             'filterSummary' => $result['filterSummary'] ?? null,
             'brief' => $result['brief'] ?? Arr::get($run->request_payload, 'brief'),
+            'resultsPreviewReady' => (bool) ($result['resultsPreviewReady'] ?? false),
             'createdAt' => optional($run->created_at)?->toDateTimeString(),
             'updatedAt' => optional($run->updated_at)?->toDateTimeString(),
             'finishedAt' => optional($run->finished_at)?->toDateTimeString(),
@@ -213,6 +215,14 @@ public function getJobState(string $jobId): ?array
             ];
             $this->completeStep($jobId, 'extract_urls', end($stepResults));
             $this->markDiscoveryProfilesPromoted($jobId, $projectId, array_column($profiles, 'profileUrl'));
+
+            $previewCreators = $this->buildPreviewCreatorsResponse($profiles, $sourceHashtagsByUrl);
+
+            $this->updateJob($jobId, [
+                'creators' => $previewCreators,
+                'totalCreators' => count($previewCreators),
+                'resultsPreviewReady' => count($previewCreators) > 0,
+            ]);
 
             if (count($profiles) === 0) {
                 $final = [
@@ -433,6 +443,7 @@ public function getJobState(string $jobId): ?array
         'criteria' => $state['criteria'] ?? Arr::get($state, 'request.criteria'),
         'filterSummary' => $state['filterSummary'] ?? null,
         'brief' => $state['brief'] ?? Arr::get($state, 'request.brief'),
+        'resultsPreviewReady' => (bool) ($state['resultsPreviewReady'] ?? false),
     ],
     is_array($state['result'] ?? null) ? $state['result'] : []
 );
@@ -1032,6 +1043,53 @@ private function selectProfilesFromRankedPosts(
         }
 
         return $matches;
+    }
+
+    private function buildPreviewCreatorsResponse(array $profiles, array $sourceHashtagsByUrl): array
+    {
+        return array_values(array_map(function (array $profile) use ($sourceHashtagsByUrl) {
+            $profileUrl = (string) ($profile['profileUrl'] ?? '');
+            $profileKey = $this->normalizeProfileUrlKey($profileUrl);
+
+            return [
+                'id' => (string) ($profile['profileUrl'] ?? $profile['handle'] ?? Str::uuid()),
+                'platform' => (string) ($profile['platform'] ?? 'instagram'),
+                'handle' => (string) ($profile['handle'] ?? ''),
+                'fullName' => null,
+                'profileUrl' => $profileUrl,
+                'avatarUrl' => null,
+                'followers' => null,
+                'engagementRate' => null,
+                'email' => null,
+                'bio' => null,
+                'postsCount' => null,
+                'avgLikes' => null,
+                'avgComments' => null,
+                'isVerified' => null,
+                'readyToMerge' => false,
+                'sourceHashtags' => $sourceHashtagsByUrl[$profileKey] ?? array_values(array_filter((array) ($profile['sourceHashtags'] ?? []))),
+                'sourcePostUrl' => $profile['sourcePostUrl'] ?? null,
+                'sourceMetricType' => $profile['sourceMetricType'] ?? null,
+                'sourceMetricValue' => $profile['sourceMetricValue'] ?? null,
+                'sourcePostMetrics' => $profile['sourcePostMetrics'] ?? null,
+                'matchedPostCount' => $profile['matchedPostCount'] ?? 1,
+                'alreadyInCrm' => (bool) ($profile['alreadyInCrm'] ?? false),
+                'latestPostAt' => null,
+                'locationHint' => null,
+                'languageHints' => [],
+                'genderHint' => null,
+                'nicheHints' => [],
+                'fitScore' => null,
+                'matchAccuracy' => null,
+                'matchCategory' => 'partial',
+                'recommendedForImport' => false,
+                'matchReasons' => ['Preview only — enrichment still running'],
+                'rejectReasons' => [],
+                'valueScore' => null,
+                'valueTier' => null,
+                'priorityScore' => null,
+            ];
+        }, $profiles));
     }
 
     private function profilesByProfileUrl(array $profiles): array

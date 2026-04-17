@@ -53,6 +53,7 @@ class ApifyEnrichmentProvider implements EnrichmentProvider
         $result = $this->executor->run($actorKey, $platform, $input, array_merge($context, [
             'moduleKey' => $module['key'],
             'stage' => 'enrichment',
+            'fetchLimit' => max(1, count($cleanUrls)),
         ]));
 
         return new ProviderRunResult(

@@ -6,6 +6,7 @@ use App\Models\Workspace;
 use App\Models\WorkspaceMember;
 use Closure;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Symfony\Component\HttpFoundation\Response;
 
 class ResolveWorkspaceContext
@@ -22,11 +23,15 @@ class ResolveWorkspaceContext
         $supabaseUserId = trim((string) ($request->attributes->get('supabase_user_id') ?: $user?->supabase_user_id));
 
         if ($workspaceId === '' && $supabaseUserId !== '') {
-            $memberships = WorkspaceMember::query()
-                ->where('user_id', $supabaseUserId)
-                ->orderBy('joined_at')
-                ->limit(2)
-                ->get(['workspace_id', 'role']);
+            $memberships = Cache::remember(
+                sprintf('workspace-context:user-memberships:%s', $supabaseUserId),
+                30,
+                fn () => WorkspaceMember::query()
+                    ->where('user_id', $supabaseUserId)
+                    ->orderBy('joined_at')
+                    ->limit(2)
+                    ->get(['workspace_id', 'role'])
+            );
 
             if ($memberships->count() === 1) {
                 $workspaceId = (string) $memberships->first()->workspace_id;
@@ -40,7 +45,11 @@ class ResolveWorkspaceContext
         }
 
         /** @var Workspace|null $workspace */
-        $workspace = Workspace::query()->find($workspaceId);
+        $workspace = Cache::remember(
+            sprintf('workspace-context:workspace:%s', $workspaceId),
+            30,
+            fn () => Workspace::query()->find($workspaceId)
+        );
         if (!$workspace) {
             return response()->json([
                 'error' => 'Workspace not found.',
@@ -49,10 +58,14 @@ class ResolveWorkspaceContext
 
         $membership = null;
         if ($supabaseUserId !== '') {
-            $membership = WorkspaceMember::query()
-                ->where('workspace_id', $workspaceId)
-                ->where('user_id', $supabaseUserId)
-                ->first();
+            $membership = Cache::remember(
+                sprintf('workspace-context:membership:%s:%s', $workspaceId, $supabaseUserId),
+                30,
+                fn () => WorkspaceMember::query()
+                    ->where('workspace_id', $workspaceId)
+                    ->where('user_id', $supabaseUserId)
+                    ->first()
+            );
 
             if (!$membership) {
                 return response()->json([

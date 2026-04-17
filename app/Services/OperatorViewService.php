@@ -258,7 +258,20 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
             ->where('project_id', $projectId)
             ->get();
 
-        $creators = $profiles->map(fn (CreatorProfile $profile) => $this->normalizeCreatorProfileCard($profile))->values()->all();
+        $linkedProfileCounts = CreatorProfile::query()
+            ->where('project_id', $projectId)
+            ->whereNotNull('creator_id')
+            ->selectRaw('creator_id, COUNT(*) as aggregate')
+            ->groupBy('creator_id')
+            ->pluck('aggregate', 'creator_id');
+
+        $creators = $profiles
+            ->map(function (CreatorProfile $profile) use ($linkedProfileCounts) {
+                return $this->normalizeCreatorProfileCard($profile, (int) ($linkedProfileCounts[$profile->creator_id] ?? 1));
+            })
+            ->values()
+            ->all();
+
         $duplicates = $this->detectDuplicateWarnings($creators);
         $duplicateByCreator = [];
 
@@ -268,14 +281,17 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
             }
         }
 
-$tasks = $this->normalizeDbTasks(
-    Task::query()
-        ->with('creatorProfile')
-        ->where('project_id', $projectId)
-        ->orderBy('due_at')
-        ->get()
-        ->all()
-);        $openTaskByCreator = [];
+        $tasks = $this->normalizeDbTasks(
+            Task::query()
+                ->with('creatorProfile')
+                ->where('project_id', $projectId)
+                ->whereNotIn('status', ['COMPLETED', 'DONE', 'SKIPPED', 'ARCHIVED'])
+                ->orderBy('due_at')
+                ->get()
+                ->all()
+        );
+
+        $openTaskByCreator = [];
         foreach ($tasks as $task) {
             if (in_array($task['status'], ['completed', 'skipped'], true)) {
                 continue;
@@ -308,7 +324,12 @@ $tasks = $this->normalizeDbTasks(
         usort($tasksDueToday, fn (array $a, array $b) => strcmp((string) ($a['dueDate'] ?? ''), (string) ($b['dueDate'] ?? '')));
 
         $recentActivity = $this->normalizeDbRecentActivity(
-            OutreachEvent::query()->where('project_id', $projectId)->orderByDesc('sent_at')->limit(100)->get()->all()
+            OutreachEvent::query()
+                ->where('project_id', $projectId)
+                ->orderByDesc('sent_at')
+                ->limit(24)
+                ->get()
+                ->all()
         );
 
         $outreachSent = OutreachEvent::query()
@@ -570,7 +591,7 @@ $tasks = $this->normalizeDbTasks(
         ];
     }
 
-    private function normalizeCreatorProfileCard(CreatorProfile $profile): array
+    private function normalizeCreatorProfileCard(CreatorProfile $profile, ?int $linkedProfileCount = null): array
     {
         $creator = $profile->creator;
         $rawState = (string) ($profile->lifecycle_state ?: $profile->status ?: '');
@@ -605,7 +626,7 @@ $tasks = $this->normalizeDbTasks(
             'preferredChannel' => (string) ($profile->preferred_channel ?: ''),
             'duplicateRisk' => $profile->duplicate_flag ? 'medium' : 'low',
             'creatorIdentityId' => (string) ($creator?->external_identity_key ?: ''),
-            'linkedProfileCount' => $creator ? $creator->profiles()->count() : 1,
+            'linkedProfileCount' => $linkedProfileCount ?? 1,
             'openTaskCount' => 0,
             'sourcePostUrl' => (string) (($sourceMetadata['source_post_url'] ?? $creatorMetadata['latest_source_post_url'] ?? '') ?: ''),
             'sourcePostUrls' => array_values(array_filter((array) ($sourceMetadata['source_post_urls'] ?? $creatorMetadata['source_post_urls'] ?? []))),
