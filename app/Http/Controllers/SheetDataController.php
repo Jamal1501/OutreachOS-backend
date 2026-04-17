@@ -1702,6 +1702,26 @@ return [
         }
 
         $query = CreatorProfile::query()
+            ->select([
+                'id',
+                'project_id',
+                'creator_id',
+                'platform',
+                'handle',
+                'username',
+                'profile_pic_url',
+                'followers_count',
+                'engagement_rate_pct',
+                'profile_url',
+                'dm_link',
+                'status',
+                'lifecycle_state',
+                'preferred_channel',
+                'created_at',
+                'dm_sent_at',
+                'value_score',
+                'source_metadata',
+            ])
             ->with(['creator:id,display_name,primary_email,country,city,primary_language,niche_category,notes'])
             ->where('project_id', $project->id);
 

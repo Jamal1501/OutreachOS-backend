@@ -10,6 +10,7 @@ use App\Models\WorkspaceSubscription;
 use App\Models\WorkspaceUsageEvent;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -61,51 +62,57 @@ class WorkspaceBillingService
 
     public function summary(string $workspaceId): array
     {
-        [$subscription, $wallet, $plan] = $this->ensureWorkspaceBilling($workspaceId);
+        return Cache::remember(
+            sprintf('workspace-billing:summary:%s', $workspaceId),
+            10,
+            function () use ($workspaceId) {
+                [$subscription, $wallet, $plan] = $this->ensureWorkspaceBilling($workspaceId);
 
-        $usage = WorkspaceUsageEvent::query()
-            ->where('workspace_id', $workspaceId)
-            ->where('status', 'consumed')
-            ->selectRaw("
-                COALESCE(SUM(CASE WHEN credit_bucket = 'scrape' THEN credit_cost ELSE 0 END), 0) as consumed_scrape_credits,
-                COALESCE(SUM(CASE WHEN credit_bucket = 'ai' THEN credit_cost ELSE 0 END), 0) as consumed_ai_credits,
-                COALESCE(SUM(provider_cost_usd), 0) as provider_spend_usd
-            ")
-            ->first();
+                $usage = WorkspaceUsageEvent::query()
+                    ->where('workspace_id', $workspaceId)
+                    ->where('status', 'consumed')
+                    ->selectRaw("
+                        COALESCE(SUM(CASE WHEN credit_bucket = 'scrape' THEN credit_cost ELSE 0 END), 0) as consumed_scrape_credits,
+                        COALESCE(SUM(CASE WHEN credit_bucket = 'ai' THEN credit_cost ELSE 0 END), 0) as consumed_ai_credits,
+                        COALESCE(SUM(provider_cost_usd), 0) as provider_spend_usd
+                    ")
+                    ->first();
 
-        return [
-            'workspaceId' => $workspaceId,
-            'subscription' => [
-                'planId' => $subscription->plan_id,
-                'status' => $subscription->status,
-                'currentPeriodStart' => optional($subscription->current_period_start)?->toIso8601String(),
-                'currentPeriodEnd' => optional($subscription->current_period_end)?->toIso8601String(),
-                'trialEndsAt' => optional($subscription->trial_ends_at)?->toIso8601String(),
-            ],
-            'wallet' => [
-                'scrapeCreditsBalance' => (int) $wallet->scrape_credits_balance,
-                'aiCreditsBalance' => (int) $wallet->ai_credits_balance,
-                'bonusScrapeCredits' => (int) $wallet->bonus_scrape_credits,
-                'bonusAiCredits' => (int) $wallet->bonus_ai_credits,
-                'totalScrapeCreditsAvailable' => (int) $wallet->scrape_credits_balance + (int) $wallet->bonus_scrape_credits,
-                'totalAiCreditsAvailable' => (int) $wallet->ai_credits_balance + (int) $wallet->bonus_ai_credits,
-                'lifetimeScrapeUsed' => (int) $wallet->lifetime_scrape_used,
-                'lifetimeAiUsed' => (int) $wallet->lifetime_ai_used,
-            ],
-            'usage' => [
-                'consumedScrapeCredits' => (int) ($usage->consumed_scrape_credits ?? 0),
-                'consumedAiCredits' => (int) ($usage->consumed_ai_credits ?? 0),
-                'providerSpendUsd' => round((float) ($usage->provider_spend_usd ?? 0), 4),
-            ],
-            'entitlements' => [
-                'monthlyScrapeCredits' => (int) Arr::get($plan, 'monthly_scrape_credits', 0),
-                'monthlyAiCredits' => (int) Arr::get($plan, 'monthly_ai_credits', 0),
-                'trialScrapeCredits' => (int) Arr::get($plan, 'trial_scrape_credits', 0),
-                'trialAiCredits' => (int) Arr::get($plan, 'trial_ai_credits', 0),
-                'topupPriceMultiplier' => (float) Arr::get($plan, 'topup_price_multiplier', 1),
-                'scraperModuleKeys' => array_values(array_map(fn (array $module) => $module['key'], $this->scrapers->availableForPlan((string) Arr::get($plan, 'id', 'free')))),
-            ],
-        ];
+                return [
+                    'workspaceId' => $workspaceId,
+                    'subscription' => [
+                        'planId' => $subscription->plan_id,
+                        'status' => $subscription->status,
+                        'currentPeriodStart' => optional($subscription->current_period_start)?->toIso8601String(),
+                        'currentPeriodEnd' => optional($subscription->current_period_end)?->toIso8601String(),
+                        'trialEndsAt' => optional($subscription->trial_ends_at)?->toIso8601String(),
+                    ],
+                    'wallet' => [
+                        'scrapeCreditsBalance' => (int) $wallet->scrape_credits_balance,
+                        'aiCreditsBalance' => (int) $wallet->ai_credits_balance,
+                        'bonusScrapeCredits' => (int) $wallet->bonus_scrape_credits,
+                        'bonusAiCredits' => (int) $wallet->bonus_ai_credits,
+                        'totalScrapeCreditsAvailable' => (int) $wallet->scrape_credits_balance + (int) $wallet->bonus_scrape_credits,
+                        'totalAiCreditsAvailable' => (int) $wallet->ai_credits_balance + (int) $wallet->bonus_ai_credits,
+                        'lifetimeScrapeUsed' => (int) $wallet->lifetime_scrape_used,
+                        'lifetimeAiUsed' => (int) $wallet->lifetime_ai_used,
+                    ],
+                    'usage' => [
+                        'consumedScrapeCredits' => (int) ($usage->consumed_scrape_credits ?? 0),
+                        'consumedAiCredits' => (int) ($usage->consumed_ai_credits ?? 0),
+                        'providerSpendUsd' => round((float) ($usage->provider_spend_usd ?? 0), 4),
+                    ],
+                    'entitlements' => [
+                        'monthlyScrapeCredits' => (int) Arr::get($plan, 'monthly_scrape_credits', 0),
+                        'monthlyAiCredits' => (int) Arr::get($plan, 'monthly_ai_credits', 0),
+                        'trialScrapeCredits' => (int) Arr::get($plan, 'trial_scrape_credits', 0),
+                        'trialAiCredits' => (int) Arr::get($plan, 'trial_ai_credits', 0),
+                        'topupPriceMultiplier' => (float) Arr::get($plan, 'topup_price_multiplier', 1),
+                        'scraperModuleKeys' => array_values(array_map(fn (array $module) => $module['key'], $this->scrapers->availableForPlan((string) Arr::get($plan, 'id', 'free')))),
+                    ],
+                ];
+            }
+        );
     }
 
     public function catalog(string $workspaceId): array

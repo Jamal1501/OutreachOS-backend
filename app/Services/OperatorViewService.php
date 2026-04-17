@@ -254,7 +254,32 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
     private function buildFromDatabase(int $projectId): array
     {
         $profiles = CreatorProfile::query()
-            ->with('creator')
+            ->select([
+                'id',
+                'project_id',
+                'creator_id',
+                'platform',
+                'handle',
+                'username',
+                'profile_pic_url',
+                'followers_count',
+                'engagement_rate_pct',
+                'profile_url',
+                'dm_link',
+                'status',
+                'lifecycle_state',
+                'preferred_channel',
+                'duplicate_flag',
+                'source_metadata',
+                'source_provider',
+                'created_at',
+                'updated_at',
+                'dm_sent_at',
+                'responded_at',
+                'last_content_at',
+                'value_score',
+            ])
+            ->with(['creator:id,display_name,primary_email,niche_category,notes,external_identity_key,metadata'])
             ->where('project_id', $projectId)
             ->get();
 
@@ -283,7 +308,23 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
 
         $tasks = $this->normalizeDbTasks(
             Task::query()
-                ->with('creatorProfile')
+                ->select([
+                    'id',
+                    'creator_profile_id',
+                    'external_task_key',
+                    'task_type',
+                    'platform',
+                    'handle',
+                    'status',
+                    'priority',
+                    'due_at',
+                    'created_at',
+                    'completed_at',
+                    'message_draft',
+                    'open_url',
+                    'notes',
+                ])
+                ->with(['creatorProfile:id,profile_pic_url'])
                 ->where('project_id', $projectId)
                 ->whereNotIn('status', ['COMPLETED', 'DONE', 'SKIPPED', 'ARCHIVED'])
                 ->orderBy('due_at')
@@ -325,6 +366,17 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
 
         $recentActivity = $this->normalizeDbRecentActivity(
             OutreachEvent::query()
+                ->select([
+                    'id',
+                    'external_event_key',
+                    'event_type',
+                    'notes',
+                    'sent_at',
+                    'created_at',
+                    'handle',
+                    'platform',
+                    'status',
+                ])
                 ->where('project_id', $projectId)
                 ->orderByDesc('sent_at')
                 ->limit(24)
@@ -383,7 +435,16 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         }
 
         $creator = $this->normalizeCreatorProfileCard($profile);
-        $allCreators = CreatorProfile::query()->with('creator')->where('project_id', $projectId)->get()->map(fn (CreatorProfile $item) => $this->normalizeCreatorProfileCard($item))->values()->all();
+        $allCreators = CreatorProfile::query()
+            ->select([
+                'id', 'project_id', 'creator_id', 'platform', 'handle', 'username', 'profile_pic_url', 'followers_count', 'engagement_rate_pct', 'profile_url', 'dm_link', 'status', 'lifecycle_state', 'preferred_channel', 'duplicate_flag', 'source_metadata', 'source_provider', 'created_at', 'updated_at', 'dm_sent_at', 'responded_at', 'last_content_at', 'value_score',
+            ])
+            ->with(['creator:id,display_name,primary_email,niche_category,notes,external_identity_key,metadata'])
+            ->where('project_id', $projectId)
+            ->get()
+            ->map(fn (CreatorProfile $item) => $this->normalizeCreatorProfileCard($item))
+            ->values()
+            ->all();
         $duplicates = array_values(array_filter(
             $this->detectDuplicateWarnings($allCreators),
             fn (array $warning) => collect($warning['creators'])->contains(fn (array $item) => $item['id'] === $creator['id'])
