@@ -63,7 +63,7 @@ return [
             'target_sheet' => 'Instagram_Posts_Raw',
             'allowed_plans' => ['free', 'pro', 'enterprise'],
             'default_batch_size' => 20,
-            'max_batch_size' => 100,
+            'max_batch_size' => 500,
             'fields' => [
                 'handle', 'profileUrl', 'fullName', 'followersCount', 'postsCount', 'bio', 'verified', 'profilePicUrl', 'latestPostUrl',
             ],
@@ -114,7 +114,7 @@ return [
             'target_sheet' => 'TikTok_Posts_Raw',
             'allowed_plans' => ['free', 'pro', 'enterprise'],
             'default_batch_size' => 20,
-            'max_batch_size' => 100,
+            'max_batch_size' => 500,
             'fields' => [
                 'handle', 'profileUrl', 'nickname', 'followersCount', 'videoCount', 'bio', 'avatarUrl', 'latestPostUrl',
             ],
