@@ -396,8 +396,21 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
                 $dbProfile->lifecycle_state = $normalizedStatus;
                 $dbProfile->status = $this->lifecycle->sheetStatusForState($normalizedStatus);
             }
+            if (array_key_exists('duplicateReviewOutcome', $payload) || array_key_exists('duplicateReviewed', $payload)) {
+                $outcome = trim((string) ($payload['duplicateReviewOutcome'] ?? 'not_duplicate')) ?: 'not_duplicate';
+                $meta = is_array($dbProfile->source_metadata) ? $dbProfile->source_metadata : [];
+                $meta['duplicate_review_outcome'] = $outcome;
+                $meta['duplicate_reviewed_at'] = now()->toIso8601String();
+                $dbProfile->source_metadata = $meta;
+                $dbProfile->duplicate_flag = null;
 
-            $sheetRecord = $this->sheetRecordFromProfile($dbProfile);
+                if ($outcome === 'not_duplicate' && $this->lifecycle->normalizeState((string) ($dbProfile->lifecycle_state ?: $dbProfile->status ?: ''), 'enriched') === 'duplicate_review_needed') {
+                    $dbProfile->lifecycle_state = 'enriched';
+                    $dbProfile->status = $this->lifecycle->sheetStatusForState('enriched');
+                }
+            }
+
+            $sheetRecord = $this->scoreRecordFromProfile($dbProfile);
             $score = $this->scoring->score($sheetRecord);
             $dbProfile->value_score = (int) round($score);
             $dbProfile->value_bar = $this->scoring->bar($score);
@@ -424,6 +437,14 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
 
         if (!$target) {
             return response()->json(['error' => 'Creator not found'], 404);
+        }
+
+        if (array_key_exists('duplicateReviewOutcome', $payload) || array_key_exists('duplicateReviewed', $payload)) {
+            $target['Duplicate_Flag'] = '';
+            if (strtolower((string) ($target['Status'] ?? '')) === 'duplicate_review_needed') {
+                $target['Status'] = 'enriched';
+            }
+            $target['Notes'] = $this->upsertTaggedValue((string) ($target['Notes'] ?? ''), 'duplicate_review_outcome', (string) ($payload['duplicateReviewOutcome'] ?? 'not_duplicate'));
         }
 
         foreach (['niche', 'status', 'notes', 'email', 'fullName'] as $field) {
@@ -454,6 +475,40 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
         ]);
     }
 
+
+    public function deleteCreator(Request $request, string $id)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+        ]);
+
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
+        $dbProfile = $this->resolveCreatorProfileForRoute($sheetId, $id);
+
+        if ($dbProfile) {
+            $dbProfile->loadMissing('creator');
+            $creator = $dbProfile->creator;
+            $dbProfile->delete();
+
+            if ($creator && $creator->profiles()->count() === 0) {
+                $creator->delete();
+            }
+
+            return response()->json([
+                'message' => 'Creator removed',
+                'source' => 'database',
+            ]);
+        }
+
+        $rowNumber = $this->parseRowNumber($id, 'crm');
+        $this->sheets->clearAssocRow($sheetId, 'Creators_CRM', $rowNumber);
+        $this->mirror->syncCreators($sheetId, [$rowNumber]);
+
+        return response()->json([
+            'message' => 'Creator removed',
+            'source' => 'google_sheets',
+        ]);
+    }
 
     public function linkProfiles(Request $request)
     {
@@ -514,7 +569,14 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
                     $profile->creator_id = $primaryCreator->id;
                     $meta = is_array($profile->source_metadata) ? $profile->source_metadata : [];
                     $meta['creator_identity_id'] = $identityId;
+                    $meta['duplicate_review_outcome'] = 'linked';
+                    $meta['duplicate_reviewed_at'] = now()->toIso8601String();
                     $profile->source_metadata = $meta;
+                    $profile->duplicate_flag = null;
+                    if ($this->lifecycle->normalizeState((string) ($profile->lifecycle_state ?: $profile->status ?: ''), 'enriched') === 'duplicate_review_needed') {
+                        $profile->lifecycle_state = 'enriched';
+                        $profile->status = $this->lifecycle->sheetStatusForState('enriched');
+                    }
                     $profile->save();
                 }
 
@@ -551,6 +613,8 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
                     'data' => [
                         'creatorIdentityId' => $identityId,
                         'linked' => $linked,
+                        'linkedCreatorIds' => array_values(array_map(fn (array $item) => (string) $item['id'], $linked)),
+                        'linkedProfileCount' => count($linked),
                         'primaryCreatorId' => $this->extractSourceRowNumberFromProfile($primaryProfile) > 0 ? 'crm:' . $this->extractSourceRowNumberFromProfile($primaryProfile) : 'crmdb:' . $primaryProfile->id,
                     ],
                     'source' => 'database',
@@ -609,6 +673,8 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
             'data' => [
                 'creatorIdentityId' => $identityId,
                 'linked' => $linked,
+                'linkedCreatorIds' => array_values(array_map(fn (array $item) => (string) $item['id'], $linked)),
+                'linkedProfileCount' => count($linked),
                 'primaryCreatorId' => 'crm:' . $primaryRowNumber,
             ],
             'source' => 'google_sheets',
@@ -1536,6 +1602,24 @@ $profile->source_reference = $candidate['sourceReference'];
                 if ($candidate['matchedPostCount'] !== null) {
                     $sourceMetadata['matched_post_count'] = max((int) ($sourceMetadata['matched_post_count'] ?? 0), (int) $candidate['matchedPostCount']);
                 }
+                if ($candidate['valueScore'] !== null) {
+                    $sourceMetadata['discovery_value_score'] = $candidate['valueScore'];
+                }
+                if ($candidate['valueTier'] !== null) {
+                    $sourceMetadata['discovery_value_tier'] = $candidate['valueTier'];
+                }
+                if ($candidate['priorityScore'] !== null) {
+                    $sourceMetadata['priority_score'] = $candidate['priorityScore'];
+                }
+                if ($candidate['matchAccuracy'] !== null) {
+                    $sourceMetadata['match_accuracy'] = $candidate['matchAccuracy'];
+                }
+                if ($candidate['matchCategory'] !== null) {
+                    $sourceMetadata['match_category'] = $candidate['matchCategory'];
+                }
+                if (is_array($candidate['nicheHints']) && $candidate['nicheHints'] !== []) {
+                    $sourceMetadata['niche_hints'] = $candidate['nicheHints'];
+                }
                 $sourceMetadata['bio'] = $candidate['bio'];
                 $sourceMetadata['posts_count'] = $candidate['postsCount'];
                 $sourceMetadata['avg_likes'] = $candidate['avgLikes'];
@@ -1546,7 +1630,10 @@ $profile->source_reference = $candidate['sourceReference'];
                 $profile->save();
 
                 $profile->loadMissing('creator');
-                $score = $this->scoring->score($this->sheetRecordFromProfile($profile));
+                $score = $this->scoring->score($this->scoreRecordFromProfile($profile));
+                if ($candidate['valueScore'] !== null) {
+                    $score = max($score, (float) $candidate['valueScore']);
+                }
                 $profile->value_score = (int) round($score);
                 $profile->value_bar = $this->scoring->bar($score);
                 $profile->save();
@@ -1611,12 +1698,18 @@ $avatarUrl = trim((string) (
 $fullName = trim((string) ($payload['fullName'] ?? '')) ?: null;
 $email = trim((string) ($payload['email'] ?? '')) ?: null;
 $bio = trim((string) ($payload['bio'] ?? '')) ?: null;
-$niche = $sourceHashtags[0] ?? null;
+$niche = trim((string) ($payload['niche'] ?? '')) ?: ($sourceHashtags[0] ?? null);
 $mergeRef = trim((string) ($payload['mergeRef'] ?? ''));
 $sourceReference = $mergeRef !== ''
     ? $mergeRef
     : ($profileUrl !== '' ? $platform . ':source-url:' . rawurlencode(rtrim(strtolower($profileUrl), '/')) : null);
 $identitySeed = $profileUrl !== '' ? strtolower(rtrim($profileUrl, '/')) : strtolower(ltrim($handle, '@'));
+$valueScore = $this->sanitizeFloat($payload['valueScore'] ?? null);
+$priorityScore = $this->sanitizeFloat($payload['priorityScore'] ?? null);
+$matchAccuracy = $this->sanitizeFloat($payload['matchAccuracy'] ?? null);
+$valueTier = trim((string) ($payload['valueTier'] ?? '')) ?: null;
+$matchCategory = trim((string) ($payload['matchCategory'] ?? '')) ?: null;
+$nicheHints = array_values(array_filter(array_map(fn ($hint) => trim((string) $hint), (array) ($payload['nicheHints'] ?? [])), fn ($hint) => $hint !== ''));
 
 return [
     'id' => trim((string) ($payload['id'] ?? '')) ?: null,
@@ -1642,6 +1735,12 @@ return [
     'sourceMetricValue' => $this->sanitizeMetric($payload['sourceMetricValue'] ?? null),
     'sourcePostMetrics' => is_array($payload['sourcePostMetrics'] ?? null) ? $payload['sourcePostMetrics'] : null,
     'matchedPostCount' => $this->sanitizeMetric($payload['matchedPostCount'] ?? null),
+    'valueScore' => $valueScore,
+    'valueTier' => $valueTier,
+    'priorityScore' => $priorityScore,
+    'matchAccuracy' => $matchAccuracy,
+    'matchCategory' => $matchCategory,
+    'nicheHints' => $nicheHints,
 ];
     }
 
@@ -1701,20 +1800,29 @@ return [
             return null;
         }
 
+        $statusFilter = trim((string) ($filters['status'] ?? ''));
+        $duplicateReviewOnly = $statusFilter === 'duplicate_review_needed';
+        $limit = max(1, min(500, (int) ($filters['limit'] ?? 200)));
+        $offset = max(0, (int) ($filters['offset'] ?? 0));
+
         $query = CreatorProfile::query()
-            ->with(['creator:id,display_name,primary_email,country,city,primary_language,niche_category,notes'])
+            ->with(['creator:id,display_name,primary_email,country,city,primary_language,niche_category,notes,external_identity_key'])
             ->where('project_id', $project->id);
 
         if (($filters['platform'] ?? '') !== '') {
             $query->where('platform', $filters['platform']);
         }
 
-        if (($filters['status'] ?? '') !== '') {
-            $query->where('lifecycle_state', $filters['status']);
+        if ($statusFilter !== '' && !$duplicateReviewOnly) {
+            $query->where('lifecycle_state', $statusFilter);
         }
 
         if (($filters['niche'] ?? '') !== '') {
-            $query->whereHas('creator', fn ($q) => $q->whereRaw("LOWER(COALESCE(niche_category, '')) = ?", [$filters['niche']]));
+            $niche = trim((string) $filters['niche']);
+            $query->where(function ($profileQuery) use ($niche) {
+                $profileQuery->whereHas('creator', fn ($q) => $q->whereRaw("LOWER(COALESCE(niche_category, '')) = ?", [$niche]))
+                    ->orWhereRaw("LOWER(CAST(source_metadata AS TEXT)) LIKE ?", ['%"' . strtolower($niche) . '"%']);
+            });
         }
 
         if (($filters['added_from'] ?? '') !== '') {
@@ -1730,6 +1838,7 @@ return [
             $query->where(function ($q) use ($searchLike) {
                 $q->whereRaw('LOWER(handle) LIKE ?', [$searchLike])
                     ->orWhereRaw("LOWER(COALESCE(username, '')) LIKE ?", [$searchLike])
+                    ->orWhereRaw("LOWER(CAST(source_metadata AS TEXT)) LIKE ?", [$searchLike])
                     ->orWhereHas('creator', function ($creatorQuery) use ($searchLike) {
                         $creatorQuery->whereRaw("LOWER(COALESCE(display_name, '')) LIKE ?", [$searchLike])
                             ->orWhereRaw("LOWER(COALESCE(primary_email, '')) LIKE ?", [$searchLike])
@@ -1740,18 +1849,17 @@ return [
 
         $total = (clone $query)->count();
         if ($total === 0) {
-            return [
-                'items' => [],
-                'total' => 0,
-            ];
+            return ['items' => [], 'total' => 0];
         }
 
-        $profiles = $query
-            ->orderByDesc('created_at')
-            ->offset((int) ($filters['offset'] ?? 0))
-            ->limit((int) ($filters['limit'] ?? 200))
-            ->get();
+        $profilesQuery = $query->orderByDesc('created_at');
+        if ($duplicateReviewOnly) {
+            $profilesQuery->limit(500);
+        } else {
+            $profilesQuery->offset($offset)->limit($limit);
+        }
 
+        $profiles = $profilesQuery->get();
         $creatorIds = $profiles->pluck('creator_id')->filter()->unique()->values();
         $counts = CreatorProfile::query()
             ->selectRaw('creator_id, COUNT(*) as aggregate_count')
@@ -1760,43 +1868,86 @@ return [
             ->pluck('aggregate_count', 'creator_id');
 
         $items = $profiles->map(function (CreatorProfile $profile) use ($counts) {
-            $creator = $profile->creator;
-            $addedAt = optional($profile->created_at)?->toDateTimeString() ?? '';
-            $score = (float) ($profile->value_score ?? 0);
-            $status = trim((string) ($profile->lifecycle_state ?: $profile->status ?: 'discovered'));
-            $rowNumber = (int) (($profile->source_metadata['sheet_row_number'] ?? 0));
-            $id = $rowNumber > 1 ? 'crm:' . $rowNumber : 'crmdb:' . $profile->id;
-            $enrichmentStatus = ($profile->followers_count !== null || $profile->engagement_rate_pct !== null || filled(optional($creator)->primary_email))
-                ? 'enriched'
-                : 'pending';
-
-                        return [
-                'id' => $id,
-                'rowId' => $id,
-                'platform' => strtolower((string) ($profile->platform ?: 'instagram')),
-                'handle' => (string) ($profile->handle ?: ''),
-                'fullName' => (string) (optional($creator)->display_name ?: ''),
-                'avatarUrl' => (string) ($profile->profile_pic_url ?: ''),
-                'followers' => $profile->followers_count,
-                'engagementRate' => $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null,
-                'email' => (string) (optional($creator)->primary_email ?: ''),
-                'status' => $status,
-                'enrichmentStatus' => $enrichmentStatus,
-                'profileUrl' => (string) ($profile->profile_url ?: ''),
-                'dmUrl' => (string) ($profile->dm_link ?: $profile->profile_url ?: ''),
-                'niche' => (string) (optional($creator)->niche_category ?: ''),
-                'lastContactDate' => optional($profile->dm_sent_at)?->toDateTimeString() ?? '',
-                'notes' => (string) (optional($creator)->notes ?: ''),
-                'addedAt' => $addedAt,
-                'valueScore' => (int) round($score),
-                'valueTier' => Str::lower($this->scoring->tier($score)),
-                'preferredChannel' => (string) ($profile->preferred_channel ?: ''),
-                'creatorIdentityId' => (string) ($creator?->id ?: ''),
-                'linkedProfileCount' => (int) ($counts[$profile->creator_id] ?? 1),
-            ];
+            $profile->loadMissing('creator');
+            $item = $this->buildCreatorListItemFromProfile($profile);
+            $item['linkedProfileCount'] = (int) ($counts[$profile->creator_id] ?? ($item['linkedProfileCount'] ?? 1));
+            return $item;
         })->values()->all();
 
+        $items = $this->attachDuplicateCandidatesToCreatorItems($items);
+
+        if ($duplicateReviewOnly) {
+            $items = array_values(array_filter($items, function (array $item) {
+                if (($item['duplicateReviewOutcome'] ?? '') === 'not_duplicate') {
+                    return false;
+                }
+
+                return ($item['status'] ?? '') === 'duplicate_review_needed'
+                    || in_array(($item['duplicateRisk'] ?? 'low'), ['medium', 'high'], true)
+                    || !empty($item['duplicateCandidateIds']);
+            }));
+            $total = count($items);
+            $items = array_values(array_slice($items, $offset, $limit));
+        }
+
         return ['items' => $items, 'total' => $total];
+    }
+
+    private function attachDuplicateCandidatesToCreatorItems(array $items): array
+    {
+        $groups = [];
+
+        foreach ($items as $index => $item) {
+            if (($item['duplicateReviewOutcome'] ?? '') === 'not_duplicate') {
+                continue;
+            }
+
+            $email = strtolower(trim((string) ($item['email'] ?? '')));
+            $handle = strtolower(ltrim(trim((string) ($item['handle'] ?? '')), '@'));
+            $platform = strtolower(trim((string) ($item['platform'] ?? '')));
+
+            if ($email !== '') {
+                $groups['email:' . $email][] = $index;
+            }
+            if ($handle !== '') {
+                $groups['handle:' . $platform . ':' . $handle][] = $index;
+            }
+        }
+
+        foreach ($items as &$item) {
+            $item['duplicateCandidateIds'] = array_values(array_unique((array) ($item['duplicateCandidateIds'] ?? [])));
+            $item['duplicateRisk'] = $item['duplicateRisk'] ?? 'low';
+        }
+        unset($item);
+
+        foreach ($groups as $key => $indexes) {
+            $indexes = array_values(array_unique($indexes));
+            if (count($indexes) < 2) {
+                continue;
+            }
+
+            $risk = str_starts_with($key, 'email:') ? 'high' : 'medium';
+            $ids = array_map(fn (int $idx) => (string) ($items[$idx]['id'] ?? ''), $indexes);
+
+            foreach ($indexes as $idx) {
+                $currentId = (string) ($items[$idx]['id'] ?? '');
+                $items[$idx]['duplicateCandidateIds'] = array_values(array_filter($ids, fn (string $id) => $id !== '' && $id !== $currentId));
+                if ($this->duplicateRiskRank($risk) > $this->duplicateRiskRank((string) ($items[$idx]['duplicateRisk'] ?? 'low'))) {
+                    $items[$idx]['duplicateRisk'] = $risk;
+                }
+            }
+        }
+
+        return $items;
+    }
+
+    private function duplicateRiskRank(string $risk): int
+    {
+        return match ($risk) {
+            'high' => 3,
+            'medium' => 2,
+            default => 1,
+        };
     }
 
     private function loadMessageTemplatesFromDatabase(string $sheetId, array $filters): ?array
@@ -1900,18 +2051,23 @@ return [
         $enrichmentStatus = ($profile->followers_count !== null || $profile->engagement_rate_pct !== null || filled(optional($creator)->primary_email))
             ? 'enriched'
             : 'pending';
+        $metadata = is_array($profile->source_metadata) ? $profile->source_metadata : [];
+        $sourceHashtags = array_values(array_filter((array) ($metadata['source_hashtags'] ?? []), fn ($tag) => trim((string) $tag) !== ''));
+        $sourcePostUrls = array_values(array_filter((array) ($metadata['source_post_urls'] ?? []), fn ($url) => trim((string) $url) !== ''));
+        $duplicateReviewOutcome = (string) ($metadata['duplicate_review_outcome'] ?? '');
 
-                return [
+        return [
             'id' => $id,
             'rowId' => $id,
             'platform' => strtolower((string) ($profile->platform ?: 'instagram')),
             'handle' => (string) ($profile->handle ?: ''),
             'fullName' => (string) (optional($creator)->display_name ?: ''),
             'avatarUrl' => (string) ($profile->profile_pic_url ?: ''),
-            'sourcePostUrl' => (string) (($profile->source_metadata['source_post_url'] ?? '') ?: ''),
-            'sourceMetricType' => (string) (($profile->source_metadata['source_metric_type'] ?? '') ?: ''),
-            'sourceMetricValue' => $this->sanitizeMetric($profile->source_metadata['source_metric_value'] ?? null),
-            'matchedPostCount' => $this->sanitizeMetric($profile->source_metadata['matched_post_count'] ?? null),
+            'sourcePostUrl' => (string) (($metadata['source_post_url'] ?? '') ?: ($sourcePostUrls[0] ?? '')),
+            'sourcePostUrls' => $sourcePostUrls,
+            'sourceMetricType' => (string) (($metadata['source_metric_type'] ?? '') ?: ''),
+            'sourceMetricValue' => $this->sanitizeMetric($metadata['source_metric_value'] ?? null),
+            'matchedPostCount' => $this->sanitizeMetric($metadata['matched_post_count'] ?? null),
             'followers' => $profile->followers_count,
             'engagementRate' => $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null,
             'email' => (string) (optional($creator)->primary_email ?: ''),
@@ -1920,6 +2076,10 @@ return [
             'profileUrl' => (string) ($profile->profile_url ?: ''),
             'dmUrl' => (string) ($profile->dm_link ?: $profile->profile_url ?: ''),
             'niche' => (string) (optional($creator)->niche_category ?: ''),
+            'sourceHashtags' => $sourceHashtags,
+            'duplicateRisk' => $profile->duplicate_flag ? 'medium' : 'low',
+            'duplicateCandidateIds' => [],
+            'duplicateReviewOutcome' => $duplicateReviewOutcome,
             'lastContactDate' => optional($profile->dm_sent_at)?->toDateTimeString() ?? '',
             'notes' => (string) (optional($creator)->notes ?: ''),
             'addedAt' => optional($profile->created_at)?->toDateTimeString() ?? '',
@@ -1929,6 +2089,28 @@ return [
             'creatorIdentityId' => (string) (optional($creator)->external_identity_key ?: ''),
             'linkedProfileCount' => $creator ? $creator->profiles()->count() : 1,
         ];
+    }
+
+    private function scoreRecordFromProfile(CreatorProfile $profile): array
+    {
+        $profile->loadMissing('creator');
+        $metadata = is_array($profile->source_metadata) ? $profile->source_metadata : [];
+        $record = $this->sheetRecordFromProfile($profile);
+
+        return array_merge($record, [
+            'followers' => $profile->followers_count,
+            'engagementRate' => $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null,
+            'email' => (string) ($profile->creator?->primary_email ?: ''),
+            'fullName' => (string) ($profile->creator?->display_name ?: ''),
+            'bio' => (string) ($metadata['bio'] ?? ''),
+            'postsCount' => $this->sanitizeMetric($metadata['posts_count'] ?? null),
+            'avgLikes' => $this->sanitizeFloat($metadata['avg_likes'] ?? null),
+            'avgComments' => $this->sanitizeFloat($metadata['avg_comments'] ?? null),
+            'isVerified' => filter_var($metadata['is_verified'] ?? null, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE),
+            'sourceHashtags' => array_values(array_filter((array) ($metadata['source_hashtags'] ?? []), fn ($tag) => trim((string) $tag) !== '')),
+            'nicheHints' => array_values(array_filter((array) ($metadata['niche_hints'] ?? []), fn ($hint) => trim((string) $hint) !== '')),
+            'lastContentAt' => optional($profile->last_content_at)?->toDateTimeString() ?? '',
+        ]);
     }
 
     private function sheetRecordFromProfile(CreatorProfile $profile): array

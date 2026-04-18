@@ -142,7 +142,6 @@ class DiscoveryCriteriaService
                 $rejectReasons[] = 'Below the default 1k follower floor.';
             } else {
                 $weightedScore += 25;
-                $matchReasons[] = 'Passed the default 1k follower floor.';
             }
         }
 

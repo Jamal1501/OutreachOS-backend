@@ -37,6 +37,7 @@ Route::middleware(['api.auth', 'workspace.context'])->group(function () {
     Route::post('/crm/merge-selected', [SheetDataController::class, 'mergeSelectedQueueToCrm']);
     Route::get('/crm/list', [SheetDataController::class, 'crmList']);
     Route::put('/crm/{id}', [SheetDataController::class, 'updateCreator']);
+    Route::delete('/crm/{id}', [SheetDataController::class, 'deleteCreator']);
     Route::post('/crm/link-profiles', [SheetDataController::class, 'linkProfiles']);
 
     Route::get('/discovery/list', [SheetDataController::class, 'discoveryList']);
