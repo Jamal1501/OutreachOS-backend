@@ -5,15 +5,18 @@ return [
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => [
-        'https://lovable.dev',
-        'https://croos.lovable.app',
-        'https://loveframes.shop',
-        'https://www.loveframes.shop',
-        'http://127.0.0.1:8080',
-        'http://localhost:8080',
-        'http://192.168.2.218:8080',
-    ],
+'allowed_origins' => [
+    'https://socialcore.app',
+    'https://www.socialcore.app',
+
+    'https://lovable.dev',
+    'https://croos.lovable.app',
+    'https://loveframes.shop',
+    'https://www.loveframes.shop',
+    'http://127.0.0.1:8080',
+    'http://localhost:8080',
+    'http://192.168.2.218:8080',
+],
 
     'allowed_origins_patterns' => [
         '#^https://[a-z0-9-]+\.lovable\.app$#',
