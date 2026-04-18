@@ -28,14 +28,6 @@ class InfluencerScoringService
         $avgComments = $this->toFloat($creator['avgComments'] ?? $sourceRow['recent_avg_comments'] ?? 0);
         $hasEmail = trim((string) ($creator['email'] ?? $sourceRow['email'] ?? '')) !== '';
         $isVerified = (bool) ($creator['isVerified'] ?? $sourceRow['isVerified'] ?? false);
-        $bio = strtolower(trim((string) ($creator['bio'] ?? $sourceRow['bio'] ?? '')));
-        $sourceHashtags = array_map('strtolower', array_values(array_filter((array) ($creator['sourceHashtags'] ?? []))));
-        $nicheHints = array_map('strtolower', array_values(array_filter((array) ($creator['nicheHints'] ?? []))));
-        $briefKeywords = array_map('strtolower', array_values(array_filter(array_merge(
-            (array) ($criteria['hashtags'] ?? []),
-            (array) ($criteria['nicheKeywords'] ?? []),
-            (array) ($criteria['mustHaveSignals'] ?? []),
-        ))));
         $recencyDays = $this->resolveRecencyDays($creator, $sourceRow);
 
         $signals = [];
@@ -50,9 +42,9 @@ class InfluencerScoringService
         }
 
         $engagementScore = match (true) {
-            $engagement >= 8 => 24,
-            $engagement >= 5 => 20,
-            $engagement >= 3 => 14,
+            $engagement >= 8 => 22,
+            $engagement >= 5 => 18,
+            $engagement >= 3 => 13,
             $engagement >= 1.5 => 8,
             $engagement > 0 => 4,
             default => 0,
@@ -64,9 +56,9 @@ class InfluencerScoringService
         }
 
         $quantityScore = match (true) {
-            $contentQuantity >= 24 => 14,
-            $contentQuantity >= 12 => 11,
-            $contentQuantity >= 6 => 7,
+            $contentQuantity >= 24 => 12,
+            $contentQuantity >= 12 => 9,
+            $contentQuantity >= 6 => 6,
             $contentQuantity >= 1 => 3,
             default => 0,
         };
@@ -96,31 +88,14 @@ class InfluencerScoringService
             $risks[] = 'No direct email/contact signal.';
         }
 
-        $verificationScore = $isVerified ? 4 : 0;
+        $verificationScore = $isVerified ? 3 : 0;
         if ($isVerified) {
             $signals[] = 'Verified account adds some trust.';
         }
 
-        $nicheScore = 0;
-        $nicheUniverse = array_values(array_unique(array_filter(array_merge($sourceHashtags, $nicheHints, $briefKeywords))));
-        if ($bio !== '' && $nicheUniverse !== []) {
-            $matches = 0;
-            foreach ($nicheUniverse as $tag) {
-                if ($tag !== '' && str_contains($bio, $tag)) {
-                    $matches++;
-                }
-            }
-            $nicheScore = match (true) {
-                $matches >= 2 => 8,
-                $matches === 1 => 5,
-                default => 0,
-            };
-            if ($nicheScore >= 8) {
-                $signals[] = 'Bio strongly reflects the campaign niche.';
-            } elseif ($nicheScore > 0) {
-                $signals[] = 'Bio shows some niche alignment.';
-            }
-        }
+        [$nicheScore, $nicheSignals, $nicheRisks] = $this->scoreNicheFit($creator, $criteria);
+        $signals = array_merge($signals, $nicheSignals);
+        $risks = array_merge($risks, $nicheRisks);
 
         $suspicionPenalty = 0;
         if ($followers > 0 && $avgLikes > 0) {
@@ -212,6 +187,123 @@ class InfluencerScoringService
         $score = (int) round(min(24, max(12, 12 + ((log10(max(1000, $followers)) - 3) * 4.5))));
 
         return [$score, 'Follower base is established enough for outreach.', null];
+    }
+
+    private function scoreNicheFit(array $creator, array $criteria): array
+    {
+        $haystack = $this->creatorSearchText($creator);
+        $keywordSet = $this->campaignKeywordSet($criteria);
+        $avoidSet = $this->normalizeKeywordSet((array) ($criteria['avoidSignals'] ?? []));
+
+        $signals = [];
+        $risks = [];
+
+        foreach ($avoidSet as $avoid) {
+            if ($avoid !== '' && str_contains($haystack, $avoid)) {
+                $risks[] = 'Profile text contains avoid-signal terms.';
+                return [0, $signals, $risks];
+            }
+        }
+
+        if ($keywordSet === []) {
+            return [0, $signals, $risks];
+        }
+
+        $exactMatches = 0;
+        foreach ($keywordSet as $keyword) {
+            if ($keyword !== '' && str_contains($haystack, $keyword)) {
+                $exactMatches++;
+            }
+        }
+
+        $sourceHashtags = array_map('strtolower', array_values(array_filter((array) ($creator['sourceHashtags'] ?? []))));
+        $hashtagOverlap = 0;
+        foreach ($sourceHashtags as $tag) {
+            if (in_array($tag, $keywordSet, true)) {
+                $hashtagOverlap++;
+            }
+        }
+
+        $score = match (true) {
+            $exactMatches >= 5 => 18,
+            $exactMatches >= 3 => 13,
+            $exactMatches >= 2 => 9,
+            $exactMatches >= 1 => 5,
+            default => 0,
+        };
+
+        if ($hashtagOverlap > 0) {
+            $score += min(5, $hashtagOverlap * 2);
+        }
+
+        if ($exactMatches >= 3) {
+            $signals[] = 'Profile language strongly matches the campaign niche.';
+        } elseif ($exactMatches >= 1) {
+            $signals[] = 'Profile shows some niche alignment.';
+        } else {
+            $risks[] = 'Niche alignment is weak.';
+        }
+
+        if ($hashtagOverlap > 0) {
+            $signals[] = 'Source hashtags overlap with the target brief.';
+        }
+
+        return [min(24, $score), $signals, $risks];
+    }
+
+    private function campaignKeywordSet(array $criteria): array
+    {
+        return $this->normalizeKeywordSet(array_merge(
+            [$criteria['summary'] ?? null, $criteria['productOrOffer'] ?? null, $criteria['audienceDescription'] ?? null],
+            (array) ($criteria['hashtags'] ?? []),
+            (array) ($criteria['searchTerms'] ?? []),
+            (array) ($criteria['nicheKeywords'] ?? []),
+            (array) ($criteria['mustHaveSignals'] ?? []),
+            (array) ($criteria['languageHints'] ?? []),
+            [$criteria['locationText'] ?? null],
+        ));
+    }
+
+    private function creatorSearchText(array $creator): string
+    {
+        $chunks = [
+            (string) ($creator['bio'] ?? ''),
+            (string) ($creator['fullName'] ?? ''),
+            (string) ($creator['locationHint'] ?? ''),
+            implode(' ', array_map('strval', (array) ($creator['sourceHashtags'] ?? []))),
+            implode(' ', array_map('strval', (array) ($creator['nicheHints'] ?? []))),
+            implode(' ', array_map('strval', (array) ($creator['languageHints'] ?? []))),
+        ];
+
+        return strtolower(implode(' ', array_filter(array_map('trim', $chunks))));
+    }
+
+    private function normalizeKeywordSet(array $values): array
+    {
+        $keywords = [];
+        foreach ($values as $value) {
+            if (!is_scalar($value)) {
+                continue;
+            }
+            $value = strtolower(trim((string) $value));
+            if ($value === '') {
+                continue;
+            }
+            $value = ltrim($value, '#');
+            $value = preg_replace('/[^a-z0-9äöüß\-\s]+/iu', ' ', $value) ?? $value;
+            $value = preg_replace('/\s+/', ' ', $value) ?? $value;
+            foreach (preg_split('/\s+/', $value) ?: [] as $part) {
+                $part = trim($part);
+                if ($part !== '' && strlen($part) >= 3 && !in_array($part, ['and', 'with', 'for', 'the', 'und', 'mit'], true)) {
+                    $keywords[] = $part;
+                }
+            }
+            if (strlen(str_replace(' ', '', $value)) >= 6) {
+                $keywords[] = $value;
+            }
+        }
+
+        return array_values(array_unique($keywords));
     }
 
     private function minimumFollowerFloor(array $criteria): int

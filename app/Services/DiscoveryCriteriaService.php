@@ -396,27 +396,75 @@ class DiscoveryCriteriaService
 
     private function matchesNiche(array $creator, array $keywords, array $avoidSignals): bool
     {
-        $haystack = strtolower(implode(' ', array_filter([
-            (string) ($creator['bio'] ?? ''),
-            implode(' ', array_map('strval', (array) ($creator['sourceHashtags'] ?? []))),
-            implode(' ', array_map('strval', (array) ($creator['nicheHints'] ?? []))),
-        ])));
+        $haystack = $this->creatorSearchText($creator);
+        $keywordSet = $this->normalizeKeywordSet($keywords);
+        $avoidSet = $this->normalizeKeywordSet($avoidSignals);
 
-        foreach ($avoidSignals as $avoid) {
-            $avoid = strtolower(trim((string) $avoid));
+        foreach ($avoidSet as $avoid) {
             if ($avoid !== '' && str_contains($haystack, $avoid)) {
                 return false;
             }
         }
 
-        foreach ($keywords as $keyword) {
-            $keyword = strtolower(trim((string) $keyword));
+        if ($keywordSet === []) {
+            return false;
+        }
+
+        $matches = 0;
+        foreach ($keywordSet as $keyword) {
             if ($keyword !== '' && str_contains($haystack, $keyword)) {
-                return true;
+                $matches++;
             }
         }
 
-        return false;
+        return $matches >= 2 || ($matches >= 1 && count($keywordSet) <= 2);
+    }
+
+    private function creatorSearchText(array $creator): string
+    {
+        $chunks = [
+            (string) ($creator['bio'] ?? ''),
+            (string) ($creator['fullName'] ?? ''),
+            (string) ($creator['locationHint'] ?? ''),
+            (string) ($creator['sourceLocationHint'] ?? ''),
+            implode(' ', array_map('strval', (array) ($creator['sourceHashtags'] ?? []))),
+            implode(' ', array_map('strval', (array) ($creator['nicheHints'] ?? []))),
+            implode(' ', array_map('strval', (array) ($creator['languageHints'] ?? []))),
+        ];
+
+        return strtolower(implode(' ', array_filter(array_map('trim', $chunks))));
+    }
+
+    private function normalizeKeywordSet(array $values): array
+    {
+        $keywords = [];
+        foreach ($values as $value) {
+            if (!is_scalar($value)) {
+                continue;
+            }
+
+            $value = strtolower(trim((string) $value));
+            if ($value === '') {
+                continue;
+            }
+
+            $value = ltrim($value, '#');
+            $value = preg_replace('/[^a-z0-9äöüß\-\s]+/iu', ' ', $value) ?? $value;
+            $value = preg_replace('/\s+/', ' ', $value) ?? $value;
+
+            foreach (preg_split('/\s+/', $value) ?: [] as $part) {
+                $part = trim($part);
+                if ($part !== '' && strlen($part) >= 3 && !in_array($part, ['and', 'with', 'for', 'the', 'und', 'mit'], true)) {
+                    $keywords[] = $part;
+                }
+            }
+
+            if (strlen(str_replace(' ', '', $value)) >= 6) {
+                $keywords[] = $value;
+            }
+        }
+
+        return array_values(array_unique($keywords));
     }
 
     private function parseDate(string $value): ?CarbonImmutable

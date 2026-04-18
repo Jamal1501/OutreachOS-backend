@@ -51,7 +51,7 @@ class AiPersonalizationService
             'additionalProperties' => false,
         ];
 
-        $systemPrompt = 'You write creator outreach that sounds observant and human, not templated. Keep claims grounded in the provided data. Never invent details. No fake intimacy, no cringe flattery, no spammy mass-DM language. Keep the offer concrete and short.';
+        $systemPrompt = 'You write creator outreach that sounds observant and human, not templated. Keep claims grounded in the provided data. Never invent details. No fake intimacy, no cringe flattery, no spammy mass-DM language. Keep the offer concrete and short. Use the project context to adapt voice, audience fit, and positioning. A teen beauty brand should not sound like a premium furniture store, and vice versa.';
 
         $userPrompt = "Project context:
 " . ($projectContext !== '' ? $projectContext : 'General creator outreach')
@@ -90,7 +90,7 @@ Conversation goal:
 {$conversationGoal}" : '')
             . "
 
-Use the task context as the primary instruction for what this draft must actually do. If the task says warm-up comment, write a comment. If it says cold email, write an email. If it says soft-touch follow-up, do not write a DM. Return a sharp, usable draft with concise notes about why it fits.";
+Use the task context as the primary instruction for what this draft must actually do. If the task says warm-up comment, write a comment. If it says cold email, write an email. If it says soft-touch follow-up, do not write a DM. Adapt wording and framing to the product category, audience age, and brand tone from the project context when available. Return a sharp, usable draft with concise notes about why it fits.";
 
         $result = $this->ai->structured(
             $systemPrompt,
