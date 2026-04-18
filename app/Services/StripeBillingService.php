@@ -56,7 +56,7 @@ public function createSubscriptionCheckoutSession(
                 'unit_amount' => $config['price_cents'],
                 'recurring'  => ['interval' => 'month'],
                 'product_data' => [
-                    'name'        => 'OutreachOS ' . $config['name'],
+                    'name'        => 'Social CORE ' . $config['name'],
                     'description' => sprintf(
                         '%d scrape credits and %d AI credits per month.',
                         $config['monthly_scrape_credits'],
@@ -305,7 +305,7 @@ $record->save();
         $contact = $this->resolveWorkspaceContact($workspaceId);
         $response = $this->request('POST', '/customers', [
             'email' => $contact['email'] ?? null,
-            'name' => (string) ($workspace->name ?? 'OutreachOS Workspace'),
+            'name' => (string) ($workspace->name ?? 'Social CORE Workspace'),
             'metadata' => [
                 'workspace_id' => $workspaceId,
             ],
