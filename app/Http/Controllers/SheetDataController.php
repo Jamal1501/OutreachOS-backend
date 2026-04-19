@@ -814,6 +814,7 @@ public function mergeSelectedQueueToCrm(Request $request)
                 $result['taskGeneration'] = $this->taskQueue->generateInitialTasks($sheetId, [
                     'limit' => $validated['taskLimit'] ?? 50,
                     'profileIds' => $affectedProfileIds,
+                    'forceForImportedProfiles' => true,
                 ]);
             } catch (\Throwable $e) {
                 report($e);
@@ -870,7 +871,10 @@ public function mergeSelectedQueueToCrm(Request $request)
             ];
         } else {
             try {
-                $taskOptions = ['limit' => $validated['taskLimit'] ?? 50];
+                $taskOptions = [
+                    'limit' => $validated['taskLimit'] ?? 50,
+                    'forceForImportedProfiles' => true,
+                ];
                 if ($affectedProfileIds !== []) {
                     $taskOptions['profileIds'] = $affectedProfileIds;
                 } else {

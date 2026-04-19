@@ -401,6 +401,7 @@ public function mergeEnrichedToCreators(Request $request)
                 try {
                     $taskOptions = [
                         'limit' => $validated['taskLimit'] ?? 50,
+                        'forceForImportedProfiles' => true,
                     ];
                     if ($affectedProfileIds !== []) {
                         $taskOptions['profileIds'] = $affectedProfileIds;

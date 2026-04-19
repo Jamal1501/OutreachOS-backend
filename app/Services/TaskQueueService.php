@@ -317,6 +317,7 @@ class TaskQueueService
         $project = $this->projects->resolveByWorkbookId($sheetId);
         $settings = $this->resolveTaskSettings($this->resolveWorkspaceForSheet($sheetId, $project));
         $limitRequested = max(1, (int) ($options['limit'] ?? ($settings['max_new_tasks_per_generation'] ?? 12)));
+        $forceForImportedProfiles = (bool) ($options['forceForImportedProfiles'] ?? false);
         $maxActiveTasks = (int) ($settings[$this->timePressureEnabled($settings) ? 'time_pressure_active_task_limit' : 'max_active_tasks'] ?? 18);
         $maxNewTasksPerGeneration = (int) ($settings['max_new_tasks_per_generation'] ?? 12);
 
@@ -326,7 +327,9 @@ class TaskQueueService
             ->count();
 
         $availableSlots = max(0, $maxActiveTasks - $activeOpenCount);
-        $finalLimit = min($limitRequested, $maxNewTasksPerGeneration, max(0, $availableSlots));
+        $finalLimit = $forceForImportedProfiles
+            ? $limitRequested
+            : min($limitRequested, $maxNewTasksPerGeneration, max(0, $availableSlots));
 
         $profilesQuery = CreatorProfile::query()
             ->with('creator')
@@ -364,6 +367,7 @@ class TaskQueueService
                 'capacity' => [
                     'activeOpenCount' => $activeOpenCount,
                     'availableSlots' => $availableSlots,
+                    'forceForImportedProfiles' => $forceForImportedProfiles,
                 ],
             ];
         }
