@@ -578,6 +578,11 @@ class TaskQueueService
             $this->maybeCreateImmediateNextTask($project->id, $profile, $task, $settings);
         }
 
+        $backfillResult = null;
+        if (in_array($status, self::TERMINAL_TASK_STATUSES, true)) {
+            $backfillResult = $this->backfillOpenTaskCapacity($sheetId, $project->id, $settings);
+        }
+
         $eventType = $this->eventTypeFromTask((string) $task->task_type, $status, $outcome ?: $skipReason);
         $eventId = $this->outreachLog->appendEvent($sheetId, [
             'Task_ID' => (string) ($task->external_task_key ?: $task->id),
@@ -598,7 +603,51 @@ class TaskQueueService
             'eventId' => $eventId,
             'status' => $task->status,
             'createdFollowUpTask' => $profile ? $this->findNewestOpenTaskForProfile($project->id, $profile->id, $task->id) : null,
+            'backfilledTasks' => $backfillResult,
             'source' => 'database',
+        ];
+    }
+
+    private function backfillOpenTaskCapacity(string $sheetId, string $projectId, array $settings): array
+    {
+        $maxActiveTasks = (int) ($settings[$this->timePressureEnabled($settings) ? 'time_pressure_active_task_limit' : 'max_active_tasks'] ?? 18);
+        $activeOpenCount = Task::query()
+            ->where('project_id', $projectId)
+            ->whereIn('status', self::OPEN_TASK_STATUSES)
+            ->count();
+
+        $availableSlots = max(0, $maxActiveTasks - $activeOpenCount);
+        if ($availableSlots <= 0) {
+            return [
+                'created' => 0,
+                'reason' => 'task_capacity_full',
+                'activeOpenCount' => $activeOpenCount,
+                'availableSlots' => 0,
+            ];
+        }
+
+        $limit = min($availableSlots, (int) ($settings['max_new_tasks_per_generation'] ?? 12));
+        if ($limit <= 0) {
+            return [
+                'created' => 0,
+                'reason' => 'task_generation_limit_zero',
+                'activeOpenCount' => $activeOpenCount,
+                'availableSlots' => $availableSlots,
+            ];
+        }
+
+        $result = $this->generateInitialTasksFromDatabase($sheetId, [
+            'limit' => $limit,
+        ]);
+
+        return [
+            'created' => (int) ($result['created'] ?? 0),
+            'eligible' => (int) ($result['eligible'] ?? 0),
+            'skipped_existing' => (int) ($result['skipped_existing'] ?? 0),
+            'skipped_ineligible' => (int) ($result['skipped_ineligible'] ?? 0),
+            'activeOpenCountBeforeBackfill' => $activeOpenCount,
+            'availableSlotsBeforeBackfill' => $availableSlots,
+            'limitApplied' => $limit,
         ];
     }
 
