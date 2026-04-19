@@ -1,22 +1,27 @@
 <?php
 
+$extraAllowedOrigins = array_filter(array_map('trim', explode(',', env('CORS_ALLOWED_ORIGINS', ''))));
+
 return [
     'paths' => ['api/*', 'sanctum/csrf-cookie'],
 
     'allowed_methods' => ['*'],
 
-'allowed_origins' => [
-    'https://socialcore.app',
-    'https://www.socialcore.app',
+    'allowed_origins' => array_values(array_unique(array_merge([
+        'https://socialcore.app',
+        'https://www.socialcore.app',
 
-    'https://lovable.dev',
-    'https://croos.lovable.app',
-    'https://loveframes.shop',
-    'https://www.loveframes.shop',
-    'http://127.0.0.1:8080',
-    'http://localhost:8080',
-    'http://192.168.2.218:8080',
-],
+        // Kept temporarily for old/demo environments.
+        'https://lovable.dev',
+        'https://croos.lovable.app',
+        'https://loveframes.shop',
+        'https://www.loveframes.shop',
+
+        // Local development.
+        'http://127.0.0.1:8080',
+        'http://localhost:8080',
+        'http://192.168.2.218:8080',
+    ], $extraAllowedOrigins))),
 
     'allowed_origins_patterns' => [
         '#^https://[a-z0-9-]+\.lovable\.app$#',
@@ -27,15 +32,7 @@ return [
         '#^http://127\.0\.0\.1(:\d+)?$#',
     ],
 
-    'allowed_headers' => [
-        'Accept',
-        'Authorization',
-        'Content-Type',
-        'Origin',
-        'X-Requested-With',
-        'X-APP-KEY',
-        'X-Workspace-Id',
-    ],
+    'allowed_headers' => ['*'],
 
     'exposed_headers' => [],
 
