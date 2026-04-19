@@ -219,8 +219,18 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
     $relatedTasks = $this->normalizeDbTasks(
         Task::query()
             ->where('project_id', $project->id)
-            ->where('platform', strtolower($creator['platform']))
-            ->where('handle', $creator['handle'])
+            ->where(function (Builder $query) use ($profile, $creator) {
+                $handle = ltrim((string) ($creator['handle'] ?? ''), '@');
+                $query->where('creator_profile_id', $profile->id)
+                    ->orWhere(function (Builder $taskQuery) use ($creator, $handle) {
+                        $taskQuery->where('platform', strtolower((string) ($creator['platform'] ?? 'instagram')))
+                            ->where(function (Builder $handleQuery) use ($creator, $handle) {
+                                $handleQuery->where('handle', (string) ($creator['handle'] ?? ''))
+                                    ->orWhere('handle', $handle)
+                                    ->orWhere('handle', '@' . $handle);
+                            });
+                    });
+            })
             ->orderByDesc('created_at')
             ->get()
             ->all()
@@ -403,8 +413,18 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         $relatedTasks = $this->normalizeDbTasks(
             Task::query()
                 ->where('project_id', $projectId)
-                ->where('platform', strtolower($creator['platform']))
-                ->where('handle', $creator['handle'])
+                ->where(function (Builder $query) use ($profile, $creator) {
+                    $handle = ltrim((string) ($creator['handle'] ?? ''), '@');
+                    $query->where('creator_profile_id', $profile->id)
+                        ->orWhere(function (Builder $taskQuery) use ($creator, $handle) {
+                            $taskQuery->where('platform', strtolower((string) ($creator['platform'] ?? 'instagram')))
+                                ->where(function (Builder $handleQuery) use ($creator, $handle) {
+                                    $handleQuery->where('handle', (string) ($creator['handle'] ?? ''))
+                                        ->orWhere('handle', $handle)
+                                        ->orWhere('handle', '@' . $handle);
+                                });
+                        });
+                })
                 ->orderByDesc('created_at')
                 ->get()
                 ->all()
@@ -451,6 +471,10 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
             $hardDisqualifiers[] = 'Creator already in terminal state';
         }
 
+        $sourceHashtags = array_values(array_filter((array) ($creator['sourceHashtags'] ?? [])));
+        $lastContentDate = trim((string) ($creator['lastContentDate'] ?? ''));
+        $lastContactDate = trim((string) ($creator['lastContactDate'] ?? ''));
+
         $confidenceReasons = [];
         if (($creator['followers'] ?? 0) > 0) {
             $confidenceReasons[] = 'Follower data exists';
@@ -477,8 +501,10 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
                 'whyTheyFit' => array_values(array_filter([
                     ($creator['valueScore'] ?? 0) >= 70 ? 'High-value creator by current score' : null,
                     ($creator['engagementRate'] ?? 0) >= 2 ? 'Engagement rate is usable' : null,
-                    $creator['email'] ? 'Direct contact route exists' : 'DM-first outreach only',
-                    $creator['niche'] ? 'Niche present: ' . $creator['niche'] : 'Niche not classified yet',
+                    $creator['email'] ? 'Direct contact route exists' : null,
+                    $creator['niche'] ? 'Niche present: ' . $creator['niche'] : null,
+                    $lastContentDate !== '' ? 'Recent source activity captured' : null,
+                    count($sourceHashtags) > 0 ? 'Discovered through #' . implode(', #', array_slice($sourceHashtags, 0, 3)) : null,
                 ])),
                 'confidenceSummary' => [
                     'score' => min(100, count($confidenceReasons) * 25),
@@ -489,8 +515,8 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
                             : (count($confidenceReasons) >= 3 ? 'usable' : 'fragile')),
                     'reasons' => $confidenceReasons,
                 ],
-                'lastRealActivity' => $creator['lastContentDate'] ?: 'unknown',
-                'lastOutreach' => $creator['lastContactDate'] ?: 'none',
+                'lastRealActivity' => $lastContentDate !== '' ? $lastContentDate : 'No source post date captured',
+                'lastOutreach' => $lastContactDate !== '' ? $lastContactDate : 'Not reached out yet',
                 'duplicateRisk' => [
                     'level' => count($duplicates) > 0 ? ($duplicates[0]['risk'] ?? 'medium') : 'low',
                     'reasons' => count($duplicates) > 0
@@ -662,6 +688,7 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
 
 return [
     'id' => (string) ($task->external_task_key ?: $task->id),
+    'creatorProfileId' => (string) ($task->creator_profile_id ?: ''),
     'type' => (string) $task->task_type,
     'platform' => Str::lower((string) ($task->platform ?: 'instagram')),
     'handle' => (string) ($task->handle ?: ''),
