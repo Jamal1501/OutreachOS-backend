@@ -96,6 +96,7 @@ class SheetDataController extends Controller
 
         try {
             $upstream = Http::timeout(12)
+                ->withoutRedirecting()
                 ->withHeaders([
                     'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
                     'Accept' => 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
@@ -112,6 +113,18 @@ class SheetDataController extends Controller
             ], 502);
         }
 
+        if ($upstream->redirect()) {
+            return response()->json([
+                'message' => 'Avatar redirects are not allowed',
+            ], 422);
+        }
+
+        if ($upstream->redirect()) {
+            return response()->json([
+                'message' => 'Avatar redirects are not allowed',
+            ], 422);
+        }
+
         if (!$upstream->ok()) {
             Log::warning('avatar proxy upstream not ok', [
                 'url' => $url,
@@ -124,6 +137,22 @@ class SheetDataController extends Controller
         }
 
         $contentType = (string) $upstream->header('Content-Type', '');
+
+        $maxAvatarBytes = 2 * 1024 * 1024;
+        $contentLength = (int) $upstream->header('Content-Length', 0);
+        if ($contentLength > $maxAvatarBytes || strlen($upstream->body()) > $maxAvatarBytes) {
+            return response()->json([
+                'message' => 'Avatar image is too large',
+            ], 413);
+        }
+
+        $maxAvatarBytes = 2 * 1024 * 1024;
+        $contentLength = (int) $upstream->header('Content-Length', 0);
+        if ($contentLength > $maxAvatarBytes || strlen($upstream->body()) > $maxAvatarBytes) {
+            return response()->json([
+                'message' => 'Avatar image is too large',
+            ], 413);
+        }
 
         if (!Str::startsWith(Str::lower($contentType), 'image/')) {
             return response()->json([
@@ -223,7 +252,7 @@ class SheetDataController extends Controller
             'raw_total' => $rawTotal,
             'deduped' => $dedupe,
             'duplicate_groups' => $duplicateGroups,
-            'source' => 'google_sheets',
+            'source' => 'database',
         ]);
     }
 
@@ -471,7 +500,7 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
         return response()->json([
             'message' => 'Creator updated',
             'item' => $this->normalizeCreatorRow($target),
-            'source' => 'google_sheets',
+            'source' => 'database',
         ]);
     }
 
@@ -506,7 +535,7 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
 
         return response()->json([
             'message' => 'Creator removed',
-            'source' => 'google_sheets',
+            'source' => 'database',
         ]);
     }
 
@@ -677,7 +706,7 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
                 'linkedProfileCount' => count($linked),
                 'primaryCreatorId' => 'crm:' . $primaryRowNumber,
             ],
-            'source' => 'google_sheets',
+            'source' => 'database',
         ]);
     }
 
@@ -1162,7 +1191,7 @@ $items[] = [
     return response()->json([
         'message' => 'Enrichment queue fetched',
         'items' => $items,
-        'source' => 'google_sheets',
+        'source' => 'database',
     ]);
 }
 
@@ -1329,7 +1358,7 @@ public function creatorDecisionSheet(Request $request, string $id)
                 'toState' => $toState,
                 'eventId' => $eventId,
             ],
-            'source' => 'google_sheets',
+            'source' => 'database',
         ]);
     }
 
@@ -2208,7 +2237,7 @@ return [
                 'error' => $e->getMessage(),
             ]);
 
-            return ['synced' => false, 'reason' => 'sheet_sync_failed', 'error' => $e->getMessage()];
+            return ['synced' => false, 'reason' => 'google_sheets_disabled'];
         }
     }
 
@@ -2244,7 +2273,7 @@ return [
                 'error' => $e->getMessage(),
             ]);
 
-            return ['synced' => false, 'reason' => 'sheet_sync_failed', 'error' => $e->getMessage()];
+            return ['synced' => false, 'reason' => 'google_sheets_disabled'];
         }
     }
 
@@ -2904,7 +2933,7 @@ return [
                 'row_number' => $rowNumber,
                 'error' => $e->getMessage(),
             ]);
-            return ['mode' => 'failed', 'rowNumber' => $rowNumber, 'error' => $e->getMessage()];
+            return ['mode' => 'disabled', 'rowNumber' => $rowNumber, 'reason' => 'google_sheets_disabled'];
         }
     }
 

@@ -2,7 +2,9 @@
 
 use App\Http\Middleware\AuthenticateApiRequest;
 use App\Http\Middleware\RequireAppKey;
+use App\Http\Middleware\RequireWorkspaceRole;
 use App\Http\Middleware\ResolveWorkspaceContext;
+use App\Http\Middleware\SecurityHeaders;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -18,10 +20,13 @@ return Application::configure(basePath: dirname(__DIR__))
         __DIR__ . '/../app/Console/Commands',
     ])
     ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->append(SecurityHeaders::class);
+
         $middleware->alias([
             'app.key' => RequireAppKey::class,
             'api.auth' => AuthenticateApiRequest::class,
             'workspace.context' => ResolveWorkspaceContext::class,
+            'workspace.role' => RequireWorkspaceRole::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

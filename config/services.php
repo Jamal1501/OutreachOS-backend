@@ -36,8 +36,9 @@ return [
     ],
 
     'google' => [
-        'default_sheet_id' => env('GOOGLE_DEFAULT_SHEET_ID', env('GOOGLE_SHEET_ID')),
-        'service_account_json' => env('GOOGLE_SERVICE_ACCOUNT_JSON'),
+        'runtime_enabled' => false,
+        'default_sheet_id' => null,
+        'service_account_json' => null,
     ],
 
     'ai' => [

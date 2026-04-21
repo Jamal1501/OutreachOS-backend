@@ -1,20 +1,5 @@
 <?php
 
-namespace App\Exceptions;
-
-use RuntimeException;
-
-class InsufficientCreditsException extends RuntimeException
-{
-    public function __construct(
-        string $message = 'Insufficient credits for this action.',
-        private readonly array $context = [],
-    ) {
-        parent::__construct($message);
-    }
-
-    public function context(): array
-    {
-        return $this->context;
-    }
-}
+// Compatibility shim for the old singular filename.
+// The real PSR-4 class lives in InsufficientCreditsException.php.
+require_once __DIR__ . '/InsufficientCreditsException.php';

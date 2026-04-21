@@ -154,6 +154,14 @@ class PipelineController extends Controller
             ], 404);
         }
 
+        $workspaceId = (string) $request->attributes->get('workspace_id');
+        $jobWorkspaceId = (string) data_get($state, 'request.workspaceId', '');
+        if ($jobWorkspaceId !== '' && $workspaceId !== '' && $jobWorkspaceId !== $workspaceId) {
+            return response()->json([
+                'error' => 'Pipeline job not found',
+            ], 404);
+        }
+
         return response()->json([
             'jobId' => $state['jobId'],
             'status' => $state['status'] ?? 'running',
@@ -186,7 +194,7 @@ class PipelineController extends Controller
                     'status' => 'failed',
                     'jobId' => $state['jobId'],
                     'failedStep' => $this->pipeline->getJobState($state['jobId'])['failedStep'] ?? null,
-                    'error' => $e->getMessage(),
+                    'error' => config('app.debug') ? $e->getMessage() : 'Pipeline failed. Please retry or contact support.',
                 ], $extraResponse), 500);
             }
         }

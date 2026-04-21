@@ -146,7 +146,7 @@ class CreatorMergeService
         sort($updatedRowNumbers);
 
         return [
-            'sourceSheet' => $sourceSheet,
+            'sourceSheet' => 'database',
             'processed' => count($sourceRows),
             'created' => $created,
             'updated' => $updated,
@@ -220,7 +220,7 @@ class CreatorMergeService
             }
 
             return [
-                'sourceSheet' => $sourceSheet,
+                'sourceSheet' => 'database',
                 'processed' => count($sourceRows),
                 'created' => $created,
                 'updated' => $updated,
@@ -233,7 +233,7 @@ class CreatorMergeService
         $sheetSync = $this->syncMergedProfilesToCrmSheet($sheetId, $project, $result['affectedProfiles']);
 
         return [
-            'sourceSheet' => $sourceSheet,
+            'sourceSheet' => 'database',
             'processed' => $result['processed'],
             'created' => $result['created'],
             'updated' => $result['updated'],

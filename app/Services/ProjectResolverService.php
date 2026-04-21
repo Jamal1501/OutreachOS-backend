@@ -73,9 +73,7 @@ class ProjectResolverService
             'workbook_id' => $sheetId,
             'status' => 'active',
             'metadata' => [
-                'source' => str_starts_with($sheetId, 'workspace:')
-                    ? 'workspace_runtime'
-                    : 'google_sheets_runtime',
+                'source' => 'workspace_runtime',
             ],
         ]);
     }

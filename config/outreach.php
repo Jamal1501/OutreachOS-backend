@@ -7,15 +7,15 @@ return [
     ],
 
     'operational_db' => [
-        'mode' => env('OUTREACH_OPERATIONAL_DB_MODE', 'dual'), // off|dual|database
+        'mode' => env('OUTREACH_OPERATIONAL_DB_MODE', 'database'), // off|dual|database
         'auto_create_project' => env('OUTREACH_AUTO_CREATE_PROJECT', true),
     ],
 
     'sync' => [
-        'messages' => env('OUTREACH_SYNC_MESSAGES', true),
-        'crm' => env('OUTREACH_SYNC_CRM', true),
-        'tasks' => env('OUTREACH_SYNC_TASKS', true),
-        'outreach' => env('OUTREACH_SYNC_OUTREACH', true),
+        'messages' => env('OUTREACH_SYNC_MESSAGES', false),
+        'crm' => env('OUTREACH_SYNC_CRM', false),
+        'tasks' => env('OUTREACH_SYNC_TASKS', false),
+        'outreach' => env('OUTREACH_SYNC_OUTREACH', false),
         'pipeline' => env('OUTREACH_SYNC_PIPELINE', true),
     ],
 

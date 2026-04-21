@@ -101,8 +101,8 @@ public function runActor(Request $request)
             'actorKey' => $actorKey,
             'actorId' => $actorId,
             'url' => $url,
-            'input' => $input,
-            'usageReservation' => $usageReservation,
+            'inputSummary' => $this->payloadSummary($input),
+            'usageReservation' => array_intersect_key($usageReservation, array_flip(['credit_bucket', 'credit_cost', 'remaining_balance'])),
         ]);
 
         $response = Http::withToken($token)
@@ -116,8 +116,7 @@ public function runActor(Request $request)
                 'actorKey' => $actorKey,
                 'actorId' => $actorId,
                 'status' => $response->status(),
-                'body' => $response->json() ?? $response->body(),
-                'input' => $input,
+                'inputSummary' => $this->payloadSummary($input),
             ]);
 
             if ($usageReservationId) {
@@ -139,7 +138,6 @@ public function runActor(Request $request)
             return response()->json([
                 'error' => 'Apify run failed',
                 'apifyStatus' => $response->status(),
-                'apifyBody' => $response->json() ?? $response->body(),
             ], $response->status());
         }
 
@@ -209,9 +207,7 @@ public function runActor(Request $request)
 
         return response()->json([
             'error' => 'Unhandled backend error while starting actor',
-            'message' => $e->getMessage(),
-            'file' => basename($e->getFile()),
-            'line' => $e->getLine(),
+            'message' => config('app.debug') ? $e->getMessage() : 'The scraper could not be started. Please retry.',
         ], 500);
     }
 }
@@ -250,7 +246,7 @@ public function modules(Request $request)
             return response()->json([
                 'error' => 'Failed to fetch run status',
                 'status' => $response->status(),
-                'body' => $response->json() ?? $response->body(),
+                'body' => config('app.debug') ? ($response->json() ?? $response->body()) : null,
             ], 500);
         }
 
@@ -287,7 +283,6 @@ public function getDatasetResults(Request $request, string $datasetId)
             return response()->json([
                 'error' => 'Failed to fetch dataset results',
                 'status' => $response->status(),
-                'body' => $response->body(),
             ], $response->status());
         }
 
@@ -296,7 +291,7 @@ public function getDatasetResults(Request $request, string $datasetId)
         if (!is_array($items)) {
             return response()->json([
                 'error' => 'Dataset response was not a valid JSON array',
-                'raw_body' => $response->body(),
+                'message' => config('app.debug') ? $response->body() : 'Invalid dataset response from provider.',
             ], 500);
         }
 
@@ -309,7 +304,7 @@ public function getDatasetResults(Request $request, string $datasetId)
     } catch (\Throwable $e) {
         return response()->json([
             'error' => 'Unhandled error while fetching dataset results',
-            'message' => $e->getMessage(),
+            'message' => config('app.debug') ? $e->getMessage() : 'Dataset results could not be fetched.',
         ], 500);
     }
 }
@@ -325,10 +320,6 @@ public function getDatasetResults(Request $request, string $datasetId)
         ]);
 
         $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
-        if ($sheetId === '') {
-            return response()->json(['error' => 'Missing sheetId and GOOGLE_DEFAULT_SHEET_ID'], 500);
-        }
-
         $items = $this->fetchDatasetItems($validated['datasetId']);
 
         if (count($items) === 0) {
@@ -355,7 +346,7 @@ public function getDatasetResults(Request $request, string $datasetId)
         $this->sheets->appendRows($sheetId, $validated['sheetName'], $rows);
 
         return response()->json([
-            'message' => 'Dataset imported to Google Sheet',
+            'message' => 'Dataset import processed using database-first runtime; Google Sheets writes are disabled',
             'datasetId' => $validated['datasetId'],
             'sheetId' => $sheetId,
             'sheetName' => $validated['sheetName'],
@@ -424,9 +415,7 @@ public function mergeEnrichedToCreators(Request $request)
     } catch (\Throwable $e) {
         return response()->json([
             'error' => 'Merge failed',
-            'message' => $e->getMessage(),
-            'file' => basename($e->getFile()),
-            'line' => $e->getLine(),
+            'message' => config('app.debug') ? $e->getMessage() : 'Merge failed. Please retry or contact support.',
         ], 500);
     }
 }
@@ -636,6 +625,14 @@ public function mergeEnrichedToCreators(Request $request)
         ]);
     }
     
+    private function payloadSummary(array $payload): array
+    {
+        return [
+            'keys' => array_keys($payload),
+            'bytes' => strlen(json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: ''),
+        ];
+    }
+
     private function actorMap(): array
     {
         return $this->scrapers->configuredActorMap();
