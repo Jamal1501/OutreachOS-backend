@@ -74,7 +74,7 @@ class AiGatewayService
             $this->usageLogger->logAi([
                 'model' => $model,
                 'operation' => $toolName,
-                'request_payload' => $requestPayload,
+                'request_payload' => $this->redactRequestPayload($requestPayload),
                 'error_message' => 'AI rate limit exceeded',
             ]);
 
@@ -91,7 +91,7 @@ class AiGatewayService
             $this->usageLogger->logAi([
                 'model' => $model,
                 'operation' => $toolName,
-                'request_payload' => $requestPayload,
+                'request_payload' => $this->redactRequestPayload($requestPayload),
                 'error_message' => 'AI request failed: ' . $response->status() . ' ' . $response->body(),
             ]);
 
@@ -116,7 +116,7 @@ class AiGatewayService
             'completion_tokens' => $usage['completion_tokens'] ?? null,
             'total_tokens' => $usage['total_tokens'] ?? null,
             'estimated_cost_usd' => $estimatedCost,
-            'request_payload' => $requestPayload,
+            'request_payload' => $this->redactRequestPayload($requestPayload),
             'response_payload' => [
                 'id' => $payload['id'] ?? null,
                 'usage' => $usage,
@@ -134,6 +134,37 @@ class AiGatewayService
         }
 
         return $decoded;
+    }
+
+    private function redactRequestPayload(array $requestPayload): array
+    {
+        $messages = (array) ($requestPayload["messages"] ?? []);
+        $messageSummaries = [];
+
+        foreach ($messages as $message) {
+            $content = (string) ($message["content"] ?? "");
+            $messageSummaries[] = [
+                "role" => $message["role"] ?? null,
+                "content_sha256" => $content !== "" ? hash("sha256", $content) : null,
+                "content_length" => strlen($content),
+            ];
+        }
+
+        return [
+            "model" => $requestPayload["model"] ?? null,
+            "temperature" => $requestPayload["temperature"] ?? null,
+            "tool_choice" => $requestPayload["tool_choice"]["function"]["name"] ?? null,
+            "tools" => array_map(fn ($tool) => [
+                "type" => $tool["type"] ?? null,
+                "function" => [
+                    "name" => $tool["function"]["name"] ?? null,
+                    "description" => $tool["function"]["description"] ?? null,
+                ],
+            ], (array) ($requestPayload["tools"] ?? [])),
+            "messages" => $messageSummaries,
+            "redacted" => true,
+            "redaction_reason" => "Prompt content may contain customer, creator, or project personal data.",
+        ];
     }
 
     private function estimateOpenAiCostUsd(string $model, int $promptTokens, int $completionTokens): float

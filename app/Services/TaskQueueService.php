@@ -1702,14 +1702,14 @@ class TaskQueueService
     private function defaultMessageBase(string $taskType): string
     {
         return match ($taskType) {
-            'EMAIL_SEND' => 'Hey {{name}}, I think your content could be a strong fit for a collaboration.',
-            'DM_FOLLOWUP' => 'Hey {{handle}}, just following up in case my first message got buried.',
-            'COMMENT_ON_POST' => 'Love this post. The framing is strong.',
-            'NEGOTIATE_TERMS' => 'Hey {{handle}}, excited to move this forward. Here are the details.',
+            'EMAIL_SEND' => 'Hey {{name}}, I am checking whether there is a relevant creator partnership fit here. Open to a short idea?',
+            'DM_FOLLOWUP' => 'Hey {{handle}}, quick follow-up from my last note. Worth sending a short idea, or should I leave it?',
+            'COMMENT_ON_POST' => 'Specific angle here is strong — this is the kind of post worth saving.',
+            'NEGOTIATE_TERMS' => 'Hey {{handle}}, good to move this forward. Here are the practical details.',
             'CHECK_IN' => 'Quick check-in: where does the conversation stand right now?',
             'CONFIRM_ACCEPTED' => 'Great to hear this is moving ahead. Here is the cleanest next step from our side.',
             'CONFIRM_POSTED' => 'Quick check: did the agreed post or deliverable go live yet?',
-            default => 'Hey {{handle}}, loved your content and think there could be a good fit here.',
+            default => 'Hey {{handle}}, I am checking whether there is a relevant fit between your audience and this campaign. Open to a short idea?',
         };
     }
 
@@ -1843,7 +1843,7 @@ class TaskQueueService
                 'Status' => 'PENDING',
                 'Due_At' => now()->toDateTimeString(),
                 'Open_URL' => (string) ($creator['DM_Link'] ?? ''),
-                'Message_Draft' => (string) (($messageLibrary[0]['DM_Template'] ?? 'Hey {{handle}}, loved your content.')),
+                'Message_Draft' => (string) (($messageLibrary[0]['DM_Template'] ?? 'Hey {{handle}}, I am checking whether there is a relevant creator partnership fit here. Open to a short idea?')),
                 'Template_ID' => '',
                 'Created_At' => now()->toDateTimeString(),
                 'Completed_At' => '',
