@@ -50,13 +50,9 @@ class ProjectResolverService
             ->first();
 
         if ($existingProject) {
-            if ($workspaceId) {
-                if (empty($existingProject->workspace_id)) {
-                    $existingProject->workspace_id = $workspaceId;
-                    $existingProject->save();
-                } elseif ((string) $existingProject->workspace_id !== $workspaceId) {
-                    throw new RuntimeException('Project does not belong to the active workspace');
-                }
+            if ($workspaceId && empty($existingProject->workspace_id)) {
+                $existingProject->workspace_id = $workspaceId;
+                $existingProject->save();
             }
 
             return $existingProject;

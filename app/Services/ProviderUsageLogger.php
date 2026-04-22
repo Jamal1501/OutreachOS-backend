@@ -96,9 +96,6 @@ class ProviderUsageLogger
         $sensitiveKeys = [
             'authorization', 'apikey', 'api_key', 'token', 'access_token', 'refresh_token',
             'password', 'secret', 'service_role_key', 'email', 'contact_email', 'phone',
-            'handle', 'username', 'user_name', 'full_name', 'name', 'bio', 'biography',
-            'caption', 'comment', 'text', 'message', 'message_text', 'notes', 'url',
-            'profile_url', 'avatar_url', 'image_url', 'video_url', 'thumbnail_url',
         ];
 
         $redacted = [];
