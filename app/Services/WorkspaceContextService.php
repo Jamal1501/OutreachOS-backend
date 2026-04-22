@@ -13,18 +13,26 @@ class WorkspaceContextService
         $workspaceId = trim((string) $request->attributes->get('workspace_id'));
         $explicit = trim((string) $sheetId);
 
-        if ($explicit !== '' && str_starts_with($explicit, 'workspace:')) {
-            return $explicit;
+        $defaultWorkbookId = $workspaceWorkbookId !== ''
+            ? $workspaceWorkbookId
+            : ($workspaceId !== '' ? 'workspace:' . $workspaceId : '');
+
+        if ($defaultWorkbookId === '') {
+            throw new RuntimeException('Missing workspace context.');
         }
 
-        if ($workspaceWorkbookId !== '') {
-            return $workspaceWorkbookId;
+        if ($explicit === '') {
+            return $defaultWorkbookId;
         }
 
-        if ($workspaceId !== '') {
-            return 'workspace:' . $workspaceId;
+        if (str_starts_with($explicit, 'workspace:') && $explicit !== $defaultWorkbookId) {
+            throw new RuntimeException('Requested workbook does not belong to the active workspace.');
         }
 
-        throw new RuntimeException('Missing workspace context.');
+        if (!str_starts_with($explicit, 'workspace:') && $workspaceId !== '') {
+            return $defaultWorkbookId;
+        }
+
+        return $explicit;
     }
 }

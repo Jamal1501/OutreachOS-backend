@@ -42,6 +42,8 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::delete('/crm/{id}', [SheetDataController::class, 'deleteCreator'])->middleware('workspace.role:owner,admin');
     Route::post('/crm/link-profiles', [SheetDataController::class, 'linkProfiles']);
 
+    Route::post('/outreach/log', [ApifyController::class, 'logOutreachEvent']);
+
     Route::get('/discovery/list', [SheetDataController::class, 'discoveryList']);
     Route::post('/discovery/extract-urls', [SheetDataController::class, 'extractUrls'])->middleware('throttle:expensive');
     Route::post('/discovery/push-to-enrichment', [SheetDataController::class, 'pushToEnrichment'])->middleware('throttle:expensive');
