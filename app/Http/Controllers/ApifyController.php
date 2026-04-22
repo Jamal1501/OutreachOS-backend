@@ -16,8 +16,10 @@ use App\Services\WorkspaceContextService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
 use RuntimeException;
 
@@ -231,8 +233,10 @@ public function modules(Request $request)
     ]);
 }
 
-    public function getRunStatus(string $runId)
+    public function getRunStatus(Request $request, string $runId)
     {
+        $this->assertApifyReferenceBelongsToWorkspace($request, 'run_id', $runId);
+
         $token = (string) config('services.apify.token');
 
         if ($token === '') {
@@ -259,6 +263,8 @@ public function modules(Request $request)
 public function getDatasetResults(Request $request, string $datasetId)
 {
     try {
+        $this->assertApifyReferenceBelongsToWorkspace($request, 'dataset_id', $datasetId);
+
         $token = (string) config('services.apify.token');
 
         if ($token === '') {
@@ -267,8 +273,8 @@ public function getDatasetResults(Request $request, string $datasetId)
             ], 500);
         }
 
-        $limit = (int) $request->query('limit', 100);
-        $offset = (int) $request->query('offset', 0);
+        $limit = min(max((int) $request->query('limit', 100), 1), 500);
+        $offset = max((int) $request->query('offset', 0), 0);
 
         $response = Http::withToken($token)
             ->acceptJson()
@@ -320,6 +326,7 @@ public function getDatasetResults(Request $request, string $datasetId)
         ]);
 
         $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
+        $this->assertApifyReferenceBelongsToWorkspace($request, 'dataset_id', $validated['datasetId']);
         $items = $this->fetchDatasetItems($validated['datasetId']);
 
         if (count($items) === 0) {
@@ -623,6 +630,38 @@ public function mergeEnrichedToCreators(Request $request)
             'sheetId' => $sheetId,
             'tasks' => $tasks,
         ]);
+    }
+    
+    private function assertApifyReferenceBelongsToWorkspace(Request $request, string $column, string $referenceId): void
+    {
+        if (!in_array($column, ['run_id', 'dataset_id'], true)) {
+            return;
+        }
+
+        $workspaceId = trim((string) $request->attributes->get('workspace_id'));
+        $referenceId = trim($referenceId);
+
+        if ($workspaceId === '' || $referenceId === '' || !Schema::hasTable('apify_usage_logs')) {
+            return;
+        }
+
+        $workspaceIds = DB::table('apify_usage_logs')
+            ->where($column, $referenceId)
+            ->whereNotNull('workspace_id')
+            ->pluck('workspace_id')
+            ->map(fn ($value) => trim((string) $value))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($workspaceIds === []) {
+            return;
+        }
+
+        if (!in_array($workspaceId, $workspaceIds, true)) {
+            abort(403, 'Requested Apify resource does not belong to the active workspace.');
+        }
     }
     
     private function payloadSummary(array $payload): array
