@@ -1197,7 +1197,7 @@ return [
     ),
     'followers' => $this->nullableInt(Arr::get($item, 'followersCount', Arr::get($item, 'followers'))),
     'engagementRate' => $this->nullableFloat($this->estimateInstagramEngagementRate($item)),
-    'email' => $this->nullableString($this->extractEmailFromItem($item, $bio)),
+    'email' => $this->nullableString(Arr::get($item, 'email_from_bio', $this->extractEmailFromText($bio))),
     'bio' => $this->nullableString($bio),
     'postsCount' => $this->nullableInt(Arr::get($item, 'postsCount', Arr::get($item, 'posts_count'))),
     'avgLikes' => $this->nullableFloat($this->averageFromLatestPosts($latestPosts, 'likesCount')),
@@ -1279,7 +1279,7 @@ return [
     ),
     'followers' => $this->nullableInt($followers),
     'engagementRate' => $this->nullableFloat($engagementRate),
-    'email' => $this->nullableString($this->extractEmailFromItem($item, $bio)),
+    'email' => $this->nullableString(Arr::get($item, 'email_from_bio', $this->extractEmailFromText($bio))),
     'bio' => $this->nullableString($bio),
     'postsCount' => $this->nullableInt(Arr::get($item, 'videoCount', Arr::get($item, 'authorStats.videoCount', Arr::get($item, 'posts')))),
     'avgLikes' => $this->nullableFloat($avgLikes),
@@ -1555,44 +1555,6 @@ return [
             'false', '0', 'no' => false,
             default => null,
         };
-    }
-
-    private function extractEmailFromItem(array $item, string $bio): string
-    {
-        $candidates = [
-            Arr::get($item, 'email_from_bio'),
-            Arr::get($item, 'emailFromBio'),
-            Arr::get($item, 'email'),
-            Arr::get($item, 'contactEmail'),
-            Arr::get($item, 'contact_email'),
-            Arr::get($item, 'businessEmail'),
-            Arr::get($item, 'business_email'),
-            Arr::get($item, 'publicEmail'),
-            Arr::get($item, 'public_email'),
-            Arr::get($item, 'emails.0'),
-            Arr::get($item, 'profile.emails.0'),
-            Arr::get($item, 'authorMeta.email'),
-            $bio,
-        ];
-
-        foreach ($candidates as $candidate) {
-            if (is_array($candidate)) {
-                $candidate = implode(' ', array_map(static function ($value) {
-                    if (is_scalar($value)) {
-                        return (string) $value;
-                    }
-
-                    return json_encode($value) ?: '';
-                }, $candidate));
-            }
-
-            $email = $this->extractEmailFromText((string) $candidate);
-            if ($email !== '') {
-                return strtolower($email);
-            }
-        }
-
-        return '';
     }
 
     private function extractEmailFromText(string $text): string

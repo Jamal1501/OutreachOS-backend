@@ -366,10 +366,6 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
                 continue;
             }
 
-            if ($status === '' && Str::lower((string) ($item['status'] ?? '')) === 'archived') {
-                continue;
-            }
-
             if ($niche !== '' && Str::lower((string) ($item['niche'] ?? '')) !== $niche) {
                 continue;
             }
@@ -1854,12 +1850,6 @@ return [
             $query->where('lifecycle_state', $statusFilter);
         }
 
-        if ($statusFilter === '') {
-            $query->where(function ($stateQuery) {
-                $stateQuery->whereNull('lifecycle_state')->orWhereRaw("LOWER(COALESCE(lifecycle_state, status, '')) <> 'archived'");
-            });
-        }
-
         if (($filters['niche'] ?? '') !== '') {
             $niche = trim((string) $filters['niche']);
             $query->where(function ($profileQuery) use ($niche) {
@@ -2130,7 +2120,7 @@ return [
             'valueTier' => Str::lower($this->scoring->tier($score)),
             'preferredChannel' => (string) ($profile->preferred_channel ?: ''),
             'creatorIdentityId' => (string) (optional($creator)->external_identity_key ?: ''),
-            'linkedProfileCount' => 1,
+            'linkedProfileCount' => $creator ? $creator->profiles()->count() : 1,
         ];
     }
 
