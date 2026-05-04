@@ -20,6 +20,7 @@ class ApifyDiscoveryProvider implements DiscoveryProvider
         $module = $this->scrapers->resolvePipelineModule($planId, $platform, 'discovery', $context['moduleKey'] ?? null);
         $seedCount = max(1, count(array_filter($hashtags, fn ($value) => trim((string) $value) !== '')));
         $effectiveResultsLimit = $this->scrapers->normalizeDiscoveryLimitForSeeds($limit, $seedCount, $module);
+        $totalFetchLimit = max($limit, $effectiveResultsLimit * $seedCount);
         $actorKey = (string) ($module['actorKey'] ?? ($platform === 'instagram' ? 'instagram_discovery' : 'tiktok_discovery'));
 
         $result = $this->executor->run($actorKey, $platform, [
@@ -30,7 +31,7 @@ class ApifyDiscoveryProvider implements DiscoveryProvider
         ], array_merge($context, [
             'moduleKey' => $module['key'],
             'stage' => 'discovery',
-            'fetchLimit' => $effectiveResultsLimit,
+            'fetchLimit' => $totalFetchLimit,
         ]));
 
         $trimmedItems = count($result->items) > $limit ? array_slice($result->items, 0, $limit) : $result->items;

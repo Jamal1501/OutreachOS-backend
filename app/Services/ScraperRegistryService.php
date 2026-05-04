@@ -409,16 +409,29 @@ return [
 
     private function estimateDiscoveryCount(array $input): int
     {
+        $seedCount = 1;
+        foreach (['hashtags', 'searchTerms', 'queries', 'keywords'] as $seedKey) {
+            $seedValue = $input[$seedKey] ?? null;
+            if (is_array($seedValue)) {
+                $nonEmptySeeds = array_filter($seedValue, fn ($value) => trim((string) $value) !== '');
+                if (count($nonEmptySeeds) > 0) {
+                    $seedCount = max($seedCount, count($nonEmptySeeds));
+                }
+            }
+        }
+
         foreach (['resultsLimit', 'results_limit', 'maxItems', 'max_items', 'limit'] as $key) {
             if (isset($input[$key]) && is_numeric($input[$key])) {
-                return max(1, min(1000, (int) $input[$key]));
+                $perSeedLimit = max(1, min(1000, (int) $input[$key]));
+
+                return max(1, min(5000, $perSeedLimit * $seedCount));
             }
         }
 
         foreach (['hashtags', 'searchTerms', 'queries', 'keywords'] as $key) {
             $value = $input[$key] ?? null;
             if (is_array($value) && count($value) > 0) {
-                return max(1, min(500, count($value) * 25));
+                return max(1, min(5000, count(array_filter($value, fn ($seed) => trim((string) $seed) !== '')) * 25));
             }
         }
 
