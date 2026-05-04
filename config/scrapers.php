@@ -80,7 +80,7 @@ return [
             'target_sheet' => 'Instagram_Profile_Enriched',
             'allowed_plans' => ['pro', 'enterprise'],
             'default_batch_size' => 15,
-            'max_batch_size' => 50,
+            'max_batch_size' => 100,
             'fields' => [
                 'fullName', 'bio', 'website', 'followersCount', 'followsCount', 'postsCount', 'verified', 'profilePicUrl', 'latestPosts', 'avgLikes', 'avgComments', 'engagementRateEstimate',
             ],
@@ -131,7 +131,7 @@ return [
             'target_sheet' => 'TikTok_Profile_Enriched',
             'allowed_plans' => ['pro', 'enterprise'],
             'default_batch_size' => 10,
-            'max_batch_size' => 40,
+            'max_batch_size' => 100,
             'fields' => [
                 'nickname', 'bio', 'bioLink', 'followersCount', 'followingCount', 'likesCount', 'videoCount', 'verified', 'avatarUrl', 'latestPosts', 'avgViews', 'avgLikes', 'avgComments',
             ],
