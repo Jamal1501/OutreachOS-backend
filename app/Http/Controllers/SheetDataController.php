@@ -304,27 +304,42 @@ class SheetDataController extends Controller
             'niche' => ['nullable', 'string'],
             'added_from' => ['nullable', 'string'],
             'added_to' => ['nullable', 'string'],
+            'has_email' => ['nullable', 'boolean'],
+            'follower_min' => ['nullable', 'integer', 'min:0'],
+            'follower_max' => ['nullable', 'integer', 'min:0'],
+            'sort' => ['nullable', Rule::in(['handle', 'followers', 'engagementRate', 'valueScore', 'addedAt'])],
+            'direction' => ['nullable', Rule::in(['asc', 'desc'])],
             'limit' => ['nullable', 'integer', 'min:1', 'max:500'],
             'offset' => ['nullable', 'integer', 'min:0'],
         ]);
 
         $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $search = Str::lower(trim((string) ($validated['search'] ?? '')));
-        $platform = Str::lower(trim((string) ($validated['platform'] ?? '')));
-        $status = Str::lower(trim((string) ($validated['status'] ?? '')));
-        $niche = Str::lower(trim((string) ($validated['niche'] ?? '')));
+        $platforms = $this->csvFilterValues($validated['platform'] ?? '');
+        $statuses = $this->csvFilterValues($validated['status'] ?? '');
+        $niches = $this->csvFilterValues($validated['niche'] ?? '');
         $addedFrom = trim((string) ($validated['added_from'] ?? ''));
         $addedTo = trim((string) ($validated['added_to'] ?? ''));
+        $hasEmail = array_key_exists('has_email', $validated) ? (bool) $validated['has_email'] : false;
+        $followerMin = array_key_exists('follower_min', $validated) ? (int) $validated['follower_min'] : null;
+        $followerMax = array_key_exists('follower_max', $validated) ? (int) $validated['follower_max'] : null;
+        $sort = (string) ($validated['sort'] ?? 'addedAt');
+        $direction = (string) ($validated['direction'] ?? 'desc');
         $limit = (int) ($validated['limit'] ?? 200);
         $offset = (int) ($validated['offset'] ?? 0);
 
         $dbItems = $this->loadCreatorsFromDatabase($sheetId, [
             'search' => $search,
-            'platform' => $platform,
-            'status' => $status,
-            'niche' => $niche,
+            'platforms' => $platforms,
+            'statuses' => $statuses,
+            'niches' => $niches,
             'added_from' => $addedFrom,
             'added_to' => $addedTo,
+            'has_email' => $hasEmail,
+            'follower_min' => $followerMin,
+            'follower_max' => $followerMax,
+            'sort' => $sort,
+            'direction' => $direction,
             'limit' => $limit,
             'offset' => $offset,
         ]);
@@ -349,35 +364,24 @@ $items = [];
 foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
             $item = $this->normalizeCreatorRow($row);
 
-            if ($search !== '' && !$this->matchesTextSearch($search, [
-                $item['handle'] ?? '',
-                $item['fullName'] ?? '',
-                $item['niche'] ?? '',
-                $item['email'] ?? '',
+            if (!$this->creatorListItemMatchesFilters($item, [
+                'search' => $search,
+                'platforms' => $platforms,
+                'statuses' => $statuses,
+                'niches' => $niches,
+                'added_from' => $addedFrom,
+                'added_to' => $addedTo,
+                'has_email' => $hasEmail,
+                'follower_min' => $followerMin,
+                'follower_max' => $followerMax,
             ])) {
-                continue;
-            }
-
-            if ($platform !== '' && Str::lower((string) ($item['platform'] ?? '')) !== $platform) {
-                continue;
-            }
-
-            if ($status !== '' && Str::lower((string) ($item['status'] ?? '')) !== $status) {
-                continue;
-            }
-
-            if ($niche !== '' && Str::lower((string) ($item['niche'] ?? '')) !== $niche) {
-                continue;
-            }
-
-            if (!$this->matchesDateRange((string) ($item['addedAt'] ?? ''), $addedFrom, $addedTo)) {
                 continue;
             }
 
             $items[] = $item;
         }
 
-        usort($items, fn (array $a, array $b) => strcmp((string) ($b['addedAt'] ?? ''), (string) ($a['addedAt'] ?? '')));
+        $this->sortCreatorListItems($items, $sort, $direction);
         $total = count($items);
 
         return response()->json([
@@ -1822,6 +1826,124 @@ return [
         return '';
     }
 
+    /**
+     * Accept comma-separated query values so the CRM can server-filter multi-select UI state.
+     * Example: platform=instagram,tiktok or status=enriched,contacted.
+     */
+    private function csvFilterValues(mixed $value): array
+    {
+        if (is_array($value)) {
+            $parts = $value;
+        } else {
+            $parts = explode(',', (string) $value);
+        }
+
+        return array_values(array_unique(array_filter(array_map(
+            fn ($part) => Str::lower(trim((string) $part)),
+            $parts,
+        ), fn ($part) => $part !== '' && $part !== 'all')));
+    }
+
+    private function applyCreatorProfileSort($query, string $sort, string $direction)
+    {
+        $direction = $direction === 'asc' ? 'asc' : 'desc';
+
+        match ($sort) {
+            'handle' => $query->orderBy('handle', $direction),
+            'followers' => $query->orderBy('followers_count', $direction),
+            'engagementRate' => $query->orderBy('engagement_rate_pct', $direction),
+            'valueScore' => $query->orderBy('value_score', $direction),
+            default => $query->orderBy('created_at', $direction),
+        };
+
+        return $query->orderBy('id', 'asc');
+    }
+
+    private function creatorListItemMatchesFilters(array $item, array $filters): bool
+    {
+        $search = (string) ($filters['search'] ?? '');
+        if ($search !== '' && !$this->matchesTextSearch($search, [
+            $item['handle'] ?? '',
+            $item['fullName'] ?? '',
+            $item['niche'] ?? '',
+            $item['email'] ?? '',
+            ...(array) ($item['sourceHashtags'] ?? []),
+        ])) {
+            return false;
+        }
+
+        $platforms = (array) ($filters['platforms'] ?? []);
+        if (!empty($platforms) && !in_array(Str::lower((string) ($item['platform'] ?? '')), $platforms, true)) {
+            return false;
+        }
+
+        $statuses = (array) ($filters['statuses'] ?? []);
+        if (!empty($statuses) && !in_array(Str::lower((string) ($item['status'] ?? '')), $statuses, true)) {
+            return false;
+        }
+
+        $niches = (array) ($filters['niches'] ?? []);
+        if (!empty($niches)) {
+            $sourceTags = array_map(
+                fn ($tag) => Str::lower(trim(ltrim((string) $tag, '#'))),
+                array_merge([(string) ($item['niche'] ?? '')], (array) ($item['sourceHashtags'] ?? [])),
+            );
+            if (empty(array_intersect($niches, array_filter($sourceTags)))) {
+                return false;
+            }
+        }
+
+        if (!$this->matchesDateRange((string) ($item['addedAt'] ?? ''), (string) ($filters['added_from'] ?? ''), (string) ($filters['added_to'] ?? ''))) {
+            return false;
+        }
+
+        if (($filters['has_email'] ?? false) === true && trim((string) ($item['email'] ?? '')) === '') {
+            return false;
+        }
+
+        $followers = (int) ($item['followers'] ?? 0);
+        if (($filters['follower_min'] ?? null) !== null && $followers < (int) $filters['follower_min']) {
+            return false;
+        }
+        if (($filters['follower_max'] ?? null) !== null && $followers > (int) $filters['follower_max']) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private function sortCreatorListItems(array &$items, string $sort, string $direction): void
+    {
+        $direction = $direction === 'asc' ? 'asc' : 'desc';
+        usort($items, function (array $a, array $b) use ($sort, $direction) {
+            $aValue = $this->creatorListSortValue($a, $sort);
+            $bValue = $this->creatorListSortValue($b, $sort);
+
+            if (is_string($aValue) || is_string($bValue)) {
+                $comparison = strcmp((string) $aValue, (string) $bValue);
+            } else {
+                $comparison = $aValue <=> $bValue;
+            }
+
+            if ($comparison === 0) {
+                $comparison = strcmp((string) ($a['id'] ?? ''), (string) ($b['id'] ?? ''));
+            }
+
+            return $direction === 'asc' ? $comparison : -$comparison;
+        });
+    }
+
+    private function creatorListSortValue(array $item, string $sort): string|int|float
+    {
+        return match ($sort) {
+            'handle' => Str::lower((string) ($item['handle'] ?? '')),
+            'followers' => (int) ($item['followers'] ?? 0),
+            'engagementRate' => (float) ($item['engagementRate'] ?? 0),
+            'valueScore' => (int) ($item['valueScore'] ?? 0),
+            default => $item['addedAt'] ? strtotime((string) $item['addedAt']) ?: 0 : 0,
+        };
+    }
+
     private function loadCreatorsFromDatabase(string $sheetId, array $filters): ?array
     {
         if (!$this->mirror->enabled()) {
@@ -1833,28 +1955,34 @@ return [
             return null;
         }
 
-        $statusFilter = trim((string) ($filters['status'] ?? ''));
-        $duplicateReviewOnly = $statusFilter === 'duplicate_review_needed';
+        $statusFilters = array_values((array) ($filters['statuses'] ?? []));
+        $duplicateReviewOnly = count($statusFilters) === 1 && $statusFilters[0] === 'duplicate_review_needed';
         $limit = max(1, min(500, (int) ($filters['limit'] ?? 200)));
         $offset = max(0, (int) ($filters['offset'] ?? 0));
+        $sort = (string) ($filters['sort'] ?? 'addedAt');
+        $direction = strtolower((string) ($filters['direction'] ?? 'desc')) === 'asc' ? 'asc' : 'desc';
 
         $query = CreatorProfile::query()
             ->with(['creator:id,display_name,primary_email,country,city,primary_language,niche_category,notes,external_identity_key'])
             ->where('project_id', $project->id);
 
-        if (($filters['platform'] ?? '') !== '') {
-            $query->where('platform', $filters['platform']);
+        $platformFilters = array_values((array) ($filters['platforms'] ?? []));
+        if (!empty($platformFilters)) {
+            $query->whereIn('platform', $platformFilters);
         }
 
-        if ($statusFilter !== '' && !$duplicateReviewOnly) {
-            $query->where('lifecycle_state', $statusFilter);
+        if (!empty($statusFilters) && !$duplicateReviewOnly) {
+            $query->whereIn('lifecycle_state', $statusFilters);
         }
 
-        if (($filters['niche'] ?? '') !== '') {
-            $niche = trim((string) $filters['niche']);
-            $query->where(function ($profileQuery) use ($niche) {
-                $profileQuery->whereHas('creator', fn ($q) => $q->whereRaw("LOWER(COALESCE(niche_category, '')) = ?", [$niche]))
-                    ->orWhereRaw("LOWER(CAST(source_metadata AS TEXT)) LIKE ?", ['%"' . strtolower($niche) . '"%']);
+        $nicheFilters = array_values((array) ($filters['niches'] ?? []));
+        if (!empty($nicheFilters)) {
+            $query->where(function ($outerQuery) use ($nicheFilters) {
+                foreach ($nicheFilters as $niche) {
+                    $outerQuery->orWhereHas('creator', fn ($q) => $q->whereRaw("LOWER(COALESCE(niche_category, '')) = ?", [$niche]))
+                        ->orWhereRaw("LOWER(CAST(source_metadata AS TEXT)) LIKE ?", ['%"' . strtolower($niche) . '"%'])
+                        ->orWhereRaw("LOWER(CAST(source_metadata AS TEXT)) LIKE ?", ['%' . strtolower($niche) . '%']);
+                }
             });
         }
 
@@ -1864,6 +1992,18 @@ return [
 
         if (($filters['added_to'] ?? '') !== '') {
             $query->where('created_at', '<=', $filters['added_to'] . ' 23:59:59');
+        }
+
+        if (($filters['has_email'] ?? false) === true) {
+            $query->whereHas('creator', fn ($q) => $q->whereNotNull('primary_email')->whereRaw("TRIM(primary_email) <> ''"));
+        }
+
+        if (($filters['follower_min'] ?? null) !== null) {
+            $query->where('followers_count', '>=', (int) $filters['follower_min']);
+        }
+
+        if (($filters['follower_max'] ?? null) !== null) {
+            $query->where('followers_count', '<=', (int) $filters['follower_max']);
         }
 
         if (($filters['search'] ?? '') !== '') {
@@ -1885,7 +2025,7 @@ return [
             return ['items' => [], 'total' => 0];
         }
 
-        $profilesQuery = $query->orderByDesc('created_at');
+        $profilesQuery = $this->applyCreatorProfileSort($query, $sort, $direction);
         if ($duplicateReviewOnly) {
             $profilesQuery->limit(500);
         } else {
