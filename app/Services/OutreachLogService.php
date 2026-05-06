@@ -136,7 +136,10 @@ class OutreachLogService
             return Task::query()
                 ->where('project_id', $projectId)
                 ->where(function ($query) use ($taskExternalKey) {
-                    $query->where('external_task_key', $taskExternalKey)->orWhere('id', $taskExternalKey);
+                    $query->where('external_task_key', $taskExternalKey);
+                    if (Str::isUuid($taskExternalKey)) {
+                        $query->orWhere('id', $taskExternalKey);
+                    }
                 })
                 ->first();
         }

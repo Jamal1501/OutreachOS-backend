@@ -167,7 +167,12 @@ class TaskQueueService
         if ($project) {
             $task = Task::query()
                 ->where('project_id', $project->id)
-                ->where(fn ($q) => $q->where('external_task_key', $taskId)->orWhere('id', $taskId))
+                ->where(function ($q) use ($taskId) {
+                    $q->where('external_task_key', $taskId);
+                    if (Str::isUuid($taskId)) {
+                        $q->orWhere('id', $taskId);
+                    }
+                })
                 ->with('creatorProfile')
                 ->firstOrFail();
 
@@ -513,7 +518,12 @@ class TaskQueueService
 
         $task = Task::query()
             ->where('project_id', $project->id)
-            ->where(fn ($q) => $q->where('external_task_key', $taskId)->orWhere('id', $taskId))
+            ->where(function ($q) use ($taskId) {
+                    $q->where('external_task_key', $taskId);
+                    if (Str::isUuid($taskId)) {
+                        $q->orWhere('id', $taskId);
+                    }
+                })
             ->with(['creatorProfile.creator', 'messageTemplate'])
             ->firstOrFail();
 
