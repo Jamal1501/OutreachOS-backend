@@ -503,6 +503,34 @@ public function mergeEnrichedToCreators(Request $request)
         ]);
     }
 
+    public function resolveOutreachTask(Request $request)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+            'platform' => ['nullable', 'string', Rule::in(['instagram', 'tiktok', 'email'])],
+            'handle' => ['required', 'string', 'max:255'],
+            'taskType' => ['nullable', 'string', Rule::in(['FOLLOW_REQUEST', 'DM_INVITE', 'DM_FOLLOWUP', 'EMAIL_SEND', 'REVIEW_CREATOR', 'COMMENT_ON_POST', 'NEGOTIATE_TERMS', 'CHECK_IN', 'CONFIRM_POSTED', 'CONFIRM_ACCEPTED', 'ARCHIVE_CREATOR'])],
+            'priority' => ['nullable', 'string', Rule::in(['LOW', 'MEDIUM', 'HIGH', 'URGENT', 'low', 'medium', 'high', 'urgent'])],
+            'profileUrl' => ['nullable', 'string'],
+            'messageText' => ['nullable', 'string'],
+            'notes' => ['nullable', 'string'],
+            'dueAt' => ['nullable', 'string'],
+            'creatorProfileId' => ['nullable', 'string'],
+            'allowCreate' => ['nullable', 'boolean'],
+        ]);
+
+        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
+        $result = $this->taskQueue->resolveOrCreateOutreachTask($sheetId, $validated);
+
+        return response()->json([
+            'message' => $result['created'] ? 'Outreach task created' : 'Outreach task resolved',
+            'sheetId' => $sheetId,
+            'task' => $result['task'],
+            'created' => $result['created'],
+            'source' => $result['source'] ?? null,
+        ]);
+    }
+
     public function completeTask(Request $request, string $taskId)
     {
         $validated = $request->validate([

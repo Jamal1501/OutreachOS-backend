@@ -65,6 +65,7 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::post('/tasks/create', [ApifyController::class, 'createTask']);
     Route::get('/tasks/cold-retry', [ApifyController::class, 'coldRetryTasks']);
     Route::get('/tasks/list', [ApifyController::class, 'listTasks']);
+    Route::post('/tasks/resolve-outreach', [ApifyController::class, 'resolveOutreachTask']);
     Route::post('/tasks/{taskId}/complete', [ApifyController::class, 'completeTask']);
     Route::post('/tasks/{taskId}/snooze', [ApifyController::class, 'snoozeTask']);
 

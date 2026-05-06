@@ -317,6 +317,55 @@ class TaskQueueService
         ];
     }
 
+    public function resolveOrCreateOutreachTask(string $sheetId, array $payload = []): array
+    {
+        $project = $this->projects->findByWorkbookId($sheetId);
+        if ($project) {
+            return $this->resolveOrCreateOutreachTaskInDatabase($sheetId, $payload);
+        }
+
+        if (str_starts_with($sheetId, 'workspace:')) {
+            throw new RuntimeException('Cannot resolve outreach task without a project workbook.');
+        }
+
+        $handle = $this->normalizeCreatorHandle((string) ($payload['handle'] ?? ''));
+        $taskType = (string) ($payload['taskType'] ?? 'DM_INVITE');
+        $rows = $this->sheets->getRows($sheetId, 'Task_Queue');
+
+        foreach ($rows as $row) {
+            $rowHandle = $this->normalizeCreatorHandle((string) ($row['Handle'] ?? ''));
+            $rowStatus = strtoupper((string) ($row['Status'] ?? 'PENDING'));
+            if ($rowHandle === $handle && !in_array($rowStatus, self::TERMINAL_TASK_STATUSES, true)) {
+                return [
+                    'task' => $this->normalizeSheetTaskRow($row),
+                    'created' => false,
+                    'source' => 'google_sheets',
+                ];
+            }
+        }
+
+        if (($payload['allowCreate'] ?? true) === false) {
+            throw new RuntimeException('No open outreach task found for creator.');
+        }
+
+        $task = $this->createManualTask($sheetId, [
+            'platform' => (string) ($payload['platform'] ?? 'instagram'),
+            'handle' => $handle,
+            'taskType' => $taskType,
+            'priority' => strtoupper((string) ($payload['priority'] ?? 'MEDIUM')),
+            'profileUrl' => (string) ($payload['profileUrl'] ?? ''),
+            'messageText' => (string) ($payload['messageText'] ?? ''),
+            'notes' => (string) ($payload['notes'] ?? 'Auto-created from Outreach Panel before marking sent.'),
+            'dueAt' => (string) ($payload['dueAt'] ?? now()->toDateTimeString()),
+        ]);
+
+        return [
+            'task' => $task,
+            'created' => true,
+            'source' => 'google_sheets',
+        ];
+    }
+
     private function generateInitialTasksFromDatabase(string $sheetId, array $options = []): array
     {
         $project = $this->projects->resolveByWorkbookId($sheetId);
@@ -476,21 +525,162 @@ class TaskQueueService
         return $tasks->map(fn (Task $task) => $this->normalizeDbTask($task))->values()->all();
     }
 
+    private function normalizeCreatorHandle(string $handle): string
+    {
+        return strtolower(trim(ltrim($handle, '@')));
+    }
+
+    private function resolveCreatorProfileForOutreach(string $projectId, array $payload): ?CreatorProfile
+    {
+        $creatorProfileId = trim((string) ($payload['creatorProfileId'] ?? ''));
+        if ($creatorProfileId !== '' && Str::isUuid($creatorProfileId)) {
+            $profile = CreatorProfile::query()
+                ->where('project_id', $projectId)
+                ->where('id', $creatorProfileId)
+                ->with('creator')
+                ->first();
+
+            if ($profile) {
+                return $profile;
+            }
+        }
+
+        $handle = $this->normalizeCreatorHandle((string) ($payload['handle'] ?? ''));
+        if ($handle === '') {
+            return null;
+        }
+
+        $platform = strtolower((string) ($payload['platform'] ?? ''));
+
+        $query = CreatorProfile::query()
+            ->where('project_id', $projectId)
+            ->whereRaw("LOWER(REPLACE(handle, '@', '')) = ?", [$handle])
+            ->with('creator');
+
+        if ($platform !== '' && $platform !== 'email') {
+            $query->where(function ($q) use ($platform) {
+                $q->where('platform', $platform)
+                    ->orWhere('preferred_channel', $platform)
+                    ->orWhere('conversation_channel', $platform);
+            });
+        }
+
+        return $query
+            ->orderByDesc('value_score')
+            ->orderByDesc('updated_at')
+            ->first();
+    }
+
+    private function resolveExistingOpenTaskForOutreach(string $projectId, ?CreatorProfile $profile, array $payload): ?Task
+    {
+        $handle = $this->normalizeCreatorHandle((string) ($payload['handle'] ?? ''));
+        $requestedTaskType = strtoupper(trim((string) ($payload['taskType'] ?? '')));
+        $platform = strtolower((string) ($payload['platform'] ?? ''));
+
+        $query = Task::query()
+            ->where('project_id', $projectId)
+            ->whereIn('status', self::OPEN_TASK_STATUSES)
+            ->where(function ($q) use ($profile, $handle, $platform) {
+                if ($profile) {
+                    $q->where('creator_profile_id', $profile->id);
+                    return;
+                }
+
+                $q->whereRaw("LOWER(REPLACE(handle, '@', '')) = ?", [$handle]);
+                if ($platform !== '' && $platform !== 'email') {
+                    $q->where(function ($channelQuery) use ($platform) {
+                        $channelQuery->where('platform', $platform)
+                            ->orWhere('actionable_channel', $platform)
+                            ->orWhere('external_channel', $platform);
+                    });
+                }
+            })
+            ->with(['creatorProfile.creator', 'messageTemplate'])
+            ->get();
+
+        if ($query->isEmpty()) {
+            return null;
+        }
+
+        return $query
+            ->sortBy(function (Task $task) use ($requestedTaskType) {
+                $exactTypeRank = $requestedTaskType !== '' && $task->task_type === $requestedTaskType ? 0 : 1;
+                $priorityRank = ['URGENT' => 0, 'HIGH' => 1, 'MEDIUM' => 2, 'LOW' => 3][strtoupper((string) $task->priority)] ?? 9;
+                $due = optional($task->due_at)->timestamp ?? PHP_INT_MAX;
+
+                return sprintf('%02d-%02d-%012d-%s', $exactTypeRank, $priorityRank, $due, (string) $task->created_at);
+            })
+            ->first();
+    }
+
+    private function resolveOrCreateOutreachTaskInDatabase(string $sheetId, array $payload): array
+    {
+        $project = $this->projects->resolveByWorkbookId($sheetId);
+        $profile = $this->resolveCreatorProfileForOutreach($project->id, $payload);
+        $existing = $this->resolveExistingOpenTaskForOutreach($project->id, $profile, $payload);
+
+        if ($existing) {
+            return [
+                'task' => $this->normalizeDbTask($existing),
+                'created' => false,
+                'source' => 'database',
+            ];
+        }
+
+        if (($payload['allowCreate'] ?? true) === false) {
+            throw new RuntimeException('No open outreach task found for creator.');
+        }
+
+        $settings = $this->resolveTaskSettings($this->resolveWorkspaceForSheet($sheetId, $project));
+        $taskType = (string) ($payload['taskType'] ?? 'DM_INVITE');
+        $platform = strtolower((string) ($payload['platform'] ?? ($profile?->platform ?: 'instagram')));
+        $priority = strtoupper((string) ($payload['priority'] ?? ($profile ? $this->priorityFromProfile($profile) : 'MEDIUM')));
+        $dueAt = !empty($payload['dueAt']) ? Carbon::parse((string) $payload['dueAt']) : now();
+
+        $candidate = [
+            'profile' => $profile,
+            'handle' => $this->normalizeCreatorHandle((string) ($payload['handle'] ?? ($profile?->handle ?: ''))),
+            'task_type' => $taskType,
+            'priority' => $priority,
+            'due_at' => $dueAt,
+            'rank_score' => 0,
+            'actionable_channel' => $platform,
+            'conversation_url' => (string) ($payload['profileUrl'] ?? ($profile?->dm_link ?: $profile?->profile_url ?: '')),
+            'message_draft' => (string) ($payload['messageText'] ?? ''),
+            'notes' => trim((string) ($payload['notes'] ?? 'Auto-created from Outreach Panel before marking sent.')),
+            'metadata' => [
+                'source_rule' => 'outreach_panel_resolve',
+                'manual_created' => true,
+                'created_for_immediate_completion' => true,
+                'resolver_task_type' => $taskType,
+            ],
+        ];
+
+        if ($profile) {
+            $candidate['metadata']['resolver_creator_profile_id'] = $profile->id;
+        }
+
+        $task = $this->createDatabaseTask($project->id, $profile, $candidate, MessageTemplate::query()->where('project_id', $project->id)->get()->all(), true);
+
+        return [
+            'task' => $this->normalizeDbTask($task->load(['creatorProfile.creator', 'messageTemplate'])),
+            'created' => true,
+            'source' => 'database',
+        ];
+    }
+
     private function createManualTaskInDatabase(string $sheetId, array $payload): array
     {
         $project = $this->projects->resolveByWorkbookId($sheetId);
         $settings = $this->resolveTaskSettings($this->resolveWorkspaceForSheet($sheetId, $project));
-        $handle = trim((string) ($payload['handle'] ?? ''));
+        $handle = $this->normalizeCreatorHandle((string) ($payload['handle'] ?? ''));
         $platform = strtolower((string) ($payload['platform'] ?? 'instagram'));
 
-        $profile = CreatorProfile::query()
-            ->where('project_id', $project->id)
-            ->where('platform', $platform)
-            ->where('handle', $handle)
-            ->first();
+        $profile = $this->resolveCreatorProfileForOutreach($project->id, $payload);
 
         $candidate = [
             'profile' => $profile,
+            'handle' => $handle,
             'task_type' => (string) ($payload['taskType'] ?? 'DM_INVITE'),
             'priority' => strtoupper((string) ($payload['priority'] ?? 'MEDIUM')),
             'due_at' => $payload['dueAt'] ? Carbon::parse((string) $payload['dueAt']) : now(),
@@ -1321,7 +1511,7 @@ class TaskQueueService
             'message_template_id' => $template?->id,
             'external_task_key' => $taskId,
             'platform' => $platform,
-            'handle' => (string) ($profile?->handle ?: ''),
+            'handle' => (string) ($profile?->handle ?: ($candidate['handle'] ?? '')),
             'task_type' => $taskType,
             'priority' => strtoupper((string) ($candidate['priority'] ?? 'MEDIUM')),
             'status' => 'PENDING',
