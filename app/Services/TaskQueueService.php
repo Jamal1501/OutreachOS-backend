@@ -602,7 +602,7 @@ class TaskQueueService
             return null;
         }
 
-        return $query
+        $sorted = $query
             ->sortBy(function (Task $task) use ($requestedTaskType) {
                 $exactTypeRank = $requestedTaskType !== '' && $task->task_type === $requestedTaskType ? 0 : 1;
                 $priorityRank = ['URGENT' => 0, 'HIGH' => 1, 'MEDIUM' => 2, 'LOW' => 3][strtoupper((string) $task->priority)] ?? 9;
@@ -610,7 +610,13 @@ class TaskQueueService
 
                 return sprintf('%02d-%02d-%012d-%s', $exactTypeRank, $priorityRank, $due, (string) $task->created_at);
             })
-            ->first();
+            ->values();
+
+        if (in_array($requestedTaskType, ['DM_INVITE', 'EMAIL_SEND', 'DM_FOLLOWUP', 'COMMENT_ON_POST'], true)) {
+            return $sorted->first(fn (Task $task) => $task->task_type === $requestedTaskType);
+        }
+
+        return $sorted->first();
     }
 
     private function resolveOrCreateOutreachTaskInDatabase(string $sheetId, array $payload): array
@@ -790,9 +796,12 @@ class TaskQueueService
         $task->save();
 
         $profile = $task->creatorProfile;
+        $relatedTaskUpdates = ['completed' => [], 'reframed' => []];
         if ($profile) {
             $this->applyTaskResultToProfile($profile, $task, $payload, $settings);
             $profile->save();
+            $relatedTaskUpdates = $this->applyRelatedWarmupTasksAfterOutreach($project->id, $sheetId, $profile, $task, $payload, $senderAccount);
+            $profile->refresh();
             $this->maybeCreateImmediateNextTask($project->id, $profile, $task, $settings);
         }
 
@@ -822,7 +831,127 @@ class TaskQueueService
             'status' => $task->status,
             'createdFollowUpTask' => $profile ? $this->findNewestOpenTaskForProfile($project->id, $profile->id, $task->id) : null,
             'backfilledTasks' => $backfillResult,
+            'relatedTaskUpdates' => $relatedTaskUpdates,
             'source' => 'database',
+        ];
+    }
+
+    private function applyRelatedWarmupTasksAfterOutreach(string $projectId, string $sheetId, CreatorProfile $profile, Task $completedTask, array $payload, string $senderAccount = ''): array
+    {
+        $status = strtoupper((string) ($completedTask->status ?? ''));
+        if (!in_array($status, self::TERMINAL_TASK_STATUSES, true)) {
+            return ['completed' => [], 'reframed' => []];
+        }
+
+        $actionType = strtoupper(trim((string) ($payload['actionType'] ?? $completedTask->task_type ?? '')));
+        if (!in_array($actionType, ['DM_INVITE', 'EMAIL_SEND', 'DM_FOLLOWUP', 'COMMENT_ON_POST'], true)) {
+            return ['completed' => [], 'reframed' => []];
+        }
+
+        $completedIds = array_values(array_filter(array_map(
+            fn ($value) => trim((string) $value),
+            (array) ($payload['completedRelatedTaskIds'] ?? [])
+        )));
+        $keepAsFollowup = (bool) ($payload['keepRelatedTasksAsFollowup'] ?? true);
+        $now = now();
+
+        $relatedTasks = Task::query()
+            ->where('project_id', $projectId)
+            ->where('creator_profile_id', $profile->id)
+            ->whereIn('status', self::OPEN_TASK_STATUSES)
+            ->whereIn('task_type', ['FOLLOW_REQUEST', 'COMMENT_ON_POST'])
+            ->where('id', '!=', $completedTask->id)
+            ->with(['creatorProfile.creator', 'messageTemplate'])
+            ->get();
+
+        $completed = [];
+        $reframed = [];
+        $state = $this->profileAutomationState($profile);
+
+        foreach ($relatedTasks as $relatedTask) {
+            $relatedPublicId = (string) ($relatedTask->external_task_key ?: $relatedTask->id);
+            $wasAlsoCompleted = in_array((string) $relatedTask->id, $completedIds, true) || in_array($relatedPublicId, $completedIds, true);
+            $meta = (array) ($relatedTask->metadata ?? []);
+
+            if ($wasAlsoCompleted) {
+                $outcome = $relatedTask->task_type === 'FOLLOW_REQUEST' ? 'followed' : 'commented';
+                $relatedTask->status = 'COMPLETED';
+                $relatedTask->completed_at = $now;
+                $relatedTask->completion_outcome = $outcome;
+                $relatedTask->notes = trim(((string) ($relatedTask->notes ?? '')) . ' Completed alongside ' . $actionType . ' from Outreach Panel.');
+                $relatedTask->metadata = array_merge($meta, [
+                    'completed_with_outreach_task_id' => (string) ($completedTask->external_task_key ?: $completedTask->id),
+                    'completed_with_action_type' => $actionType,
+                    'actual_user_confirmed' => true,
+                ]);
+                $relatedTask->save();
+
+                if ($relatedTask->task_type === 'FOLLOW_REQUEST') {
+                    $state['warmup_follow_request_sent'] = true;
+                    $state['warmup_follow_request_completed'] = true;
+                } elseif ($relatedTask->task_type === 'COMMENT_ON_POST') {
+                    $profile->comment_attempted_at = $profile->comment_attempted_at ?: $now;
+                    $state['warmup_comment_completed'] = true;
+                }
+
+                $this->outreachLog->appendEvent($sheetId, [
+                    'Task_ID' => $relatedPublicId,
+                    'creator_profile_id' => $relatedTask->creator_profile_id,
+                    'Platform' => (string) ($relatedTask->platform ?: $completedTask->platform ?: ''),
+                    'Handle' => (string) ($relatedTask->handle ?: $completedTask->handle ?: ''),
+                    'Channel' => (string) ($relatedTask->actionable_channel ?: $relatedTask->platform ?: ''),
+                    'Event_Type' => $this->eventTypeFromTask((string) $relatedTask->task_type, 'COMPLETED', $outcome),
+                    'Template_ID' => '',
+                    'Sender_Account' => $senderAccount,
+                    'Status' => 'COMPLETED',
+                    'URL' => (string) ($relatedTask->conversation_url ?: $relatedTask->open_url ?: $completedTask->conversation_url ?: ''),
+                    'Notes' => 'Confirmed as also completed while logging ' . $actionType,
+                ]);
+
+                $completed[] = $this->normalizeDbTask($relatedTask);
+                continue;
+            }
+
+            if (!$keepAsFollowup) {
+                continue;
+            }
+
+            $delayDays = $relatedTask->task_type === 'FOLLOW_REQUEST' ? 1 : 2;
+            $supportNote = $relatedTask->task_type === 'FOLLOW_REQUEST'
+                ? 'Follow this creator if there is no reply to the outreach message.'
+                : 'Comment on a recent post as a soft public follow-up if there is no reply.';
+
+            $newMeta = array_merge($meta, [
+                'source_rule' => 'post_outreach_support',
+                'group_context' => 'follow_up',
+                'follow_up_variant' => true,
+                'reframed_after_task_id' => (string) ($completedTask->external_task_key ?: $completedTask->id),
+                'reframed_after_action_type' => $actionType,
+                'original_context' => $meta['group_context'] ?? 'warmup',
+            ]);
+            $groupMeta = $this->groupMetaForTask((string) $relatedTask->task_type, $newMeta);
+
+            $relatedTask->due_at = $now->copy()->addDays($delayDays);
+            $relatedTask->snoozed_until = null;
+            $relatedTask->status = 'PENDING';
+            $relatedTask->notes = $supportNote;
+            $relatedTask->metadata = $newMeta;
+            $relatedTask->group_key = $groupMeta['group_key'];
+            $relatedTask->group_label = $groupMeta['group_label'];
+            $relatedTask->group_type = $groupMeta['group_type'];
+            $relatedTask->save();
+
+            $reframed[] = $this->normalizeDbTask($relatedTask);
+        }
+
+        if ($completed !== []) {
+            $profile->automation_state = $state;
+            $profile->save();
+        }
+
+        return [
+            'completed' => $completed,
+            'reframed' => $reframed,
         ];
     }
 

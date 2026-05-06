@@ -547,6 +547,10 @@ public function mergeEnrichedToCreators(Request $request)
             'responseChannel' => ['nullable', 'string'],
             'conversationUrl' => ['nullable', 'string'],
             'markReplied' => ['nullable', 'boolean'],
+            'actionType' => ['nullable', 'string', Rule::in(['FOLLOW_REQUEST', 'DM_INVITE', 'DM_FOLLOWUP', 'EMAIL_SEND', 'REVIEW_CREATOR', 'COMMENT_ON_POST', 'NEGOTIATE_TERMS', 'CHECK_IN', 'CONFIRM_POSTED', 'CONFIRM_ACCEPTED', 'ARCHIVE_CREATOR'])],
+            'completedRelatedTaskIds' => ['nullable', 'array'],
+            'completedRelatedTaskIds.*' => ['string'],
+            'keepRelatedTasksAsFollowup' => ['nullable', 'boolean'],
         ]);
 
         $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
