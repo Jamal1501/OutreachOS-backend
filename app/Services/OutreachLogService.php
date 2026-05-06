@@ -173,15 +173,24 @@ class OutreachLogService
             return null;
         }
 
+        $databaseId = $templateId;
+        if (Str::startsWith($databaseId, 'msgdb:')) {
+            $databaseId = substr($databaseId, strlen('msgdb:'));
+        }
+
         $query = MessageTemplate::query()
             ->where('project_id', $projectId)
-            ->where('angle_id', $templateId);
+            ->where(function ($query) use ($templateId, $databaseId) {
+                $query->where('angle_id', $templateId);
 
-        if ($this->isUuid($templateId)) {
-            $query->orWhere(function ($nested) use ($projectId, $templateId) {
-                $nested->where('project_id', $projectId)->where('id', $templateId);
+                if ($databaseId !== $templateId) {
+                    $query->orWhere('angle_id', $databaseId);
+                }
+
+                if ($this->isUuid($databaseId)) {
+                    $query->orWhere('id', $databaseId);
+                }
             });
-        }
 
         return $query->first();
     }

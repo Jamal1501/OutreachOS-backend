@@ -530,9 +530,23 @@ class TaskQueueService
         if (array_key_exists('template_id', $payload) && $payload['template_id'] !== null) {
             $templateId = trim((string) $payload['template_id']);
             if ($templateId !== '') {
+                $databaseTemplateId = Str::startsWith($templateId, 'msgdb:')
+                    ? substr($templateId, strlen('msgdb:'))
+                    : $templateId;
+
                 $template = MessageTemplate::query()
                     ->where('project_id', $project->id)
-                    ->where('angle_id', $templateId)
+                    ->where(function ($query) use ($templateId, $databaseTemplateId) {
+                        $query->where('angle_id', $templateId);
+
+                        if ($databaseTemplateId !== $templateId) {
+                            $query->orWhere('angle_id', $databaseTemplateId);
+                        }
+
+                        if (Str::isUuid($databaseTemplateId)) {
+                            $query->orWhere('id', $databaseTemplateId);
+                        }
+                    })
                     ->first();
                 $task->message_template_id = $template?->id;
             }
