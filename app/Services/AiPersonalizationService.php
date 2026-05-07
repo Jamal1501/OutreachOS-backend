@@ -114,7 +114,10 @@ Length guidance:
 - Instagram/TikTok cold DM: 280-520 characters, max 2 short paragraphs.
 - Follow-up DM: 180-420 characters.
 - Warm-up comment: 80-180 characters, no sales pitch.
-- Email: concise subject-style first line is fine; 90-160 words max.
+- Email: start with a short `Subject: ...` line, then a blank line, then a 90-160 word email body.
+- Email sign-off must use TASK CONTEXT senderSignature when provided.
+- Never end with placeholders like "your name", "[Name]", "(your name)", "company name", or "[Company]".
+- If no senderSignature is provided but a brand/company is clear, sign with the company name only. If neither is available, use a plain sign-off without a fake name.
 
 Output must be ready to send. No placeholders. No brackets. No fake metrics. No explanation inside the message.
 PROMPT;
