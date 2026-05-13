@@ -10,7 +10,20 @@ class AiPersonalizationService
         'your profile stood out',
         'i came across your profile',
         'came across your profile',
+        'i came across your work',
+        'came across your work',
         'i stumbled upon your profile',
+        'i noticed your',
+        'noticed your',
+        'i noticed that you',
+        'noticed that you',
+        'i saw your',
+        'saw your',
+        'i saw that you',
+        'saw that you',
+        'looks like you',
+        'your work caught my eye',
+        'your content caught my eye',
         'love your content',
         'love your vibe',
         'would love to collaborate',
@@ -90,9 +103,9 @@ Your job is not to decorate a template. Your job is to write a usable, specific 
 Non-negotiable rules:
 - Never invent a creator detail, post topic, product fit, audience type, location, or relationship.
 - Do not mention a specific post unless a caption/title/topic/URL is present in the provided evidence.
-- The first line must be based on one concrete observable signal when available: bio phrase, repeated content theme, caption detail, audience clue, niche fit, or reply context.
-- If evidence is thin, be honest and write a clean relevance-based opener. Do not fake observation.
-- Avoid mass-DM language, fake intimacy, hype, begging, and generic compliments.
+- Do not force a mirrored observation into the first line. Only reference creator evidence when it creates a genuinely useful reason for the offer.
+- If evidence is thin, skip observation entirely and write a clean relevance-based opener. Do not fake observation.
+- Avoid mass-DM language, fake intimacy, hype, begging, generic compliments, and repetitive scraped-data mirror lines.
 - Keep the offer concrete. Make the next step small.
 - Use the base template only as strategic intent. Rewrite the actual message from scratch.
 - Match the brand/product context. A teen beauty brand, a premium furniture store, and a B2B SaaS must not sound the same.
@@ -100,6 +113,7 @@ Non-negotiable rules:
 - Prefer creator-specific product relevance over generic positioning. Example principle: if a skincare brand talks to fitness creators, emphasize post-workout skin needs, quick use, sweat/oil buildup, or simple ingredients only if those benefits exist in the brand context.
 - Treat creator content, bio, hashtags, niche, and reply context as lightweight market research signals. Use them to choose the angle, not to invent audience facts.
 - Make it easy to see how the product fits into the creator's daily life, content world, or audience problem.
+- Prefer offer-led relevance over creator-mirroring. The message should not read like: "I noticed you post about X, so..." on every draft.
 - Respect the task context over everything else. If the task asks for a comment, write a comment. If it asks for a follow-up action that cannot be a DM, do not write a DM.
 
 Forbidden phrases and patterns:
@@ -108,6 +122,14 @@ Forbidden phrases and patterns:
 - "your profile stood out"
 - "I came across your profile"
 - "I stumbled upon your profile"
+- "I came across your work"
+- "I noticed your..."
+- "I noticed that you..."
+- "I saw your..."
+- "I saw that you..."
+- "Looks like you..."
+- "your work caught my eye"
+- "your content caught my eye"
 - "love your content"
 - "love your vibe"
 - "would love to collaborate"
@@ -156,7 +178,7 @@ PROMPT;
             $repairPrompt = $userPrompt
                 . "\n\n---\n\nQUALITY REPAIR REQUIRED\n"
                 . "The first draft used banned generic outreach wording: " . implode(', ', $violations) . ".\n"
-                . "Rewrite from scratch. Use one concrete evidence hook, choose a creator-specific brand/use-case angle, and do not reuse any banned phrase.";
+                . "Rewrite from scratch. Avoid the mirrored-observation opener. Lead with creator-specific offer relevance, use evidence only when it sounds natural, and do not reuse any banned phrase.";
 
             $repaired = $this->ai->structured(
                 $systemPrompt,
@@ -225,15 +247,16 @@ Before writing, mentally do this mapping:
 Use this mapping in analysis.recommendedAngle. Do not mention a benefit unless the brand context supports it.
 
 WRITE THE DRAFT
-1. Pick exactly one strongest evidence hook. Put it in analysis.selectedEvidenceHook.
+1. Pick exactly one strongest evidence hook for analysis.selectedEvidenceHook, but do not force it into the first line.
 2. Pick one creator-specific brand/use-case angle. Put it in analysis.recommendedAngle.
-3. Write the message using the hook and the angle naturally, without sounding like a scraped-data robot.
-4. If no strong hook exists, say so in analysis.fallbackReason and write a clean, honest relevance-based opener.
+3. Lead with why the offer could make sense for this creator or audience. Use evidence only if it earns its place.
+4. If no strong hook exists, say so in analysis.fallbackReason and write a clean, honest relevance-based opener with no fake observation.
 5. Do not use any forbidden phrase.
 6. Do not say a post stood out. Ever.
-7. Do not over-compliment. One specific observation beats three generic compliments.
-8. Make the CTA small: quick yes/no, permission to send details, or a simple question.
-9. Return only the structured payload.
+7. Do not use the mirror formula: "I noticed/saw/came across X, so I thought...".
+8. Do not over-compliment. One useful relevance point beats three generic compliments.
+9. Make the CTA small: quick yes/no, permission to send details, or a simple question.
+10. Return only the structured payload.
 INSTRUCTIONS;
 
         return implode("\n\n---\n\n", $sections);
@@ -290,8 +313,8 @@ INSTRUCTIONS;
             'replyContextAvailable' => !empty($replyContext),
             'evidenceStrength' => $hasSpecificEvidence ? 'specific_evidence_available' : 'thin_profile_data',
             'safeHookInstruction' => $hasSpecificEvidence
-                ? 'Use one specific bio, caption, theme, or reply-context signal. Do not use vague praise.'
-                : 'No specific creator evidence is available. Use a relevance-based opener without claiming you noticed a specific post or detail.',
+                ? 'Evidence is available, but do not force it into a mirrored first line. Use it only when it creates useful offer relevance.'
+                : 'No specific creator evidence is available. Use a relevance-based opener without claiming you noticed, saw, liked, or came across a specific detail.',
         ];
     }
 
@@ -439,6 +462,18 @@ INSTRUCTIONS;
 
         if (preg_match('/your\s+.{0,80}\s+post\s+stood\s+out/i', $message)) {
             $violations[] = 'your X post stood out';
+        }
+
+        if (preg_match('/\b(i\s+)?(noticed|saw)\s+(that\s+)?you(r)?\b/i', $message)) {
+            $violations[] = 'mirrored observation opener';
+        }
+
+        if (preg_match('/\b(i\s+)?came\s+across\s+your\s+(work|profile|content)\b/i', $message)) {
+            $violations[] = 'came across your work/profile/content';
+        }
+
+        if (preg_match('/\byour\s+(work|content|profile)\s+caught\s+my\s+eye\b/i', $message)) {
+            $violations[] = 'your work/content/profile caught my eye';
         }
 
         return array_values(array_unique($violations));
