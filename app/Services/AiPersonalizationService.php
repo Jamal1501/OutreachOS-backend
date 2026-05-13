@@ -96,6 +96,10 @@ Non-negotiable rules:
 - Keep the offer concrete. Make the next step small.
 - Use the base template only as strategic intent. Rewrite the actual message from scratch.
 - Match the brand/product context. A teen beauty brand, a premium furniture store, and a B2B SaaS must not sound the same.
+- Translate the brand story into the creator's specific vertical or lived use case. Do not repeat generic brand USPs when a more relevant benefit fits the creator.
+- Prefer creator-specific product relevance over generic positioning. Example principle: if a skincare brand talks to fitness creators, emphasize post-workout skin needs, quick use, sweat/oil buildup, or simple ingredients only if those benefits exist in the brand context.
+- Treat creator content, bio, hashtags, niche, and reply context as lightweight market research signals. Use them to choose the angle, not to invent audience facts.
+- Make it easy to see how the product fits into the creator's daily life, content world, or audience problem.
 - Respect the task context over everything else. If the task asks for a comment, write a comment. If it asks for a follow-up action that cannot be a DM, do not write a DM.
 
 Forbidden phrases and patterns:
@@ -146,9 +150,30 @@ PROMPT;
         );
 
         $result['messageType'] = (string) ($result['messageType'] ?? $messageType);
-        $result = $this->guardAgainstCheapOutreach($result);
 
-        return $result;
+        $violations = $this->detectCheapOutreachViolations((string) ($result['personalizedMessage'] ?? ''));
+        if (!empty($violations)) {
+            $repairPrompt = $userPrompt
+                . "\n\n---\n\nQUALITY REPAIR REQUIRED\n"
+                . "The first draft used banned generic outreach wording: " . implode(', ', $violations) . ".\n"
+                . "Rewrite from scratch. Use one concrete evidence hook, choose a creator-specific brand/use-case angle, and do not reuse any banned phrase.";
+
+            $repaired = $this->ai->structured(
+                $systemPrompt,
+                $repairPrompt,
+                'submit_personalized_message',
+                'Return the repaired personalized outreach draft and supporting analysis.',
+                $schema,
+                0.35,
+            );
+
+            $repaired['messageType'] = (string) ($repaired['messageType'] ?? $messageType);
+            $repaired['personalizationNotes'] = trim((string) ($repaired['personalizationNotes'] ?? '') . ' Auto-repaired first draft after banned generic wording was detected.');
+
+            return $this->guardAgainstCheapOutreach($repaired);
+        }
+
+        return $this->guardAgainstCheapOutreach($result);
     }
 
     private function buildUserPrompt(
@@ -192,15 +217,23 @@ PROMPT;
         }
 
         $sections[] = <<<'INSTRUCTIONS'
+CREATOR-SPECIFIC BRAND ANGLE
+Before writing, mentally do this mapping:
+- What creator vertical/use case is visible from the evidence?
+- Which brand benefit from PROJECT / BRAND CONTEXT is most relevant to that vertical/use case?
+- How can the product fit into the creator's daily life, content world, or audience problem?
+Use this mapping in analysis.recommendedAngle. Do not mention a benefit unless the brand context supports it.
+
 WRITE THE DRAFT
 1. Pick exactly one strongest evidence hook. Put it in analysis.selectedEvidenceHook.
-2. Write the message using that hook naturally, without sounding like a scraped-data robot.
-3. If no strong hook exists, say so in analysis.fallbackReason and write a clean, honest relevance-based opener.
-4. Do not use any forbidden phrase.
-5. Do not say a post stood out. Ever.
-6. Do not over-compliment. One specific observation beats three generic compliments.
-7. Make the CTA small: quick yes/no, permission to send details, or a simple question.
-8. Return only the structured payload.
+2. Pick one creator-specific brand/use-case angle. Put it in analysis.recommendedAngle.
+3. Write the message using the hook and the angle naturally, without sounding like a scraped-data robot.
+4. If no strong hook exists, say so in analysis.fallbackReason and write a clean, honest relevance-based opener.
+5. Do not use any forbidden phrase.
+6. Do not say a post stood out. Ever.
+7. Do not over-compliment. One specific observation beats three generic compliments.
+8. Make the CTA small: quick yes/no, permission to send details, or a simple question.
+9. Return only the structured payload.
 INSTRUCTIONS;
 
         return implode("\n\n---\n\n", $sections);
@@ -241,6 +274,15 @@ INSTRUCTIONS;
                 'engagementRate' => $creator['engagementRate'] ?? $creator['engRate'] ?? null,
                 'views' => $creator['views'] ?? $creator['sourceViews'] ?? null,
                 'likes' => $creator['likes'] ?? $creator['sourceLikes'] ?? null,
+            ],
+            'brandFitGuidance' => [
+                'goal' => 'Choose the brand/product angle that is most relevant to this creator vertical or use case. Do not default to the brand headline USP if another supported benefit fits better.',
+                'requiredMapping' => [
+                    'creatorVerticalOrUseCase' => 'Infer only from bio, niche, captions, hashtags, reply context, or task context.',
+                    'brandBenefitToEmphasize' => 'Use only benefits found in project/brand/template/task context.',
+                    'dailyLifeFit' => "Explain the product fit in a way that would feel natural inside the creator's content or routine.",
+                ],
+                'avoid' => 'Do not invent market research, audience demographics, pain points, product features, or creator needs.',
             ],
             'brandContextAvailable' => $projectContext !== '',
             'taskContextAvailable' => !empty($taskContext),
@@ -364,7 +406,28 @@ INSTRUCTIONS;
 
     private function guardAgainstCheapOutreach(array $result): array
     {
-        $message = (string) ($result['personalizedMessage'] ?? '');
+        $violations = $this->detectCheapOutreachViolations((string) ($result['personalizedMessage'] ?? ''));
+
+        if (!empty($violations)) {
+            $result['personalizationNotes'] = trim((string) ($result['personalizationNotes'] ?? '') . ' Quality warning: draft used banned generic outreach wording (' . implode(', ', array_unique($violations)) . '). Regenerate with stronger evidence.');
+            $result['confidenceScore'] = min((float) ($result['confidenceScore'] ?? 0.5), 0.35);
+
+            if (!isset($result['analysis']) || !is_array($result['analysis'])) {
+                $result['analysis'] = [];
+            }
+            if (!isset($result['analysis']['risksToAvoid']) || !is_array($result['analysis']['risksToAvoid'])) {
+                $result['analysis']['risksToAvoid'] = [];
+            }
+
+            $result['analysis']['risksToAvoid'][] = 'Regenerate: banned generic outreach wording detected.';
+            $result['analysis']['fallbackReason'] = (string) ($result['analysis']['fallbackReason'] ?? 'Banned generic outreach wording detected.');
+        }
+
+        return $result;
+    }
+
+    private function detectCheapOutreachViolations(string $message): array
+    {
         $lower = mb_strtolower($message);
         $violations = [];
 
@@ -378,14 +441,7 @@ INSTRUCTIONS;
             $violations[] = 'your X post stood out';
         }
 
-        if (!empty($violations)) {
-            $result['personalizationNotes'] = trim((string) ($result['personalizationNotes'] ?? '') . ' Quality warning: draft used banned generic outreach wording (' . implode(', ', array_unique($violations)) . '). Regenerate with stronger evidence.');
-            $result['confidenceScore'] = min((float) ($result['confidenceScore'] ?? 0.5), 0.35);
-            $result['analysis']['risksToAvoid'][] = 'Regenerate: banned generic outreach wording detected.';
-            $result['analysis']['fallbackReason'] = (string) ($result['analysis']['fallbackReason'] ?? 'Banned generic outreach wording detected.');
-        }
-
-        return $result;
+        return array_values(array_unique($violations));
     }
 
     private function textFromKeys(array $source, array $keys): string
