@@ -2901,65 +2901,113 @@ return [
         if (!$this->mirror->enabled()) {
             return null;
         }
-
+    
         $project = $this->projects->findByWorkbookId($sheetId);
         if (!$project) {
             return null;
         }
-
-        $platforms = array_values(array_filter((array) ($filters['platforms'] ?? []), fn ($value) => in_array($value, ['instagram', 'tiktok'], true)));
-        $query = DiscoveryItem::query()->where('project_id', $project->id);
+    
+        $platforms = array_values(array_filter(
+            (array) ($filters['platforms'] ?? []),
+            fn ($value) => in_array($value, ['instagram', 'tiktok'], true)
+        ));
+    
+        $search = Str::lower(trim((string) ($filters['search'] ?? '')));
+        $dedupe = (bool) ($filters['dedupe'] ?? true);
+        $offset = max(0, (int) ($filters['offset'] ?? 0));
+        $limit = max(1, min(500, (int) ($filters['limit'] ?? 200)));
+    
+        $query = DiscoveryItem::query()
+            ->where('project_id', $project->id);
+    
         if ($platforms !== []) {
             $query->whereIn('platform', $platforms);
         }
-
-        $rows = $query->orderByDesc('discovered_at')->orderByDesc('created_at')->get();
-        if ($rows->isEmpty()) {
+    
+        if ($search !== '') {
+            $like = '%' . str_replace(['%', '_'], ['\%', '\_'], $search) . '%';
+    
+            $query->where(function ($searchQuery) use ($like) {
+                $searchQuery
+                    ->whereRaw('LOWER(COALESCE(handle, \'\')) LIKE ?', [$like])
+                    ->orWhereRaw('LOWER(COALESCE(username, \'\')) LIKE ?', [$like])
+                    ->orWhereRaw('LOWER(COALESCE(full_name, \'\')) LIKE ?', [$like])
+                    ->orWhereRaw('LOWER(COALESCE(caption, \'\')) LIKE ?', [$like])
+                    ->orWhereRaw('LOWER(COALESCE(post_url, \'\')) LIKE ?', [$like])
+                    ->orWhereRaw('LOWER(COALESCE(profile_url, \'\')) LIKE ?', [$like]);
+            });
+        }
+    
+        $rawTotal = (clone $query)->count();
+    
+        if ($rawTotal === 0) {
             return [
                 'items' => [],
                 'total' => 0,
                 'raw_total' => 0,
-                'deduped' => (bool) ($filters['dedupe'] ?? true),
+                'deduped' => $dedupe,
                 'duplicate_groups' => 0,
             ];
         }
-
-        $search = Str::lower(trim((string) ($filters['search'] ?? '')));
-        $dedupe = (bool) ($filters['dedupe'] ?? true);
-        $offset = max(0, (int) ($filters['offset'] ?? 0));
-        $limit = max(1, (int) ($filters['limit'] ?? 200));
-
+    
+        /*
+         * Do not load the entire discovery_items table into PHP.
+         * The old version used ->get() without a hard limit, then deduped/sliced in memory.
+         * That can cause slow requests, memory pressure, and empty 500 responses on Render.
+         */
+        $candidateLimit = min(
+            5000,
+            max($offset + ($limit * 5), 1000)
+        );
+    
+        $rows = (clone $query)
+            ->orderByDesc('discovered_at')
+            ->orderByDesc('created_at')
+            ->limit($candidateLimit)
+            ->get();
+    
         $normalized = [];
         foreach ($rows as $row) {
             $item = $this->discoveryItemToListItem($row);
+    
             if ($search !== '' && !$this->matchesDiscoverySearch($item, $search)) {
                 continue;
             }
+    
             $normalized[] = $item;
         }
-
-        usort($normalized, fn (array $a, array $b) => strcmp((string) ($b['timestamp'] ?? ''), (string) ($a['timestamp'] ?? '')));
-        $rawTotal = count($normalized);
-
+    
+        usort(
+            $normalized,
+            fn (array $a, array $b) => strcmp(
+                (string) ($b['timestamp'] ?? ''),
+                (string) ($a['timestamp'] ?? '')
+            )
+        );
+    
         if ($dedupe) {
             $groups = [];
+    
             foreach ($normalized as $item) {
                 $groups[$item['duplicateKey']][] = $item;
             }
-
+    
             $deduped = [];
             $duplicateGroups = 0;
+    
             foreach ($groups as $items) {
                 if (count($items) > 1) {
                     $duplicateGroups++;
                 }
+    
                 $deduped[] = $this->collapseDuplicateGroup($items);
             }
+    
             $normalized = $deduped;
         } else {
             $duplicateGroups = 0;
         }
-
+    
         return [
             'items' => array_values(array_slice($normalized, $offset, $limit)),
             'total' => count($normalized),
