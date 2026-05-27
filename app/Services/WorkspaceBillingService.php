@@ -78,6 +78,7 @@ class WorkspaceBillingService
         return [
             'workspaceId' => $workspaceId,
             'currentPlanId' => $currentPlanId,
+            'planState' => $this->planState($workspaceId, $subscription, $currentPlanId),
             'subscription' => [
                 'planId' => $currentPlanId,
                 'status' => $subscription->status,
@@ -182,6 +183,7 @@ class WorkspaceBillingService
             'currency' => (string) config('outreach.billing.currency', 'usd'),
             'checkoutEnabled' => trim((string) config('services.stripe.secret_key')) !== '',
             'currentPlanId' => $currentPlanId,
+            'planState' => $this->planState($workspaceId, $subscription, $currentPlanId),
             'plans' => $plans,
             'packages' => $packages,
         ];
@@ -410,7 +412,7 @@ class WorkspaceBillingService
 
     public function currentPlanId(string $workspaceId): string
     {
-        [$subscription] = $this->ensureWorkspaceBilling($workspaceId);
+        [$subscription] = $this->readWorkspaceBillingSnapshot($workspaceId);
 
         return $this->normalizePlanId((string) ($subscription->plan_id ?: 'free'));
     }
@@ -872,6 +874,21 @@ class WorkspaceBillingService
             'trial_scrape_credits' => 200,
             'trial_ai_credits' => 20,
             'topup_price_multiplier' => 1.0,
+        ];
+    }
+
+    private function planState(string $workspaceId, WorkspaceSubscription $subscription, string $currentPlanId): array
+    {
+        $workspacePlanId = $this->normalizePlanId((string) (DB::table('workspaces')->where('id', $workspaceId)->value('plan_id') ?? 'free'));
+        $subscriptionPlanId = $this->normalizePlanId((string) ($subscription->plan_id ?: 'free'));
+
+        return [
+            'effectivePlanId' => $currentPlanId,
+            'workspacePlanId' => $workspacePlanId,
+            'subscriptionPlanId' => $subscriptionPlanId,
+            'hasPlanMismatch' => $workspacePlanId !== $subscriptionPlanId || $subscriptionPlanId !== $currentPlanId,
+            'status' => (string) $subscription->status,
+            'trialEndsAt' => optional($subscription->trial_ends_at)?->toIso8601String(),
         ];
     }
 
