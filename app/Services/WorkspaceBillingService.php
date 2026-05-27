@@ -61,7 +61,7 @@ class WorkspaceBillingService
 
     public function summary(string $workspaceId): array
     {
-        [$subscription, $wallet, $plan] = $this->ensureWorkspaceBilling($workspaceId);
+        [$subscription, $wallet, $plan] = $this->readWorkspaceBillingSnapshot($workspaceId);
 
         $usage = WorkspaceUsageEvent::query()
             ->where('workspace_id', $workspaceId)
@@ -114,7 +114,7 @@ class WorkspaceBillingService
     public function catalog(string $workspaceId): array
     {
         $this->ensureCatalogSeeded();
-        [$subscription, $wallet, $currentPlan] = $this->ensureWorkspaceBilling($workspaceId);
+        [$subscription, $wallet, $currentPlan] = $this->readWorkspaceBillingSnapshot($workspaceId);
 
         $currentPlanId = $this->normalizePlanId((string) ($subscription->plan_id ?: Arr::get($currentPlan, 'id', 'free')));
 
@@ -303,6 +303,34 @@ class WorkspaceBillingService
             $event->refunded_at = now();
             $event->save();
         });
+    }
+
+
+    private function readWorkspaceBillingSnapshot(string $workspaceId): array
+    {
+        $workspace = DB::table('workspaces')->where('id', $workspaceId)->first();
+        if (!$workspace) {
+            throw new RuntimeException('Workspace not found for billing.');
+        }
+
+        $workspacePlanId = $this->normalizePlanId((string) ($workspace->plan_id ?? 'free'));
+
+        $subscription = WorkspaceSubscription::query()
+            ->where('workspace_id', $workspaceId)
+            ->first();
+
+        $wallet = WorkspaceCreditWallet::query()
+            ->where('workspace_id', $workspaceId)
+            ->first();
+
+        if (!$subscription || !$wallet) {
+            return $this->ensureWorkspaceBilling($workspaceId);
+        }
+
+        $planId = $this->normalizePlanId((string) ($subscription->plan_id ?: $workspacePlanId));
+        $plan = $this->resolvePlan($planId);
+
+        return [$subscription, $wallet, $plan];
     }
 
     public function ensureWorkspaceBilling(string $workspaceId): array
@@ -718,6 +746,10 @@ class WorkspaceBillingService
     private function ensureCatalogSeeded(): void
     {
         if (!DB::getSchemaBuilder()->hasTable('credit_packages')) {
+            return;
+        }
+
+        if (CreditPackage::query()->where('active', true)->exists()) {
             return;
         }
 
