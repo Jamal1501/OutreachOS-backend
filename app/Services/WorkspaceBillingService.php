@@ -73,10 +73,13 @@ class WorkspaceBillingService
             ")
             ->first();
 
+        $currentPlanId = $this->normalizePlanId((string) ($subscription->plan_id ?: Arr::get($plan, 'id', 'free')));
+
         return [
             'workspaceId' => $workspaceId,
+            'currentPlanId' => $currentPlanId,
             'subscription' => [
-                'planId' => $subscription->plan_id,
+                'planId' => $currentPlanId,
                 'status' => $subscription->status,
                 'currentPeriodStart' => optional($subscription->current_period_start)?->toIso8601String(),
                 'currentPeriodEnd' => optional($subscription->current_period_end)?->toIso8601String(),
@@ -113,13 +116,15 @@ class WorkspaceBillingService
         $this->ensureCatalogSeeded();
         [$subscription, $wallet, $currentPlan] = $this->ensureWorkspaceBilling($workspaceId);
 
+        $currentPlanId = $this->normalizePlanId((string) ($subscription->plan_id ?: Arr::get($currentPlan, 'id', 'free')));
+
         $plans = DB::table('plans')
             ->where('is_active', true)
             ->orderByRaw("CASE id WHEN 'free' THEN 1 WHEN 'pro' THEN 2 WHEN 'enterprise' THEN 3 ELSE 4 END")
             ->get()
-            ->map(function ($row) use ($subscription) {
+            ->map(function ($row) use ($currentPlanId) {
                 $data = (array) $row;
-                $planId = (string) ($data['id'] ?? 'free');
+                $planId = $this->normalizePlanId((string) ($data['id'] ?? 'free'));
                 $features = $this->normalizeJsonArray($data['features'] ?? []);
                 $priceCents = $this->planPriceCents($planId);
                 $scraperModules = $this->scrapers->availableForPlan($planId);
@@ -138,14 +143,13 @@ class WorkspaceBillingService
                     'maxScraperDepth' => $this->maxScraperDepth($scraperModules),
                     'priceCents' => $priceCents,
                     'priceUsd' => round($priceCents / 100, 2),
-                    'isCurrent' => $planId === (string) $subscription->plan_id,
+                    'isCurrent' => $planId === $currentPlanId,
                 ];
             })
             ->values()
             ->all();
 
         $multiplier = max(0.1, (float) Arr::get($currentPlan, 'topup_price_multiplier', 1));
-        $currentPlanId = (string) ($subscription->plan_id ?: 'free');
 
         $packages = CreditPackage::query()
             ->where('active', true)
