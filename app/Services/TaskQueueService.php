@@ -25,6 +25,7 @@ class TaskQueueService
         private InfluencerScoringService $scoring,
         private OperationalMirrorService $mirror,
         private ProjectResolverService $projects,
+        private MessagePerformanceService $messagePerformance,
     ) {
     }
 
@@ -1629,7 +1630,7 @@ class TaskQueueService
     {
         $taskType = (string) ($candidate['task_type'] ?? 'DM_INVITE');
         $platform = strtolower((string) ($profile?->platform ?: ($candidate['actionable_channel'] ?? 'instagram')));
-        $template = $profile ? $this->pickTemplateFromDatabase($templates, $platform, $taskType) : null;
+        $template = $profile ? $this->pickTemplateFromDatabase($projectId, $templates, $profile, $platform, $taskType) : null;
         $groupMeta = $this->groupMetaForTask($taskType, (array) ($candidate['metadata'] ?? []), $manual);
         $messageDraft = (string) ($candidate['message_draft'] ?? ($profile ? $this->buildMessageDraftFromProfile($template, $profile, $taskType) : ''));
         $taskId = (string) Str::uuid();
@@ -1995,24 +1996,59 @@ class TaskQueueService
         };
     }
 
-    private function pickTemplateFromDatabase(array $templates, string $platform, string $taskType): ?MessageTemplate
+    private function pickTemplateFromDatabase(string $projectId, array $templates, CreatorProfile $profile, string $platform, string $taskType): ?MessageTemplate
     {
         if ($templates === []) {
             return null;
         }
 
+        $profile->loadMissing('creator');
+
         $targetPlatform = $taskType === 'EMAIL_SEND' ? 'email' : strtolower(trim($platform));
         $targetStage = $this->stageFromTaskType($taskType);
 
-        usort($templates, function (MessageTemplate $a, MessageTemplate $b) use ($targetPlatform, $targetStage) {
-            $score = function (MessageTemplate $template) use ($targetPlatform, $targetStage): int {
+        $recommendedTemplateId = $this->messagePerformance->recommendedTemplateIdForTask(
+            $projectId,
+            $templates,
+            $profile,
+            $targetPlatform,
+            $targetStage,
+        );
+
+        if ($recommendedTemplateId) {
+            foreach ($templates as $template) {
+                if ((string) $template->id === $recommendedTemplateId) {
+                    return $template;
+                }
+            }
+        }
+
+        usort($templates, function (MessageTemplate $a, MessageTemplate $b) use ($targetPlatform, $targetStage, $profile) {
+            $score = function (MessageTemplate $template) use ($targetPlatform, $targetStage, $profile): int {
                 $value = 0;
                 if (strtolower(trim((string) ($template->platform ?: ''))) === $targetPlatform) {
-                    $value += 4;
+                    $value += 40;
+                }
+                if ($targetPlatform === 'email' && strtolower(trim((string) ($template->platform ?: ''))) === 'instagram') {
+                    $value += 18;
                 }
                 if (strtolower(trim((string) ($template->stage ?: 'cold_invite'))) === $targetStage) {
-                    $value += 3;
+                    $value += 30;
                 }
+
+                $templateNiche = strtolower(trim((string) ($template->niche ?: '')));
+                $creatorNiche = strtolower(trim((string) ($profile->creator?->niche_category ?: '')));
+                if ($templateNiche !== '' && $creatorNiche !== '') {
+                    $value += str_contains($creatorNiche, $templateNiche) || str_contains($templateNiche, $creatorNiche) ? 12 : 0;
+                }
+
+                if ($template->notes) {
+                    $value += 2;
+                }
+                if ($template->psychological_trigger) {
+                    $value += 1;
+                }
+
                 return $value;
             };
             return $score($b) <=> $score($a);

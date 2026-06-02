@@ -5,6 +5,7 @@ use App\Http\Controllers\ApifyController;
 use App\Http\Controllers\BillingController;
 use App\Http\Controllers\SheetDataController;
 use App\Http\Controllers\PipelineController;
+use App\Http\Controllers\MessagePerformanceController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', function () {
@@ -49,6 +50,7 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::post('/discovery/push-to-enrichment', [SheetDataController::class, 'pushToEnrichment'])->middleware('throttle:expensive');
 
     Route::get('/messages/list', [SheetDataController::class, 'messagesList']);
+    Route::get('/messages/performance', [MessagePerformanceController::class, 'index']);
     Route::post('/messages/create', [SheetDataController::class, 'createMessage']);
     Route::put('/messages/{id}', [SheetDataController::class, 'updateMessage']);
     Route::delete('/messages/{id}', [SheetDataController::class, 'deleteMessage'])->middleware('workspace.role:owner,admin');
