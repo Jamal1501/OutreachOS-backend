@@ -419,7 +419,7 @@ class MessagePerformanceService
             'pendingOutcomeCount' => $pending,
             'replyRate' => $sent > 0 ? round(($responses / $sent) * 100, 1) : 0.0,
             'positiveRate' => $sent > 0 ? round(($positive / $sent) * 100, 1) : 0.0,
-            'conversionRate' => $sent > 0 ? round((($accepted + $won) / $sent) * 100, 1) : 0.0,
+            'conversionRate' => $sent > 0 ? round(($won / $accepted) * 100, 1) : 0.0,
             'successScore' => (int) $successScore,
             'recommendationScore' => (int) $recommendationScore,
             'confidence' => $confidence,
@@ -458,10 +458,14 @@ class MessagePerformanceService
         $negative = in_array($outcome, ['declined', 'lost', 'not_a_fit', 'archive', 'archived', 'rejected', 'bounced'], true);
 
         $positive = $accepted
-            || (!$negative && in_array($outcome, ['positive', 'interested', 'negotiate', 'proposal'], true));
-
-        $fresh = $sentAt instanceof CarbonInterface && $sentAt->greaterThan(now()->subDays(7));
-        $pending = !$response && !$positive && !$accepted && !$won && !$negative && $fresh;
+        || (!$negative && in_array($outcome, ['positive', 'interested', 'negotiate', 'proposal'], true));
+    
+    if ($positive || $accepted || $won) {
+        $response = true;
+    }
+    
+    $fresh = $sentAt instanceof CarbonInterface && $sentAt->greaterThan(now()->subDays(7));
+    $pending = !$response && !$positive && !$accepted && !$won && !$negative && $fresh;
         $noResponse = !$response && !$positive && !$accepted && !$won && !$negative && !$fresh;
 
         $score = 35;
