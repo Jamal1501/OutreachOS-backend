@@ -681,6 +681,38 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         ];
     }
 
+
+    private function sanitizeStoredMessageDraft(string $value): string
+    {
+        $clean = trim(str_replace('—', ' - ', $value));
+        if ($clean === '') {
+            return '';
+        }
+
+        $normalized = strtolower($clean);
+        $normalized = preg_replace('/@[a-z0-9_.-]+/i', '@handle', $normalized) ?: $normalized;
+        $normalized = preg_replace('/\{\{\s*(handle|name)\s*\}\}/i', '{{token}}', $normalized) ?: $normalized;
+        $normalized = preg_replace('/[^a-z0-9@{}]+/i', ' ', $normalized) ?: $normalized;
+        $normalized = trim(preg_replace('/\s+/', ' ', $normalized) ?: $normalized);
+
+        foreach ([
+            'relevant creator partnership fit here open to a short idea',
+            'relevant fit between your audience and this campaign open to a short idea',
+            'quick follow up from my last note worth sending a short idea or should i leave it',
+            'specific angle here is strong this is the kind of post worth saving',
+            'i think there could be a strong creator brand fit around',
+            'strong creator brand fit around',
+            'handle i am checking whether there is a relevant fit',
+            'name i am checking whether there is a relevant creator partnership fit',
+        ] as $pattern) {
+            if (str_contains($normalized, $pattern)) {
+                return '';
+            }
+        }
+
+        return $clean;
+    }
+
     private function normalizeDbTasks(array $tasks): array
     {
         $items = array_map(function (Task $task) {
@@ -703,7 +735,7 @@ return [
     'dueDate' => optional($task->due_at)?->toDateTimeString() ?? '',
     'createdAt' => optional($task->created_at)?->toDateTimeString() ?? '',
     'completedAt' => optional($task->completed_at)?->toDateTimeString() ?? '',
-    'messageText' => (string) ($task->message_draft ?: ''),
+    'messageText' => $this->sanitizeStoredMessageDraft((string) ($task->message_draft ?: '')),
     'profileUrl' => (string) ($task->open_url ?: ''),
     'profilePicUrl' => (string) ($task->creatorProfile?->profile_pic_url ?: ''),
     'notes' => (string) ($task->notes ?: ''),
@@ -768,7 +800,7 @@ return [
                 'dueDate' => (string) ($row['Due_At'] ?? ''),
                 'createdAt' => (string) ($row['Created_At'] ?? ''),
                 'completedAt' => (string) ($row['Completed_At'] ?? ''),
-                'messageText' => (string) ($row['Message_Draft'] ?? ''),
+                'messageText' => $this->sanitizeStoredMessageDraft((string) ($row['Message_Draft'] ?? '')),
                 'profileUrl' => (string) ($row['Open_URL'] ?? ''),
                 'notes' => (string) ($row['Notes'] ?? ''),
             ];

@@ -1632,7 +1632,7 @@ class TaskQueueService
         $platform = strtolower((string) ($profile?->platform ?: ($candidate['actionable_channel'] ?? 'instagram')));
         $template = $profile ? $this->pickTemplateFromDatabase($projectId, $templates, $profile, $platform, $taskType) : null;
         $groupMeta = $this->groupMetaForTask($taskType, (array) ($candidate['metadata'] ?? []), $manual);
-        $messageDraft = (string) ($candidate['message_draft'] ?? ($profile ? $this->buildMessageDraftFromProfile($template, $profile, $taskType) : ''));
+        $messageDraft = $this->sanitizeStoredMessageDraft((string) ($candidate['message_draft'] ?? ''));
         $taskId = (string) Str::uuid();
 
         return Task::create([
@@ -2071,25 +2071,48 @@ class TaskQueueService
 
     private function buildMessageDraftFromProfile(?MessageTemplate $template, CreatorProfile $profile, string $taskType): string
     {
-        $base = (string) ($template?->copy ?: $this->defaultMessageBase($taskType));
-        $handle = ltrim((string) ($profile->handle ?: ''), '@');
-        $name = (string) (optional($profile->creator)->display_name ?: 'there');
-
-        return str_replace(['{{handle}}', '{{name}}'], [$handle, $name], $base);
+        // Deprecated: tasks should not inject visible generic draft copy.
+        // Templates are now hidden strategic context for AI generation, not textarea prefill.
+        return '';
     }
 
     private function defaultMessageBase(string $taskType): string
     {
-        return match ($taskType) {
-            'EMAIL_SEND' => 'Hey {{name}}, I am checking whether there is a relevant creator partnership fit here. Open to a short idea?',
-            'DM_FOLLOWUP' => 'Hey {{handle}}, quick follow-up from my last note. Worth sending a short idea, or should I leave it?',
-            'COMMENT_ON_POST' => 'Specific angle here is strong — this is the kind of post worth saving.',
-            'NEGOTIATE_TERMS' => 'Hey {{handle}}, good to move this forward. Here are the practical details.',
-            'CHECK_IN' => 'Quick check-in: where does the conversation stand right now?',
-            'CONFIRM_ACCEPTED' => 'Great to hear this is moving ahead. Here is the cleanest next step from our side.',
-            'CONFIRM_POSTED' => 'Quick check: did the agreed post or deliverable go live yet?',
-            default => 'Hey {{handle}}, I am checking whether there is a relevant fit between your audience and this campaign. Open to a short idea?',
-        };
+        // Deprecated. Keep the method for old call sites, but never create generic visible outreach drafts.
+        return '';
+    }
+
+    private function sanitizeStoredMessageDraft(string $value): string
+    {
+        $clean = trim(str_replace('—', ' - ', $value));
+        if ($clean === '') {
+            return '';
+        }
+
+        $normalized = strtolower($clean);
+        $normalized = preg_replace('/@[a-z0-9_.-]+/i', '@handle', $normalized) ?: $normalized;
+        $normalized = preg_replace('/\{\{\s*(handle|name)\s*\}\}/i', '{{token}}', $normalized) ?: $normalized;
+        $normalized = preg_replace('/[^a-z0-9@{}]+/i', ' ', $normalized) ?: $normalized;
+        $normalized = trim(preg_replace('/\s+/', ' ', $normalized) ?: $normalized);
+
+        $legacyPatterns = [
+            'relevant creator partnership fit here open to a short idea',
+            'relevant fit between your audience and this campaign open to a short idea',
+            'quick follow up from my last note worth sending a short idea or should i leave it',
+            'specific angle here is strong this is the kind of post worth saving',
+            'i think there could be a strong creator brand fit around',
+            'strong creator brand fit around',
+            'handle i am checking whether there is a relevant fit',
+            'name i am checking whether there is a relevant creator partnership fit',
+        ];
+
+        foreach ($legacyPatterns as $pattern) {
+            if (str_contains($normalized, $pattern)) {
+                return '';
+            }
+        }
+
+        return $clean;
     }
 
     private function normalizeDbTask(Task $task): array
@@ -2109,7 +2132,7 @@ class TaskQueueService
             'createdAt' => optional($task->created_at)?->toIso8601String() ?? '',
             'completedAt' => optional($task->completed_at)?->toIso8601String() ?? '',
             'snoozedUntil' => optional($task->snoozed_until)?->toIso8601String(),
-            'messageText' => (string) ($task->message_draft ?: ''),
+            'messageText' => $this->sanitizeStoredMessageDraft((string) ($task->message_draft ?: '')),
             'notes' => (string) ($task->notes ?: ''),
             'followUpCount' => (int) ($task->follow_up_count ?? 0),
             'platformConnectionState' => (string) ($task->platform_connection_state ?: 'none'),
@@ -2151,7 +2174,7 @@ class TaskQueueService
             'createdAt' => (string) ($row['Created_At'] ?? ''),
             'completedAt' => (string) ($row['Completed_At'] ?? ''),
             'snoozedUntil' => null,
-            'messageText' => (string) ($row['Message_Draft'] ?? ''),
+            'messageText' => $this->sanitizeStoredMessageDraft((string) ($row['Message_Draft'] ?? '')),
             'notes' => (string) ($row['Notes'] ?? ''),
             'followUpCount' => 0,
             'platformConnectionState' => 'none',
@@ -2222,7 +2245,7 @@ class TaskQueueService
                 'Status' => 'PENDING',
                 'Due_At' => now()->toDateTimeString(),
                 'Open_URL' => (string) ($creator['DM_Link'] ?? ''),
-                'Message_Draft' => (string) (($messageLibrary[0]['DM_Template'] ?? 'Hey {{handle}}, I am checking whether there is a relevant creator partnership fit here. Open to a short idea?')),
+                'Message_Draft' => '',
                 'Template_ID' => '',
                 'Created_At' => now()->toDateTimeString(),
                 'Completed_At' => '',
