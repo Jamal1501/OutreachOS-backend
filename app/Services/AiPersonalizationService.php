@@ -26,6 +26,9 @@ class AiPersonalizationService
         'your content caught my eye',
         'love your content',
         'love your vibe',
+        'love what you are doing',
+        'love what you’re doing',
+        'big fan of your content',
         'would love to collaborate',
         'your x post stood out',
         'your recent post stood out',
@@ -44,6 +47,8 @@ class AiPersonalizationService
         $templateContext = (array) ($payload['templateContext'] ?? []);
         $replyContext = (array) ($payload['replyContext'] ?? []);
         $taskContext = (array) ($payload['taskContext'] ?? []);
+        $generationMode = trim((string) ($payload['generationMode'] ?? $taskContext['generationMode'] ?? 'fresh_draft')) ?: 'fresh_draft';
+        $tonePreference = $this->normalizeTonePreference((string) ($payload['tonePreference'] ?? $taskContext['tonePreference'] ?? ''));
         $previousMessage = trim((string) ($payload['previousMessage'] ?? ''));
         $conversationGoal = trim((string) ($payload['conversationGoal'] ?? ''));
         $messageType = trim((string) ($payload['messageType'] ?? '')) ?: $this->defaultMessageType((string) ($creator['platform'] ?? 'instagram'));
@@ -54,6 +59,8 @@ class AiPersonalizationService
             'properties' => [
                 'personalizedMessage' => ['type' => 'string'],
                 'personalizationNotes' => ['type' => 'string'],
+                'creativeAngle' => ['type' => 'string'],
+                'contentIdea' => ['type' => 'string'],
                 'fitScore' => ['type' => 'number'],
                 'confidenceScore' => ['type' => 'number'],
                 'toneUsed' => ['type' => 'string'],
@@ -68,6 +75,8 @@ class AiPersonalizationService
                         'personalizationHooks' => ['type' => 'array', 'items' => ['type' => 'string']],
                         'risksToAvoid' => ['type' => 'array', 'items' => ['type' => 'string']],
                         'recommendedAngle' => ['type' => 'string'],
+                        'creatorContentIdea' => ['type' => 'string'],
+                        'contentMechanic' => ['type' => 'string'],
                         'selectedEvidenceHook' => ['type' => 'string'],
                         'evidenceQuality' => ['type' => 'string'],
                         'fallbackReason' => ['type' => 'string'],
@@ -82,6 +91,8 @@ class AiPersonalizationService
                         'personalizationHooks',
                         'risksToAvoid',
                         'recommendedAngle',
+                        'creatorContentIdea',
+                        'contentMechanic',
                         'selectedEvidenceHook',
                         'evidenceQuality',
                         'fallbackReason',
@@ -91,30 +102,39 @@ class AiPersonalizationService
                     'additionalProperties' => false,
                 ],
             ],
-            'required' => ['personalizedMessage', 'personalizationNotes', 'fitScore', 'confidenceScore', 'toneUsed', 'messageType', 'analysis'],
+            'required' => ['personalizedMessage', 'personalizationNotes', 'creativeAngle', 'contentIdea', 'fitScore', 'confidenceScore', 'toneUsed', 'messageType', 'analysis'],
             'additionalProperties' => false,
         ];
 
         $systemPrompt = <<<'PROMPT'
-You are SocialCore's creator-outreach copywriter.
+You are SocialCore's creator-outreach operator.
 
-Your job is not to decorate a template. Your job is to write a usable, specific outreach draft from evidence.
+Write like a capable human who understands the offer, the channel, and the creator context. Do not write like a generic AI copywriter.
 
-Non-negotiable rules:
-- Never invent a creator detail, post topic, product fit, audience type, location, or relationship.
-- Do not mention a specific post unless a caption/title/topic/URL is present in the provided evidence.
-- Do not force a mirrored observation into the first line. Only reference creator evidence when it creates a genuinely useful reason for the offer.
-- If evidence is thin, skip observation entirely and write a clean relevance-based opener. Do not fake observation.
-- Avoid mass-DM language, fake intimacy, hype, begging, generic compliments, and repetitive scraped-data mirror lines.
-- Keep the offer concrete. Make the next step small.
-- Use the base template only as strategic intent. Rewrite the actual message from scratch.
-- Match the brand/product context. A teen beauty brand, a premium furniture store, and a B2B SaaS must not sound the same.
-- Translate the brand story into the creator's specific vertical or lived use case. Do not repeat generic brand USPs when a more relevant benefit fits the creator.
-- Prefer creator-specific product relevance over generic positioning. Example principle: if a skincare brand talks to fitness creators, emphasize post-workout skin needs, quick use, sweat/oil buildup, or simple ingredients only if those benefits exist in the brand context.
-- Treat creator content, bio, hashtags, niche, and reply context as lightweight market research signals. Use them to choose the angle, not to invent audience facts.
-- Make it easy to see how the product fits into the creator's daily life, content world, or audience problem.
-- Prefer offer-led relevance over creator-mirroring. The message should not read like: "I noticed you post about X, so..." on every draft.
-- Respect the task context over everything else. If the task asks for a comment, write a comment. If it asks for a follow-up action that cannot be a DM, do not write a DM.
+Primary job:
+- Do not merely write an outreach message. Create one creator-native content idea that makes the offer easy to imagine as a post, reel, story, video, review, challenge, routine, comparison, test, gift reveal, tutorial, or audience interaction.
+- This must work for any niche. If the brand sells gym shorts, pitch a filming idea around training, fit checks, comfort tests, day-in-the-life use, leg day, running errands after the gym, or a creator-specific routine. If the brand sells software, pitch a workflow, teardown, challenge, before/after, template, tutorial, or result-based content idea. If the brand sells gifts, pitch a reveal, reaction, challenge, memory game, or personal story format.
+- The content idea must be based on the creator vertical and brand context. Never hardcode gift, family, fitness, beauty, food, or software angles unless the evidence supports that niche.
+- The message should give the creator a reason to think: "I could actually film that."
+- Prefer one vivid activation idea over a generic collaboration pitch.
+
+Core rules:
+- Never invent creator details, post topics, audience demographics, location, relationship status, needs, pain points, metrics, or brand features.
+- Do not mention a specific post unless a caption, title, topic, URL, or reply is actually provided.
+- Do not force personalization. Weak or thin evidence should produce a clean, honest relevance-based message, not a fake observation.
+- The best first line is usually offer relevance, not creator mirroring.
+- Treat templates as strategic angle memory only. Never copy template wording unless the user clearly wrote a draft and the mode is rewrite_existing_draft.
+- Use creator location only as quiet relevance when confidence is high. Never open with it. Never imply audience location.
+- Match the chosen tonePreference. Tone changes sentence shape and word choice; it does not permit fake compliments.
+- Respect the task context over everything else. If the task asks for a comment, write a comment. If it asks for email, write email.
+- Make the next step small: quick yes/no, permission to send details, or one simple question.
+
+Human style rules:
+- Use plain language.
+- Prefer one concrete reason over multiple fluffy compliments.
+- Avoid marketing-theatre words like "synergy", "amazing opportunity", "perfect fit", "collaboration journey", and "aligned values" unless the brand context truly requires them.
+- Do not sound overexcited. Calm beats desperate.
+- Do not start every message with "Hey @handle" if the channel/context makes that awkward. A simple name or handle is enough.
 
 Forbidden phrases and patterns:
 - "your post stood out"
@@ -132,18 +152,22 @@ Forbidden phrases and patterns:
 - "your content caught my eye"
 - "love your content"
 - "love your vibe"
+- "love what you're doing"
+- "big fan of your content"
 - "would love to collaborate"
 - "your recent post stood out"
 - any version of "your X post stood out"
 
 Length guidance:
-- Instagram/TikTok cold DM: 280-520 characters, max 2 short paragraphs.
-- Follow-up DM: 180-420 characters.
-- Warm-up comment: 80-180 characters, no sales pitch.
-- Email: start with a short `Subject: ...` line, then a blank line, then a 90-160 word email body.
+- Instagram/TikTok cold DM: 220-430 characters, max 2 short paragraphs.
+- Follow-up DM: 160-340 characters.
+- Warm-up comment: 60-160 characters, no sales pitch.
+- Ultra short tone: keep DM under 300 characters unless email.
+- Email: start with a short `Subject: ...` line, then a blank line, then a 90-150 word email body.
 - Email sign-off must use TASK CONTEXT senderSignature when provided.
 - Never end with placeholders like "your name", "[Name]", "(your name)", "company name", or "[Company]".
 - If no senderSignature is provided but a brand/company is clear, sign with the company name only. If neither is available, use a plain sign-off without a fake name.
+- Never use the em dash character. Use commas, periods, colons, or short sentences instead.
 
 Output must be ready to send. No placeholders. No brackets. No fake metrics. No explanation inside the message.
 PROMPT;
@@ -160,6 +184,8 @@ PROMPT;
             previousMessage: $previousMessage,
             replyContext: $replyContext,
             conversationGoal: $conversationGoal,
+            generationMode: $generationMode,
+            tonePreference: $tonePreference,
         );
 
         $result = $this->ai->structured(
@@ -172,13 +198,14 @@ PROMPT;
         );
 
         $result['messageType'] = (string) ($result['messageType'] ?? $messageType);
+        $result = $this->sanitizeGeneratedPayload($result);
 
         $violations = $this->detectCheapOutreachViolations((string) ($result['personalizedMessage'] ?? ''));
         if (!empty($violations)) {
             $repairPrompt = $userPrompt
                 . "\n\n---\n\nQUALITY REPAIR REQUIRED\n"
                 . "The first draft used banned generic outreach wording: " . implode(', ', $violations) . ".\n"
-                . "Rewrite from scratch. Avoid the mirrored-observation opener. Lead with creator-specific offer relevance, use evidence only when it sounds natural, and do not reuse any banned phrase.";
+                . "Rewrite from scratch. Avoid the mirrored-observation opener. Lead with a creator-native content idea plus offer relevance, use evidence only when it sounds natural, do not reuse any banned phrase, and never use the em dash character.";
 
             $repaired = $this->ai->structured(
                 $systemPrompt,
@@ -190,6 +217,7 @@ PROMPT;
             );
 
             $repaired['messageType'] = (string) ($repaired['messageType'] ?? $messageType);
+            $repaired = $this->sanitizeGeneratedPayload($repaired);
             $repaired['personalizationNotes'] = trim((string) ($repaired['personalizationNotes'] ?? '') . ' Auto-repaired first draft after banned generic wording was detected.');
 
             return $this->guardAgainstCheapOutreach($repaired);
@@ -210,28 +238,32 @@ PROMPT;
         string $previousMessage,
         array $replyContext,
         string $conversationGoal,
+        string $generationMode,
+        string $tonePreference,
     ): string {
         $sections = [];
 
         $sections[] = "PROJECT / BRAND CONTEXT\n" . ($projectContext !== '' ? $projectContext : 'No project context supplied. Keep the message neutral, professional, and low-assumption.');
         $sections[] = "OUTREACH STAGE\n" . ($stage !== '' ? $stage : 'unspecified');
         $sections[] = "MESSAGE TYPE\n" . $messageType;
+        $sections[] = "GENERATION MODE\n" . ($generationMode !== '' ? $generationMode : 'fresh_draft');
+        $sections[] = "TONE PREFERENCE\n" . $tonePreference;
 
         if (!empty($taskContext)) {
-            $sections[] = "TASK CONTEXT — this overrides the template if there is conflict\n" . $this->json($taskContext);
+            $sections[] = "TASK CONTEXT - this overrides the template if there is conflict\n" . $this->json($taskContext);
         }
 
-        $sections[] = "CREATOR EVIDENCE PACK — use this before raw profile data\n" . $this->json($evidencePack);
-        $sections[] = "RAW CREATOR PROFILE — for backup only; do not invent beyond it\n" . $this->json($creator);
-        $sections[] = "TEMPLATE CONTEXT — strategic angle, not wording to copy\n" . $this->json($templateContext);
-        $sections[] = "BASE TEMPLATE — treat as intent; rewrite from scratch\n" . ($template !== '' ? $template : 'No template supplied.');
+        $sections[] = "CREATOR EVIDENCE PACK - use this before raw profile data\n" . $this->json($evidencePack);
+        $sections[] = "RAW CREATOR PROFILE - for backup only; do not invent beyond it\n" . $this->json($creator);
+        $sections[] = "TEMPLATE CONTEXT - learned angle memory, not final copy\n" . $this->json($templateContext);
+        $sections[] = "USER DRAFT OR HIDDEN TEMPLATE - use only as guidance; ignore wording when mode is fresh_draft\n" . ($template !== '' ? $template : 'No template supplied. Generate a fresh draft from evidence, brand context, task context, and tone preference.');
 
         if ($previousMessage !== '') {
-            $sections[] = "PREVIOUS MESSAGE — avoid repeating this\n" . $previousMessage;
+            $sections[] = "PREVIOUS MESSAGE - avoid repeating this\n" . $previousMessage;
         }
 
         if (!empty($replyContext)) {
-            $sections[] = "REPLY CONTEXT — respond to this if present\n" . $this->json($replyContext);
+            $sections[] = "REPLY CONTEXT - respond to this if present\n" . $this->json($replyContext);
         }
 
         if ($conversationGoal !== '') {
@@ -239,24 +271,50 @@ PROMPT;
         }
 
         $sections[] = <<<'INSTRUCTIONS'
-CREATOR-SPECIFIC BRAND ANGLE
+CREATOR-NATIVE CONTENT IDEA ENGINE
 Before writing, mentally do this mapping:
 - What creator vertical/use case is visible from the evidence?
 - Which brand benefit from PROJECT / BRAND CONTEXT is most relevant to that vertical/use case?
-- How can the product fit into the creator's daily life, content world, or audience problem?
-Use this mapping in analysis.recommendedAngle. Do not mention a benefit unless the brand context supports it.
+- What could this creator actually film, post, test, compare, reveal, teach, challenge, document, or ask their audience to react to?
+- How can the product become part of the creator's normal content format instead of a generic sponsored mention?
+Use this mapping in analysis.recommendedAngle, analysis.creatorContentIdea, analysis.contentMechanic, creativeAngle, and contentIdea. Do not mention a benefit unless the brand context supports it.
+
+The content idea must be niche-flexible:
+- For apparel, think fit test, routine, comfort test, styling, before/after, packing, workout, daily wear, comparison, or challenge.
+- For beauty, think routine, first impression, wear test, transformation, ingredient education, or problem/solution demo.
+- For food, think recipe, taste test, family reaction, hosting moment, grocery routine, or challenge.
+- For software/services, think workflow, before/after, teardown, template, time-saving test, mistake fix, or mini tutorial.
+- For gifts, think reaction, reveal, memory game, challenge, personalization story, or recipient moment.
+These are examples only. Pick the mechanic that fits the actual brand and creator evidence.
+
+LOCATION USE
+- Use creatorLocation only when usableForDraft is true.
+- Never say "I saw you're based in..." or similar scraped-sounding lines.
+- Never imply audience location.
+- Location may shape the angle quietly, but it should almost never be the opener.
+
+TONE USE
+- warm_direct: human, clear, polite, low fluff.
+- casual: relaxed DM language, still competent.
+- premium: calm, polished, confident, no hype.
+- playful: light and warm, but not childish or cringe.
+- professional: concise business wording.
+- ultra_short: smallest useful version.
 
 WRITE THE DRAFT
-1. Pick exactly one strongest evidence hook for analysis.selectedEvidenceHook, but do not force it into the first line.
-2. Pick one creator-specific brand/use-case angle. Put it in analysis.recommendedAngle.
-3. Lead with why the offer could make sense for this creator or audience. Use evidence only if it earns its place.
-4. If no strong hook exists, say so in analysis.fallbackReason and write a clean, honest relevance-based opener with no fake observation.
-5. Do not use any forbidden phrase.
-6. Do not say a post stood out. Ever.
-7. Do not use the mirror formula: "I noticed/saw/came across X, so I thought...".
-8. Do not over-compliment. One useful relevance point beats three generic compliments.
-9. Make the CTA small: quick yes/no, permission to send details, or a simple question.
-10. Return only the structured payload.
+1. Decide whether a creator-specific hook is actually worth using. If not, leave analysis.selectedEvidenceHook empty or say "none".
+2. Invent one creator-native content idea. It should be specific enough that the creator can imagine filming or posting it.
+3. Put the strategic angle in analysis.recommendedAngle, the post/video idea in analysis.creatorContentIdea and contentIdea, and the content format/mechanic in analysis.contentMechanic and creativeAngle.
+4. Lead with the idea or the offer relevance. Do not lead with a fake compliment or scraped observation.
+5. Use creator evidence only if it earns its place.
+6. If no strong creator evidence exists, write a clean relevance-based idea using brand context and likely vertical only. Say why in analysis.fallbackReason.
+7. Do not use any forbidden phrase.
+8. Do not say a post stood out. Ever.
+9. Do not use the mirror formula: "I noticed/saw/came across X, so I thought...".
+10. Do not over-compliment. One useful content idea beats three generic compliments.
+11. Make the CTA small: quick yes/no, permission to send details, or a simple question.
+12. Never use the em dash character.
+13. Return only the structured payload.
 INSTRUCTIONS;
 
         return implode("\n\n---\n\n", $sections);
@@ -292,6 +350,7 @@ INSTRUCTIONS;
             'recentPosts' => $posts,
             'postSignals' => array_values(array_slice(array_unique($postSignals), 0, 10)),
             'repeatedThemes' => $repeatedThemes,
+            'creatorLocation' => $this->buildCreatorLocationContext($creator),
             'availableMetrics' => [
                 'followers' => $creator['followers'] ?? $creator['followerCount'] ?? null,
                 'engagementRate' => $creator['engagementRate'] ?? $creator['engRate'] ?? null,
@@ -304,8 +363,21 @@ INSTRUCTIONS;
                     'creatorVerticalOrUseCase' => 'Infer only from bio, niche, captions, hashtags, reply context, or task context.',
                     'brandBenefitToEmphasize' => 'Use only benefits found in project/brand/template/task context.',
                     'dailyLifeFit' => "Explain the product fit in a way that would feel natural inside the creator's content or routine.",
+                    'creatorNativeContentIdea' => 'Turn the offer into a post, reel, story, video, challenge, test, routine, tutorial, reveal, comparison, or audience interaction the creator could naturally publish.',
                 ],
-                'avoid' => 'Do not invent market research, audience demographics, pain points, product features, or creator needs.',
+                'avoid' => 'Do not invent market research, audience demographics, pain points, product features, or creator needs. Do not use a generic collaboration pitch when a content idea can be created.',
+            ],
+            'activationIdeaGuidance' => [
+                'goal' => "Outreach should trigger the creator's creativity, not merely ask for a collaboration.",
+                'messageFormula' => 'specific content idea + why the product fits + tiny next step',
+                'examplesByCategory' => [
+                    'apparel' => 'fit check, comfort test, styling, workout/day routine, comparison, packing list, wear test',
+                    'beauty' => 'routine, first impression, wear test, before/after, ingredient explainer, transformation',
+                    'food' => 'taste test, recipe, family reaction, hosting moment, challenge, grocery routine',
+                    'softwareOrService' => 'workflow, teardown, before/after, template, mistake fix, result-based demo, mini tutorial',
+                    'giftOrPersonalizedProduct' => 'gift reveal, reaction, memory challenge, personalization story, recipient moment',
+                ],
+                'hardRule' => 'Examples are not defaults. Pick only what fits the actual brand and creator evidence.',
             ],
             'brandContextAvailable' => $projectContext !== '',
             'taskContextAvailable' => !empty($taskContext),
@@ -427,6 +499,87 @@ INSTRUCTIONS;
         return array_values(array_slice(array_keys(array_filter($themes, fn ($count) => $count > 1)), 0, 6));
     }
 
+    private function buildCreatorLocationContext(array $creator): array
+    {
+        $country = $this->textFromKeys($creator, ['country', 'creatorCountry', 'locationCountry']);
+        $city = $this->textFromKeys($creator, ['city', 'creatorCity', 'locationCity']);
+        $confidence = $this->normalizeLocationConfidence($creator['locationConfidence'] ?? $creator['location_confidence'] ?? null);
+        $sources = $this->normalizeStringList($creator['locationSources'] ?? $creator['location_sources'] ?? []);
+        $hasLocation = $country !== '' || $city !== '';
+        $usableForDraft = $hasLocation && $confidence >= 0.75;
+
+        return [
+            'country' => $country,
+            'city' => $city,
+            'confidence' => $hasLocation ? $confidence : null,
+            'sources' => $sources,
+            'usableForDraft' => $usableForDraft,
+            'usageRule' => 'Estimated creator location only. Use as quiet relevance only when usableForDraft is true. Never imply audience location and never open with scraped-sounding location wording.',
+        ];
+    }
+
+    private function normalizeLocationConfidence(mixed $value): float
+    {
+        if ($value === null || $value === '') {
+            return 0.0;
+        }
+
+        $number = (float) $value;
+        if ($number > 1) {
+            $number = $number / 100;
+        }
+
+        return max(0.0, min(1.0, $number));
+    }
+
+    private function normalizeStringList(mixed $value): array
+    {
+        if (is_array($value)) {
+            $items = $value;
+        } elseif (is_string($value) && trim($value) !== '') {
+            $decoded = json_decode($value, true);
+            $items = is_array($decoded) ? $decoded : preg_split('/[\n,]+/u', $value);
+        } else {
+            $items = [];
+        }
+
+        return array_values(array_slice(array_filter(array_map(
+            fn ($item) => trim((string) $item),
+            $items ?: []
+        )), 0, 8));
+    }
+
+    private function normalizeTonePreference(string $value): string
+    {
+        $normalized = preg_replace('/[\s-]+/u', '_', mb_strtolower(trim($value))) ?: '';
+        $allowed = ['warm_direct', 'casual', 'premium', 'playful', 'professional', 'ultra_short'];
+
+        return in_array($normalized, $allowed, true) ? $normalized : 'warm_direct';
+    }
+
+
+    private function sanitizeGeneratedPayload(array $result): array
+    {
+        foreach ($result as $key => $value) {
+            if (is_string($value)) {
+                $result[$key] = $this->sanitizeGeneratedText($value);
+            } elseif (is_array($value)) {
+                $result[$key] = $this->sanitizeGeneratedPayload($value);
+            }
+        }
+
+        return $result;
+    }
+
+    private function sanitizeGeneratedText(string $text): string
+    {
+        $text = str_replace('—', ' - ', $text);
+        $text = preg_replace('/[ \t]+/u', ' ', $text) ?: $text;
+        $text = preg_replace('/ *\n */u', "\n", $text) ?: $text;
+
+        return trim($text);
+    }
+
     private function guardAgainstCheapOutreach(array $result): array
     {
         $violations = $this->detectCheapOutreachViolations((string) ($result['personalizedMessage'] ?? ''));
@@ -454,6 +607,10 @@ INSTRUCTIONS;
         $lower = mb_strtolower($message);
         $violations = [];
 
+        if (str_contains($message, '—')) {
+            $violations[] = 'em dash character';
+        }
+
         foreach (self::FORBIDDEN_OUTREACH_PHRASES as $phrase) {
             if (str_contains($lower, $phrase)) {
                 $violations[] = $phrase;
@@ -474,6 +631,10 @@ INSTRUCTIONS;
 
         if (preg_match('/\byour\s+(work|content|profile)\s+caught\s+my\s+eye\b/i', $message)) {
             $violations[] = 'your work/content/profile caught my eye';
+        }
+
+        if (preg_match('/\b(big\s+fan|love\s+what\s+you[’\']?re\s+doing|amazing\s+content|perfect\s+fit)\b/i', $message)) {
+            $violations[] = 'fake compliment / hype phrasing';
         }
 
         return array_values(array_unique($violations));

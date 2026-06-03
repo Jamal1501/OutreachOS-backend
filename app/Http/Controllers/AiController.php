@@ -53,7 +53,9 @@ class AiController extends Controller
     {
         $validated = $request->validate([
             'creator' => ['required', 'array'],
-            'template' => ['required', 'string'],
+            'template' => ['nullable', 'string'],
+            'generationMode' => ['nullable', 'string', 'max:64'],
+            'tonePreference' => ['nullable', 'string', 'max:64'],
             'stage' => ['nullable', 'string'],
             'projectContext' => ['nullable', 'string'],
             'templateContext' => ['nullable', 'array'],
