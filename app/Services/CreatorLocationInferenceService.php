@@ -163,36 +163,43 @@ class CreatorLocationInferenceService
         $cityCountry = $this->countryForCity($normalizedCity);
 
         if ($normalizedCountry !== null || $normalizedCity !== null) {
+            $sourceDetail = trim(implode(', ', array_filter([$normalizedCity, $normalizedCountry ?: $cityCountry])));
             $signals[] = [
                 'country' => $normalizedCountry ?: $cityCountry,
                 'city' => $normalizedCity,
                 'confidence' => $normalizedCountry && $normalizedCity ? 0.92 : ($normalizedCity ? 0.86 : 0.78),
-                'source' => 'structured_profile_location',
+                'source' => 'structured_profile_location' . ($sourceDetail !== '' ? ': ' . $sourceDetail : ''),
             ];
         }
     }
 
     private function collectLocationHintSignals(array &$signals, array $payload): void
     {
-        $hints = [];
-        foreach ([
-            'locationHint',
-            'location',
-            'locationCreated',
-            'addressCityName',
-            'cityName',
-            'region',
-            'country',
-            'countryCode',
-        ] as $key) {
-            $value = trim((string) Arr::get($payload, $key, ''));
-            if ($value !== '') {
-                $hints[] = $value;
-            }
-        }
+        $hintSources = [
+            'locationCreated' => 'discovered_reel_location',
+            'locationHint' => 'discovery_location_hint',
+            'location' => 'profile_location_field',
+            'addressCityName' => 'profile_city_field',
+            'cityName' => 'profile_city_field',
+            'region' => 'profile_region_field',
+            'country' => 'profile_country_field',
+            'countryCode' => 'profile_country_field',
+        ];
 
-        foreach (array_values(array_unique($hints)) as $hint) {
-            $signal = $this->signalFromFreeText($hint, 'location_hint:' . Str::limit($hint, 60, ''));
+        $seen = [];
+        foreach ($hintSources as $key => $sourceName) {
+            $value = trim((string) Arr::get($payload, $key, ''));
+            if ($value === '') {
+                continue;
+            }
+
+            $dedupeKey = $sourceName . ':' . Str::lower($value);
+            if (isset($seen[$dedupeKey])) {
+                continue;
+            }
+            $seen[$dedupeKey] = true;
+
+            $signal = $this->signalFromFreeText($value, $sourceName . ': ' . Str::limit($value, 80, ''));
             if ($signal !== null) {
                 $signal['confidence'] = max((float) $signal['confidence'], 0.72);
                 $signals[] = $signal;
@@ -235,7 +242,9 @@ class CreatorLocationInferenceService
                     'country' => $location['country'],
                     'city' => $location['city'],
                     'confidence' => 0.7,
-                    'source' => $source,
+                    'source' => $source === 'bio_or_profile_text'
+                        ? 'bio_or_profile_text: ' . $location['city']
+                        : $source,
                 ];
             }
         }
@@ -249,7 +258,9 @@ class CreatorLocationInferenceService
                     'country' => $country,
                     'city' => null,
                     'confidence' => 0.62,
-                    'source' => $source,
+                    'source' => $source === 'bio_or_profile_text'
+                        ? 'bio_or_profile_text: ' . $country
+                        : $source,
                 ];
             }
         }
