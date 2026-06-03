@@ -11,6 +11,7 @@ use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use RuntimeException;
+use Illuminate\Validation\ValidationException;
 
 class TaskQueueService
 {
@@ -738,6 +739,12 @@ class TaskQueueService
         $keepOriginalAsLaterTask = (bool) ($payload['keepOriginalAsLaterTask'] ?? true);
         $isChangedAction = $status === 'SKIPPED' && $skipReason === 'changed_action' && $replacementTaskType !== '';
 
+        if ($isChangedAction && $replacementTaskType === 'EMAIL_SEND' && !$this->profileHasUsableEmail($task->creatorProfile)) {
+            throw ValidationException::withMessages([
+                'replacementTaskType' => 'Email replacement is not available because this creator has no usable email on file.',
+            ]);
+        }
+
         if (array_key_exists('template_id', $payload) && $payload['template_id'] !== null) {
             $templateId = trim((string) $payload['template_id']);
             if ($templateId !== '') {
@@ -857,6 +864,10 @@ class TaskQueueService
     private function createReplacementTaskAfterActionChange(string $projectId, CreatorProfile $profile, Task $originalTask, string $replacementTaskType, array $payload = [], bool $openReplacement = false): ?array
     {
         if ($replacementTaskType === '' || $replacementTaskType === (string) $originalTask->task_type) {
+            return null;
+        }
+
+        if ($replacementTaskType === 'EMAIL_SEND' && !$this->profileHasUsableEmail($profile)) {
             return null;
         }
 
@@ -1324,7 +1335,7 @@ class TaskQueueService
     private function determineFollowUpTaskTypeFromProfile(CreatorProfile $profile, array $settings = [], array $state = []): string
     {
         $platform = $this->normalizeExecutionChannel((string) ($profile->platform ?: ''), 'instagram');
-        $hasEmail = filled(optional($profile->creator)->primary_email);
+        $hasEmail = $this->profileHasUsableEmail($profile);
         $timePressure = $this->timePressureEnabled($settings);
         $executionChannel = $this->resolveExecutionChannel($profile, $state);
 
@@ -1365,7 +1376,7 @@ class TaskQueueService
     {
         $preferredChannel = strtoupper(trim((string) ($profile->preferred_channel ?: 'DM')));
         $platform = $this->normalizeExecutionChannel((string) ($profile->platform ?: ''), '');
-        $hasEmail = filled(optional($profile->creator)->primary_email);
+        $hasEmail = $this->profileHasUsableEmail($profile);
         $state = $this->profileAutomationState($profile);
         $timePressure = $this->timePressureEnabled($settings);
         $score = (int) ($profile->value_score ?? 0);
@@ -1976,6 +1987,22 @@ class TaskQueueService
         $profile->follow_up_needed = false;
     }
 
+    private function profileHasUsableEmail(?CreatorProfile $profile): bool
+    {
+        $email = trim((string) optional($profile?->creator)->primary_email);
+
+        if ($email === '') {
+            return false;
+        }
+
+        $lowered = strtolower($email);
+        if (in_array($lowered, ['none', 'null', 'undefined', 'n/a', 'na', '-', 'no email', 'unknown'], true)) {
+            return false;
+        }
+
+        return filter_var($email, FILTER_VALIDATE_EMAIL) !== false;
+    }
+
     private function normalizeExecutionChannel(?string $channel, string $fallback = 'instagram'): string
     {
         $value = strtolower(trim((string) $channel));
@@ -1990,7 +2017,7 @@ class TaskQueueService
 
     private function resolveExecutionChannel(CreatorProfile $profile, array $state = []): string
     {
-        $hasEmail = filled(optional($profile->creator)->primary_email);
+        $hasEmail = $this->profileHasUsableEmail($profile);
         $platform = $this->normalizeExecutionChannel((string) ($profile->platform ?: ''), 'instagram');
 
         foreach ([
@@ -2282,7 +2309,7 @@ class TaskQueueService
             'conversationUrl' => (string) ($task->conversation_url ?: $task->creatorProfile?->conversation_url ?: $task->open_url ?: ''),
             'creatorProfileId' => (string) ($task->creator_profile_id ?: ''),
             'valueScore' => (int) ($task->creatorProfile?->value_score ?? 0),
-            'email' => (string) ($task->creatorProfile?->creator?->primary_email ?: ''),
+            'email' => $this->profileHasUsableEmail($task->creatorProfile) ? (string) $task->creatorProfile?->creator?->primary_email : '',
             'lastOutreachAt' => optional($task->creatorProfile?->last_outreach_at)?->toIso8601String() ?? '',
             'metadata' => array_merge((array) ($task->metadata ?? []), [
                 'last_outreach_at' => optional($task->creatorProfile?->last_outreach_at)?->toIso8601String() ?? null,
