@@ -733,6 +733,10 @@ class TaskQueueService
         $externalChannel = trim((string) ($payload['externalChannel'] ?? $payload['responseChannel'] ?? ''));
         $conversationUrl = trim((string) ($payload['conversationUrl'] ?? ''));
         $senderAccount = trim((string) ($payload['sender_account'] ?? ''));
+        $replacementTaskType = strtoupper(trim((string) ($payload['replacementTaskType'] ?? '')));
+        $openReplacement = (bool) ($payload['openReplacement'] ?? false);
+        $keepOriginalAsLaterTask = (bool) ($payload['keepOriginalAsLaterTask'] ?? true);
+        $isChangedAction = $status === 'SKIPPED' && $skipReason === 'changed_action' && $replacementTaskType !== '';
 
         if (array_key_exists('template_id', $payload) && $payload['template_id'] !== null) {
             $templateId = trim((string) $payload['template_id']);
@@ -798,9 +802,20 @@ class TaskQueueService
 
         $profile = $task->creatorProfile;
         $relatedTaskUpdates = ['completed' => [], 'reframed' => []];
+        $replacementTask = null;
+        $deferredOriginalTask = null;
         if ($profile) {
             $this->applyTaskResultToProfile($profile, $task, $payload, $settings);
             $profile->save();
+
+            if ($isChangedAction) {
+                $replacementTask = $this->createReplacementTaskAfterActionChange($project->id, $profile, $task, $replacementTaskType, $payload, $openReplacement);
+
+                if ($keepOriginalAsLaterTask) {
+                    $deferredOriginalTask = $this->createDeferredOriginalTaskAfterActionChange($project->id, $profile, $task, $replacementTaskType, $settings);
+                }
+            }
+
             $relatedTaskUpdates = $this->applyRelatedWarmupTasksAfterOutreach($project->id, $sheetId, $profile, $task, $payload, $senderAccount);
             $profile->refresh();
             $this->maybeCreateImmediateNextTask($project->id, $profile, $task, $settings);
@@ -831,10 +846,125 @@ class TaskQueueService
             'eventId' => $eventId,
             'status' => $task->status,
             'createdFollowUpTask' => $profile ? $this->findNewestOpenTaskForProfile($project->id, $profile->id, $task->id) : null,
+            'replacementTask' => $replacementTask,
+            'deferredOriginalTask' => $deferredOriginalTask,
             'backfilledTasks' => $backfillResult,
             'relatedTaskUpdates' => $relatedTaskUpdates,
             'source' => 'database',
         ];
+    }
+
+    private function createReplacementTaskAfterActionChange(string $projectId, CreatorProfile $profile, Task $originalTask, string $replacementTaskType, array $payload = [], bool $openReplacement = false): ?array
+    {
+        if ($replacementTaskType === '' || $replacementTaskType === (string) $originalTask->task_type) {
+            return null;
+        }
+
+        $existing = Task::query()
+            ->where('project_id', $projectId)
+            ->where('creator_profile_id', $profile->id)
+            ->where('task_type', $replacementTaskType)
+            ->whereIn('status', self::OPEN_TASK_STATUSES)
+            ->with(['creatorProfile.creator', 'messageTemplate'])
+            ->orderByRaw("case priority when 'URGENT' then 0 when 'HIGH' then 1 when 'MEDIUM' then 2 else 3 end")
+            ->orderBy('due_at')
+            ->first();
+
+        if ($existing) {
+            $meta = (array) ($existing->metadata ?? []);
+            $existing->metadata = array_merge($meta, [
+                'selected_after_changed_task_id' => (string) ($originalTask->external_task_key ?: $originalTask->id),
+                'selected_after_original_task_type' => (string) $originalTask->task_type,
+                'open_immediately' => $openReplacement,
+            ]);
+            $existing->save();
+            return $this->normalizeDbTask($existing->refresh()->load(['creatorProfile.creator', 'messageTemplate']));
+        }
+
+        $platform = $replacementTaskType === 'EMAIL_SEND'
+            ? 'email'
+            : $this->resolveExecutionChannel($profile, $this->profileAutomationState($profile));
+
+        $notes = match ($replacementTaskType) {
+            'EMAIL_SEND' => 'Changed from ' . $originalTask->task_type . '. Write email outreach now, but keep the skipped warm-up action available as later support.',
+            'DM_INVITE' => 'Changed from ' . $originalTask->task_type . '. Open outreach now, but keep the skipped warm-up action available as later support.',
+            'COMMENT_ON_POST' => 'Changed from ' . $originalTask->task_type . '. Use a public comment instead of the original action.',
+            default => 'Changed from ' . $originalTask->task_type . '. Handle this replacement action next.',
+        };
+
+        $candidate = $this->candidateArray(
+            profile: $profile,
+            taskType: $replacementTaskType,
+            priority: strtoupper((string) ($payload['priority'] ?? $originalTask->priority ?? $this->priorityFromProfile($profile, true))),
+            dueAt: now(),
+            actionableChannel: $platform,
+            conversationUrl: (string) ($payload['conversationUrl'] ?? $originalTask->conversation_url ?: $originalTask->open_url ?: $profile->dm_link ?: $profile->profile_url ?: ''),
+            notes: $notes,
+            metadata: [
+                'source_rule' => 'user_changed_task_action',
+                'manual_created' => true,
+                'created_for_immediate_action' => true,
+                'open_immediately' => $openReplacement,
+                'original_task_id' => (string) ($originalTask->external_task_key ?: $originalTask->id),
+                'original_task_type' => (string) $originalTask->task_type,
+                'original_task_group_type' => (string) ($originalTask->group_type ?: ''),
+                'changed_action_reason' => (string) ($payload['skipReasonDetail'] ?? ''),
+                'group_context' => in_array($replacementTaskType, ['DM_INVITE', 'EMAIL_SEND'], true) ? 'first_outreach' : 'next_step',
+            ]
+        );
+
+        $task = $this->createDatabaseTask($projectId, $profile, $candidate, MessageTemplate::query()->where('project_id', $projectId)->get()->all(), true);
+        return $this->normalizeDbTask($task->load(['creatorProfile.creator', 'messageTemplate']));
+    }
+
+    private function createDeferredOriginalTaskAfterActionChange(string $projectId, CreatorProfile $profile, Task $originalTask, string $replacementTaskType, array $settings = []): ?array
+    {
+        $originalTaskType = (string) $originalTask->task_type;
+        if (!in_array($originalTaskType, ['FOLLOW_REQUEST', 'COMMENT_ON_POST'], true)) {
+            return null;
+        }
+
+        $exists = Task::query()
+            ->where('project_id', $projectId)
+            ->where('creator_profile_id', $profile->id)
+            ->where('task_type', $originalTaskType)
+            ->whereIn('status', self::OPEN_TASK_STATUSES)
+            ->exists();
+
+        if ($exists) {
+            return null;
+        }
+
+        $delayHours = max(1, (int) ($settings['warmup_gap_hours'] ?? 12));
+        $dueAt = now()->addHours($delayHours);
+        $notes = $originalTaskType === 'FOLLOW_REQUEST'
+            ? 'Later support task. You chose outreach first, so follow this creator later if there is no reply or if you still want to warm the relationship.'
+            : 'Later support task. You chose another action first, so comment later if there is no reply or if you still want a softer touch.';
+
+        $meta = array_merge((array) ($originalTask->metadata ?? []), [
+            'source_rule' => 'changed_action_later_support',
+            'group_context' => 'follow_up',
+            'follow_up_variant' => true,
+            'original_skipped_task_id' => (string) ($originalTask->external_task_key ?: $originalTask->id),
+            'original_task_type' => $originalTaskType,
+            'replacement_task_type' => $replacementTaskType,
+            'changed_action_later_candidate' => true,
+            'do_not_count_as_warmup_completed' => true,
+        ]);
+
+        $candidate = $this->candidateArray(
+            profile: $profile,
+            taskType: $originalTaskType,
+            priority: $this->priorityFromProfile($profile, true),
+            dueAt: $dueAt,
+            actionableChannel: $this->resolveExecutionChannel($profile, $this->profileAutomationState($profile)),
+            conversationUrl: (string) ($profile->conversation_url ?: $profile->dm_link ?: $profile->profile_url ?: $originalTask->open_url ?: ''),
+            notes: $notes,
+            metadata: $meta
+        );
+
+        $task = $this->createDatabaseTask($projectId, $profile, $candidate, MessageTemplate::query()->where('project_id', $projectId)->get()->all());
+        return $this->normalizeDbTask($task->load(['creatorProfile.creator', 'messageTemplate']));
     }
 
     private function applyRelatedWarmupTasksAfterOutreach(string $projectId, string $sheetId, CreatorProfile $profile, Task $completedTask, array $payload, string $senderAccount = ''): array
@@ -1278,12 +1408,6 @@ class TaskQueueService
             return 'EMAIL_SEND';
         }
 
-        if (in_array($platform, self::REQUIRES_CONNECTION, true) && !$timePressure) {
-            if (empty($state['warmup_follow_request_sent']) && empty($state['warmup_follow_request_completed'])) {
-                return 'FOLLOW_REQUEST';
-            }
-        }
-
         if ($platform === '') {
             return null;
         }
@@ -1310,7 +1434,17 @@ class TaskQueueService
 
         if ($status === 'SKIPPED') {
             $profile->last_task_outcome = $skipReason !== '' ? $skipReason : 'skipped';
-            if (in_array($skipReason, ['replied_elsewhere', 'conversation_active_elsewhere'], true)) {
+            if ($skipReason === 'changed_action') {
+                $state['last_user_override'] = [
+                    'from_task_type' => $taskType,
+                    'to_task_type' => strtoupper(trim((string) ($payload['replacementTaskType'] ?? ''))),
+                    'at' => $now->toIso8601String(),
+                    'reason' => trim((string) ($payload['skipReasonDetail'] ?? '')),
+                    'original_action_kept_for_later' => (bool) ($payload['keepOriginalAsLaterTask'] ?? true),
+                ];
+                $profile->waiting_until = null;
+                $profile->next_action_at = $now;
+            } elseif (in_array($skipReason, ['replied_elsewhere', 'conversation_active_elsewhere'], true)) {
                 $this->markExternalConversationActive($profile, $state, $settings, $externalChannel, $conversationUrl);
             } elseif ($skipReason === 'not_a_fit') {
                 $profile->task_suppressed_until = $now->copy()->addYears(5);
