@@ -9,6 +9,7 @@ use App\Models\OutreachEvent;
 use App\Models\DiscoveryItem;
 use App\Models\MessageTemplate;
 use App\Services\CreatorLifecycleService;
+use App\Services\CreatorLocationInferenceService;
 use App\Services\CreatorMergeService;
 use App\Services\GoogleSheetsService;
 use App\Services\InfluencerScoringService;
@@ -43,6 +44,7 @@ class SheetDataController extends Controller
         private ProjectResolverService $projects,
         private WorkspaceContextService $workspaceContext,
         private WorkspaceBillingService $billing,
+        private CreatorLocationInferenceService $locationInference,
     ) {
     }
 
@@ -391,6 +393,85 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
         ]);
     }
 
+    public function inferCreatorLocations(Request $request)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+            'limit' => ['nullable', 'integer', 'min:1', 'max:1000'],
+            'overwrite' => ['nullable', 'boolean'],
+        ]);
+
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
+        $project = $this->projects->findByWorkbookId($sheetId);
+
+        if (!$project) {
+            return response()->json([
+                'message' => 'Creator location inference finished',
+                'updated' => 0,
+                'skipped' => 0,
+                'reason' => 'No operational project found for this workspace.',
+            ]);
+        }
+
+        $limit = (int) ($validated['limit'] ?? 500);
+        $overwrite = (bool) ($validated['overwrite'] ?? false);
+        $updated = 0;
+        $skipped = 0;
+        $items = [];
+
+        $profiles = CreatorProfile::query()
+            ->with('creator')
+            ->where('project_id', $project->id)
+            ->orderByDesc('updated_at')
+            ->limit($limit)
+            ->get();
+
+        foreach ($profiles as $profile) {
+            $creator = $profile->creator;
+            if (!$creator) {
+                $skipped++;
+                continue;
+            }
+
+            $profileMetadata = is_array($profile->source_metadata) ? $profile->source_metadata : [];
+            $creatorMetadata = is_array($creator->metadata) ? $creator->metadata : [];
+            $payload = array_merge($creatorMetadata, $profileMetadata, [
+                'platform' => $profile->platform,
+                'handle' => $profile->handle,
+                'username' => $profile->username,
+                'profileUrl' => $profile->profile_url,
+                'fullName' => $creator->display_name,
+                'bio' => $profileMetadata['bio'] ?? $creatorMetadata['bio'] ?? '',
+                'country' => $creator->country,
+                'city' => $creator->city,
+            ]);
+
+            $location = $this->locationInference->applyToCreator($creator, $payload, (string) $profile->platform, $overwrite);
+            if (!$location) {
+                $skipped++;
+                continue;
+            }
+
+            $creator->save();
+            $updated++;
+            $items[] = [
+                'id' => $profile->id,
+                'handle' => $profile->handle,
+                'country' => $creator->country,
+                'city' => $creator->city,
+                'confidence' => $location['confidence'] ?? null,
+                'sources' => $location['sources'] ?? [],
+            ];
+        }
+
+        return response()->json([
+            'message' => 'Creator location inference finished',
+            'updated' => $updated,
+            'skipped' => $skipped,
+            'items' => $items,
+        ]);
+    }
+
     public function updateCreator(Request $request, string $id)
     {
         $validated = $request->validate([
@@ -420,6 +501,12 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
             }
             if (array_key_exists('fullName', $payload)) {
                 $creator->display_name = trim((string) $payload['fullName']) ?: null;
+            }
+            if (array_key_exists('country', $payload)) {
+                $creator->country = trim((string) $payload['country']) ?: null;
+            }
+            if (array_key_exists('city', $payload)) {
+                $creator->city = trim((string) $payload['city']) ?: null;
             }
             if (array_key_exists('status', $payload)) {
                 $incomingStatus = trim((string) $payload['status']);
@@ -1601,6 +1688,7 @@ if (Str::startsWith($sheetId, 'workspace:')) {
                 $creator->display_name = $candidate['fullName'] ?: $creator->display_name;
                 $creator->primary_email = $candidate['email'] ?: $creator->primary_email;
                 $creator->niche_category = $candidate['niche'] ?: $creator->niche_category;
+                $this->locationInference->applyToCreator($creator, $candidate['locationPayload'] ?? $candidate, $platform);
                 $creator->save();
 
 $profile->handle = $candidate['handle'];
@@ -1656,6 +1744,9 @@ $profile->source_reference = $candidate['sourceReference'];
                 }
                 if (is_array($candidate['nicheHints']) && $candidate['nicheHints'] !== []) {
                     $sourceMetadata['niche_hints'] = $candidate['nicheHints'];
+                }
+                if (is_array($candidate['locationInference'] ?? null) && (float) ($candidate['locationInference']['confidence'] ?? 0) > 0) {
+                    $sourceMetadata['creator_location'] = $candidate['locationInference'];
                 }
                 $sourceMetadata['bio'] = $candidate['bio'];
                 $sourceMetadata['posts_count'] = $candidate['postsCount'];
@@ -1747,6 +1838,13 @@ $matchAccuracy = $this->sanitizeFloat($payload['matchAccuracy'] ?? null);
 $valueTier = trim((string) ($payload['valueTier'] ?? '')) ?: null;
 $matchCategory = trim((string) ($payload['matchCategory'] ?? '')) ?: null;
 $nicheHints = array_values(array_filter(array_map(fn ($hint) => trim((string) $hint), (array) ($payload['nicheHints'] ?? [])), fn ($hint) => $hint !== ''));
+$locationPayload = array_merge($payload, [
+    'bio' => $bio,
+    'fullName' => $fullName,
+    'handle' => $handle,
+    'profileUrl' => $profileUrl,
+]);
+$locationInference = $this->locationInference->infer($locationPayload, $platform);
 
 return [
     'id' => trim((string) ($payload['id'] ?? '')) ?: null,
@@ -1778,6 +1876,8 @@ return [
     'matchAccuracy' => $matchAccuracy,
     'matchCategory' => $matchCategory,
     'nicheHints' => $nicheHints,
+    'locationPayload' => $locationPayload,
+    'locationInference' => $locationInference,
 ];
     }
 
@@ -1867,6 +1967,8 @@ return [
             $item['fullName'] ?? '',
             $item['niche'] ?? '',
             $item['email'] ?? '',
+            $item['country'] ?? '',
+            $item['city'] ?? '',
             ...(array) ($item['sourceHashtags'] ?? []),
         ])) {
             return false;
@@ -2015,6 +2117,8 @@ return [
                     ->orWhereHas('creator', function ($creatorQuery) use ($searchLike) {
                         $creatorQuery->whereRaw("LOWER(COALESCE(display_name, '')) LIKE ?", [$searchLike])
                             ->orWhereRaw("LOWER(COALESCE(primary_email, '')) LIKE ?", [$searchLike])
+                            ->orWhereRaw("LOWER(COALESCE(country, '')) LIKE ?", [$searchLike])
+                            ->orWhereRaw("LOWER(COALESCE(city, '')) LIKE ?", [$searchLike])
                             ->orWhereRaw("LOWER(COALESCE(niche_category, '')) LIKE ?", [$searchLike]);
                     });
             });
@@ -2244,6 +2348,10 @@ return [
             'followers' => $profile->followers_count,
             'engagementRate' => $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null,
             'email' => (string) (optional($creator)->primary_email ?: ''),
+            'country' => (string) (optional($creator)->country ?: ''),
+            'city' => (string) (optional($creator)->city ?: ''),
+            'locationConfidence' => $this->locationInference->confidenceFromCreator($creator),
+            'locationSources' => $this->locationInference->sourcesFromCreator($creator),
             'status' => $status,
             'enrichmentStatus' => $enrichmentStatus,
             'profileUrl' => (string) ($profile->profile_url ?: ''),
@@ -2661,6 +2769,10 @@ return [
             'followers' => $this->sanitizeMetric($row['Followers'] ?? null),
             'engagementRate' => $this->sanitizeFloat($row['Engagement_Rate_%'] ?? null),
             'email' => (string) ($row['Contact_Email'] ?? ''),
+            'country' => (string) ($row['Country'] ?? ''),
+            'city' => (string) ($row['City'] ?? ''),
+            'locationConfidence' => null,
+            'locationSources' => [],
             'status' => $status,
             'enrichmentStatus' => $enrichmentStatus,
             'profileUrl' => (string) ($row['DM_Link'] ?? ''),

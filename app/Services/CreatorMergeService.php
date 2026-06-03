@@ -20,6 +20,7 @@ class CreatorMergeService
         private GoogleSheetsService $sheets,
         private InfluencerScoringService $scoring,
         private ProjectResolverService $projects,
+        private CreatorLocationInferenceService $locationInference,
     ) {
     }
 
@@ -292,6 +293,7 @@ class CreatorMergeService
         $creator->primary_language = trim((string) ($creatorRecord['Primary_Language'] ?? '')) ?: $creator->primary_language;
         $creator->niche_category = trim((string) ($creatorRecord['Niche_Category'] ?? '')) ?: $creator->niche_category;
         $creator->notes = $this->appendNote((string) ($creator->notes ?? ''), $incomingNotes);
+        $this->locationInference->applyToCreator($creator, array_merge($sourceRow, $creatorRecord), (string) ($creatorRecord['Platform'] ?? ''));
         $metadata = is_array($creator->metadata) ? $creator->metadata : [];
         $metadata['last_merged_from'] = ($sourceRow['_row_number'] ?? null) ? 'enriched:' . (int) $sourceRow['_row_number'] : 'enriched';
         $metadata['last_merged_at'] = now()->toDateTimeString();
@@ -332,6 +334,10 @@ $profile->status = $existingStatus !== '' && !in_array($existingStatus, ['NEW', 
         $metadata = is_array($profile->source_metadata) ? $profile->source_metadata : [];
         $metadata['merged_from_source_sheet'] = $sourceRow['_row_number'] ?? null;
         $metadata['merged_from_platform'] = strtolower(trim((string) ($creatorRecord['Platform'] ?? '')));
+        $locationInference = $this->locationInference->infer(array_merge($sourceRow, $creatorRecord), (string) ($creatorRecord['Platform'] ?? ''));
+        if ((float) ($locationInference['confidence'] ?? 0) > 0) {
+            $metadata['creator_location'] = $locationInference;
+        }
         $metadata['commission_model'] = trim((string) ($creatorRecord['Commission_Model'] ?? '')) ?: ($metadata['commission_model'] ?? null);
         $metadata['reaction_video_link'] = trim((string) ($creatorRecord['Reaction_Video_Link'] ?? '')) ?: ($metadata['reaction_video_link'] ?? null);
         $profile->source_metadata = $metadata;
@@ -528,6 +534,10 @@ $profile->status = $existingStatus !== '' && !in_array($existingStatus, ['NEW', 
         $language = $platform === 'Instagram'
             ? ''
             : (string) ($sourceRow['language'] ?? '');
+        $locationInference = $this->locationInference->infer(array_merge($sourceRow, [
+            'fullName' => $sourceRow['fullName'] ?? $sourceRow['nickname'] ?? $sourceRow['username'] ?? '',
+            'bio' => $sourceRow['biography'] ?? $sourceRow['bio'] ?? $sourceRow['signature'] ?? '',
+        ]), strtolower($platform));
         $nowIso = now()->toDateTimeString();
         $notes = $platform === 'Instagram'
             ? sprintf(
@@ -560,8 +570,8 @@ $profile->status = $existingStatus !== '' && !in_array($existingStatus, ['NEW', 
             'Name' => (string) ($sourceRow['fullName'] ?? $sourceRow['nickname'] ?? $sourceRow['username'] ?? ''),
             'Followers' => $followers,
             'Engagement_Rate_%' => $engagement,
-            'Country' => (string) ($sourceRow['region'] ?? ''),
-            'City' => '',
+            'Country' => (string) (($locationInference['country'] ?? '') ?: ($sourceRow['region'] ?? '')),
+            'City' => (string) (($locationInference['city'] ?? '') ?: ''),
             'Primary_Language' => $language,
             'Niche_Category' => (string) ($sourceRow['niche_category'] ?? ''),
             'Angle_Assigned' => '',
