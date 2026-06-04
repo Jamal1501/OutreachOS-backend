@@ -18,6 +18,10 @@ class WorkspaceBillingService
 {
     private const PLAN_ALIASES = [
         'trial' => 'free',
+        'starter' => 'free',
+        'free_trial' => 'free',
+        'pro_trial' => 'pro',
+        'enterprise_trial' => 'enterprise',
     ];
 
     private const DEFAULT_PLAN_PRICES_CENTS = [
@@ -119,11 +123,19 @@ class WorkspaceBillingService
 
         $currentPlanId = $this->normalizePlanId((string) ($subscription->plan_id ?: Arr::get($currentPlan, 'id', 'free')));
 
+        $allowedCatalogPlanIds = ['free', 'pro', 'enterprise'];
+        $planDisplayNames = [
+            'free' => 'Free',
+            'pro' => 'Pro',
+            'enterprise' => 'Enterprise',
+        ];
+
         $plans = DB::table('plans')
             ->where('is_active', true)
+            ->whereIn('id', $allowedCatalogPlanIds)
             ->orderByRaw("CASE id WHEN 'free' THEN 1 WHEN 'pro' THEN 2 WHEN 'enterprise' THEN 3 ELSE 4 END")
             ->get()
-            ->map(function ($row) use ($currentPlanId) {
+            ->map(function ($row) use ($currentPlanId, $planDisplayNames) {
                 $data = (array) $row;
                 $planId = $this->normalizePlanId((string) ($data['id'] ?? 'free'));
                 $features = $this->normalizeJsonArray($data['features'] ?? []);
@@ -132,7 +144,7 @@ class WorkspaceBillingService
 
                 return [
                     'id' => $planId,
-                    'name' => (string) ($data['name'] ?? ''),
+                    'name' => $planDisplayNames[$planId] ?? (string) ($data['name'] ?? Str::headline($planId)),
                     'monthlyScrapeCredits' => (int) ($data['monthly_scrape_credits'] ?? 0),
                     'monthlyAiCredits' => (int) ($data['monthly_ai_credits'] ?? 0),
                     'trialScrapeCredits' => (int) ($data['trial_scrape_credits'] ?? 0),
