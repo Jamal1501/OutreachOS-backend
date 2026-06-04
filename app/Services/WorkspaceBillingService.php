@@ -310,29 +310,12 @@ class WorkspaceBillingService
 
     private function readWorkspaceBillingSnapshot(string $workspaceId): array
     {
-        $workspace = DB::table('workspaces')->where('id', $workspaceId)->first();
-        if (!$workspace) {
-            throw new RuntimeException('Workspace not found for billing.');
-        }
-
-        $workspacePlanId = $this->normalizePlanId((string) ($workspace->plan_id ?? 'free'));
-
-        $subscription = WorkspaceSubscription::query()
-            ->where('workspace_id', $workspaceId)
-            ->first();
-
-        $wallet = WorkspaceCreditWallet::query()
-            ->where('workspace_id', $workspaceId)
-            ->first();
-
-        if (!$subscription || !$wallet) {
-            return $this->ensureWorkspaceBilling($workspaceId);
-        }
-
-        $planId = $this->normalizePlanId((string) ($subscription->plan_id ?: $workspacePlanId));
-        $plan = $this->resolvePlan($planId);
-
-        return [$subscription, $wallet, $plan];
+        // Billing reads must not return stale subscription/wallet rows. Existing
+        // workspaces can have a workspace.plan_id that was changed directly in
+        // Supabase while workspace_subscriptions stayed on the old plan. Passing
+        // every read through ensureWorkspaceBilling keeps summary and catalog on
+        // the same effective plan and refills the wallet when the plan changes.
+        return $this->ensureWorkspaceBilling($workspaceId);
     }
 
     public function ensureWorkspaceBilling(string $workspaceId): array
@@ -370,15 +353,29 @@ class WorkspaceBillingService
             }
 
             $subscriptionPlanId = $this->normalizePlanId((string) ($subscription->plan_id ?: $workspacePlanId));
-            if ($subscription->plan_id !== $subscriptionPlanId) {
-                $subscription->plan_id = $subscriptionPlanId;
+            $hasStripeSubscription = trim((string) ($subscription->stripe_subscription_id ?? '')) !== '';
+            $targetPlanId = $hasStripeSubscription ? $subscriptionPlanId : $workspacePlanId;
+
+            if ($targetPlanId === '') {
+                $targetPlanId = 'free';
+            }
+
+            if ($subscriptionPlanId !== $targetPlanId || $subscription->plan_id !== $targetPlanId) {
+                $subscription->plan_id = $targetPlanId;
+
+                if (!$hasStripeSubscription && $targetPlanId !== 'free') {
+                    $subscription->trial_ends_at = null;
+                }
+
                 $subscription->save();
             }
-            if ($workspacePlanId !== $subscriptionPlanId) {
-                DB::table('workspaces')->where('id', $workspaceId)->update(['plan_id' => $subscriptionPlanId]);
-                $workspacePlanId = $subscriptionPlanId;
+
+            if ($workspacePlanId !== $targetPlanId) {
+                DB::table('workspaces')->where('id', $workspaceId)->update(['plan_id' => $targetPlanId]);
+                $workspacePlanId = $targetPlanId;
             }
-            $plan = $this->resolvePlan($subscriptionPlanId);
+
+            $plan = $this->resolvePlan($targetPlanId);
 
             $wallet = WorkspaceCreditWallet::query()
                 ->where('workspace_id', $workspaceId)
@@ -389,10 +386,10 @@ class WorkspaceBillingService
                 $wallet = WorkspaceCreditWallet::query()->create([
                     'id' => (string) Str::uuid(),
                     'workspace_id' => $workspaceId,
-                    'scrape_credits_balance' => $subscriptionPlanId === 'free'
+                    'scrape_credits_balance' => $targetPlanId === 'free'
                         ? (int) Arr::get($plan, 'trial_scrape_credits', 0)
                         : (int) Arr::get($plan, 'monthly_scrape_credits', 0),
-                    'ai_credits_balance' => $subscriptionPlanId === 'free'
+                    'ai_credits_balance' => $targetPlanId === 'free'
                         ? (int) Arr::get($plan, 'trial_ai_credits', 0)
                         : (int) Arr::get($plan, 'monthly_ai_credits', 0),
                     'bonus_scrape_credits' => 0,
