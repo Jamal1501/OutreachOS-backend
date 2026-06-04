@@ -479,13 +479,10 @@ class WorkspaceBillingService
                 return;
             }
 
-            if ($resetBaseBalances) {
-                $wallet->scrape_credits_balance = (int) Arr::get($plan, 'monthly_scrape_credits', 0);
-                $wallet->ai_credits_balance = (int) Arr::get($plan, 'monthly_ai_credits', 0);
-            } else {
-                $wallet->scrape_credits_balance = (int) $wallet->scrape_credits_balance + (int) Arr::get($plan, 'monthly_scrape_credits', 0);
-                $wallet->ai_credits_balance = (int) $wallet->ai_credits_balance + (int) Arr::get($plan, 'monthly_ai_credits', 0);
-            }
+            // Plan-cycle credits reset the included/base balance each billing period.
+            // Purchased/top-up credits live in bonus_* fields and are not touched here.
+            $wallet->scrape_credits_balance = (int) Arr::get($plan, 'monthly_scrape_credits', 0);
+            $wallet->ai_credits_balance = (int) Arr::get($plan, 'monthly_ai_credits', 0);
             $wallet->save();
 
             $metadata['last_refill_period_key'] = $periodKey;
@@ -701,10 +698,24 @@ class WorkspaceBillingService
             $currentPeriodKey = $currentPeriodStart->toIso8601String();
             $lastRefillKey = (string) ($metadata['last_refill_period_key'] ?? '');
             $baseBalancePlanId = (string) ($metadata['base_balance_plan_id'] ?? '');
+            $monthlyScrapeCredits = (int) Arr::get($plan, 'monthly_scrape_credits', 0);
+            $monthlyAiCredits = (int) Arr::get($plan, 'monthly_ai_credits', 0);
+
+            // Migration safety: base balances must not exceed the current plan allowance.
+            // Persistent extras belong in bonus_* credits, not in base monthly credits.
+            if ((int) $wallet->scrape_credits_balance > $monthlyScrapeCredits) {
+                $wallet->scrape_credits_balance = $monthlyScrapeCredits;
+                $walletChanged = true;
+            }
+
+            if ((int) $wallet->ai_credits_balance > $monthlyAiCredits) {
+                $wallet->ai_credits_balance = $monthlyAiCredits;
+                $walletChanged = true;
+            }
 
             if ($baseBalancePlanId !== $planId) {
-                $wallet->scrape_credits_balance = (int) Arr::get($plan, 'monthly_scrape_credits', 0);
-                $wallet->ai_credits_balance = (int) Arr::get($plan, 'monthly_ai_credits', 0);
+                $wallet->scrape_credits_balance = $monthlyScrapeCredits;
+                $wallet->ai_credits_balance = $monthlyAiCredits;
                 $metadata['base_balance_plan_id'] = $planId;
                 $metadata['last_refill_period_key'] = $currentPeriodKey;
                 $metadata['last_refill_at'] = $now->toIso8601String();
@@ -714,12 +725,15 @@ class WorkspaceBillingService
             }
 
             if ($lastRefillKey === '') {
+                $wallet->scrape_credits_balance = $monthlyScrapeCredits;
+                $wallet->ai_credits_balance = $monthlyAiCredits;
                 $metadata['last_refill_period_key'] = $currentPeriodKey;
                 $metadata['base_balance_plan_id'] = $planId;
+                $walletChanged = true;
                 $subscriptionChanged = true;
             } elseif (!in_array($subscription->status, ['past_due', 'unpaid', 'incomplete_expired'], true) && $currentPeriodKey !== $lastRefillKey) {
-                $wallet->scrape_credits_balance = (int) $wallet->scrape_credits_balance + (int) Arr::get($plan, 'monthly_scrape_credits', 0);
-                $wallet->ai_credits_balance = (int) $wallet->ai_credits_balance + (int) Arr::get($plan, 'monthly_ai_credits', 0);
+                $wallet->scrape_credits_balance = $monthlyScrapeCredits;
+                $wallet->ai_credits_balance = $monthlyAiCredits;
                 $metadata['last_refill_period_key'] = $currentPeriodKey;
                 $metadata['last_refill_at'] = $now->toIso8601String();
                 $metadata['base_balance_plan_id'] = $planId;
@@ -731,8 +745,8 @@ class WorkspaceBillingService
             while (!in_array($subscription->status, ['past_due', 'unpaid', 'incomplete_expired'], true) && $now->greaterThanOrEqualTo($currentPeriodEnd) && $safety < 24) {
                 $currentPeriodStart = $currentPeriodEnd;
                 $currentPeriodEnd = $currentPeriodEnd->addMonth();
-                $wallet->scrape_credits_balance = (int) $wallet->scrape_credits_balance + (int) Arr::get($plan, 'monthly_scrape_credits', 0);
-                $wallet->ai_credits_balance = (int) $wallet->ai_credits_balance + (int) Arr::get($plan, 'monthly_ai_credits', 0);
+                $wallet->scrape_credits_balance = $monthlyScrapeCredits;
+                $wallet->ai_credits_balance = $monthlyAiCredits;
                 $metadata['last_refill_period_key'] = $currentPeriodStart->toIso8601String();
                 $metadata['last_refill_at'] = $now->toIso8601String();
                 $subscription->current_period_start = $currentPeriodStart;
