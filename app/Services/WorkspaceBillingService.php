@@ -67,9 +67,19 @@ class WorkspaceBillingService
     {
         [$subscription, $wallet, $plan] = $this->readWorkspaceBillingSnapshot($workspaceId);
 
-        $usage = WorkspaceUsageEvent::query()
+        $usageQuery = WorkspaceUsageEvent::query()
             ->where('workspace_id', $workspaceId)
-            ->where('status', 'consumed')
+            ->where('status', 'consumed');
+
+        if ($subscription->current_period_start) {
+            $usageQuery->where('consumed_at', '>=', $subscription->current_period_start);
+        }
+
+        if ($subscription->current_period_end) {
+            $usageQuery->where('consumed_at', '<', $subscription->current_period_end);
+        }
+
+        $usage = $usageQuery
             ->selectRaw("
                 COALESCE(SUM(CASE WHEN credit_bucket = 'scrape' THEN credit_cost ELSE 0 END), 0) as consumed_scrape_credits,
                 COALESCE(SUM(CASE WHEN credit_bucket = 'ai' THEN credit_cost ELSE 0 END), 0) as consumed_ai_credits,
@@ -700,18 +710,7 @@ class WorkspaceBillingService
             $baseBalancePlanId = (string) ($metadata['base_balance_plan_id'] ?? '');
             $monthlyScrapeCredits = (int) Arr::get($plan, 'monthly_scrape_credits', 0);
             $monthlyAiCredits = (int) Arr::get($plan, 'monthly_ai_credits', 0);
-
-            // Migration safety: base balances must not exceed the current plan allowance.
-            // Persistent extras belong in bonus_* credits, not in base monthly credits.
-            if ((int) $wallet->scrape_credits_balance > $monthlyScrapeCredits) {
-                $wallet->scrape_credits_balance = $monthlyScrapeCredits;
-                $walletChanged = true;
-            }
-
-            if ((int) $wallet->ai_credits_balance > $monthlyAiCredits) {
-                $wallet->ai_credits_balance = $monthlyAiCredits;
-                $walletChanged = true;
-            }
+            $baseBalanceResetThisPass = false;
 
             if ($baseBalancePlanId !== $planId) {
                 $wallet->scrape_credits_balance = $monthlyScrapeCredits;
@@ -722,6 +721,7 @@ class WorkspaceBillingService
                 $walletChanged = true;
                 $subscriptionChanged = true;
                 $lastRefillKey = $currentPeriodKey;
+                $baseBalanceResetThisPass = true;
             }
 
             if ($lastRefillKey === '') {
@@ -731,6 +731,7 @@ class WorkspaceBillingService
                 $metadata['base_balance_plan_id'] = $planId;
                 $walletChanged = true;
                 $subscriptionChanged = true;
+                $baseBalanceResetThisPass = true;
             } elseif (!in_array($subscription->status, ['past_due', 'unpaid', 'incomplete_expired'], true) && $currentPeriodKey !== $lastRefillKey) {
                 $wallet->scrape_credits_balance = $monthlyScrapeCredits;
                 $wallet->ai_credits_balance = $monthlyAiCredits;
@@ -739,6 +740,7 @@ class WorkspaceBillingService
                 $metadata['base_balance_plan_id'] = $planId;
                 $walletChanged = true;
                 $subscriptionChanged = true;
+                $baseBalanceResetThisPass = true;
             }
 
             $safety = 0;
@@ -753,7 +755,24 @@ class WorkspaceBillingService
                 $subscription->current_period_end = $currentPeriodEnd;
                 $walletChanged = true;
                 $subscriptionChanged = true;
+                $baseBalanceResetThisPass = true;
                 $safety++;
+            }
+
+            if (!$baseBalanceResetThisPass) {
+                $baseDeductions = $this->currentPeriodBaseDeductions($workspaceId, $currentPeriodStart, $currentPeriodEnd);
+                $expectedScrapeBaseBalance = max(0, $monthlyScrapeCredits - $baseDeductions['scrape']);
+                $expectedAiBaseBalance = max(0, $monthlyAiCredits - $baseDeductions['ai']);
+
+                if ((int) $wallet->scrape_credits_balance > $expectedScrapeBaseBalance) {
+                    $wallet->scrape_credits_balance = $expectedScrapeBaseBalance;
+                    $walletChanged = true;
+                }
+
+                if ((int) $wallet->ai_credits_balance > $expectedAiBaseBalance) {
+                    $wallet->ai_credits_balance = $expectedAiBaseBalance;
+                    $walletChanged = true;
+                }
             }
         }
 
@@ -766,6 +785,34 @@ class WorkspaceBillingService
         }
 
         return [$subscription->fresh(), $wallet->fresh()];
+    }
+
+    private function currentPeriodBaseDeductions(string $workspaceId, CarbonImmutable $periodStart, CarbonImmutable $periodEnd): array
+    {
+        $deductions = [
+            'scrape' => 0,
+            'ai' => 0,
+        ];
+
+        WorkspaceUsageEvent::query()
+            ->where('workspace_id', $workspaceId)
+            ->whereIn('status', ['reserved', 'consumed'])
+            ->where('created_at', '>=', $periodStart)
+            ->where('created_at', '<', $periodEnd)
+            ->get(['credit_bucket', 'credit_cost', 'metadata'])
+            ->each(function (WorkspaceUsageEvent $event) use (&$deductions) {
+                $bucket = $event->credit_bucket === 'ai' ? 'ai' : 'scrape';
+                $metadata = (array) ($event->metadata ?? []);
+                $baseDeduction = data_get($metadata, 'deductions.base');
+
+                if ($baseDeduction === null) {
+                    $baseDeduction = $event->credit_cost;
+                }
+
+                $deductions[$bucket] += max(0, (int) $baseDeduction);
+            });
+
+        return $deductions;
     }
 
     private function ensureCatalogSeeded(): void
