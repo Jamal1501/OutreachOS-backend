@@ -177,7 +177,7 @@ private function seedPlans(): void
     $rows = [
         [
             'id'                      => 'free',
-            'name'                    => 'Free Trial',
+            'name'                    => 'Free',
             'max_members'             => 1,
             'max_creators'            => 100,
             'monthly_scrape_credits'  => 0,
@@ -185,7 +185,7 @@ private function seedPlans(): void
             'trial_scrape_credits'    => 200,
             'trial_ai_credits'        => 20,
             'topup_price_multiplier'  => 1.25,
-            'features'                => json_encode(['trial', 'paywall_preview']),
+            'features'                => json_encode(['welcome_credits', 'pay_as_you_go_topups']),
             'is_active'               => true,
         ],
         [

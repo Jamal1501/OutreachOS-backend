@@ -106,6 +106,7 @@ class AiGatewayService
             $this->billing->consumeReservation($usageReservationId, providerCostUsd: $estimatedCost, metadata: [
                 'openai_id' => $payload['id'] ?? null,
                 'usage' => $usage,
+                'provider_cost_source' => 'openai_token_estimate',
             ], referenceId: (string) ($payload['id'] ?? ''));
         }
 

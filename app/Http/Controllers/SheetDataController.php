@@ -20,6 +20,7 @@ use App\Services\ProjectResolverService;
 use App\Services\TaskQueueService;
 use App\Services\WorkspaceContextService;
 use App\Services\WorkspaceBillingService;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
@@ -641,9 +642,6 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
 
         $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $workspaceId = (string) $request->attributes->get('workspace_id');
-        $billingSummary = $workspaceId !== '' ? $this->billing->summary($workspaceId) : ['usage' => ['providerSpendUsd' => 0, 'consumedScrapeCredits' => 0]];
-        $providerSpendUsd = round((float) (($billingSummary['usage']['providerSpendUsd'] ?? 0)), 4);
-        $consumedScrapeCredits = (int) (($billingSummary['usage']['consumedScrapeCredits'] ?? 0));
         $project = $this->projects->findByWorkbookId($sheetId);
 
         if ($project) {
@@ -1458,13 +1456,25 @@ public function creatorDecisionSheet(Request $request, string $id)
     {
         $validated = $request->validate([
             'sheetId' => ['nullable', 'string'],
+            'range' => ['nullable', Rule::in(['7d', '30d', 'all'])],
         ]);
 
         $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $workspaceId = (string) $request->attributes->get('workspace_id');
-        $billingSummary = $workspaceId !== '' ? $this->billing->summary($workspaceId) : ['usage' => ['providerSpendUsd' => 0, 'consumedScrapeCredits' => 0]];
-        $providerSpendUsd = round((float) (($billingSummary['usage']['providerSpendUsd'] ?? 0)), 4);
-        $consumedScrapeCredits = (int) (($billingSummary['usage']['consumedScrapeCredits'] ?? 0));
+        $rangeStart = $this->dashboardRangeStart((string) ($validated['range'] ?? '30d'));
+        $billingUsage = $workspaceId !== ''
+            ? $this->billing->customerUsageEstimate($workspaceId, $rangeStart)
+            : [
+                'consumedScrapeCredits' => 0,
+                'consumedAiCredits' => 0,
+                'estimatedCreditSpendUsd' => 0,
+                'estimatedOutreachInvestmentUsd' => 0,
+                'customerCreditValue' => null,
+            ];
+        $consumedScrapeCredits = (int) (($billingUsage['consumedScrapeCredits'] ?? 0));
+        $consumedAiCredits = (int) (($billingUsage['consumedAiCredits'] ?? 0));
+        $estimatedCreditSpendUsd = round((float) (($billingUsage['estimatedCreditSpendUsd'] ?? 0)), 2);
+        $estimatedOutreachInvestmentUsd = round((float) (($billingUsage['estimatedOutreachInvestmentUsd'] ?? $estimatedCreditSpendUsd)), 2);
         $project = $this->projects->findByWorkbookId($sheetId);
 
         if ($project) {
@@ -1496,22 +1506,17 @@ public function creatorDecisionSheet(Request $request, string $id)
                 ->whereNotIn(DB::raw("UPPER(COALESCE(status, 'PENDING'))"), ['DONE', 'COMPLETED', 'SKIPPED'])
                 ->count();
 
-            $outreachSent = OutreachEvent::query()
+            $outreachSentQuery = OutreachEvent::query()
                 ->where('project_id', $projectId)
-                ->where(function ($query) {
-                    $query->where('event_type', 'ILIKE', '%sent%')
-                        ->orWhere('event_type', 'ILIKE', '%outreach%');
-                })
-                ->count();
+                ->whereIn(DB::raw('UPPER(event_type)'), $this->strictOutreachSentEventTypes());
+            $this->applyOutreachEventRange($outreachSentQuery, $rangeStart);
+            $outreachSent = $outreachSentQuery->count();
 
-            $repliesReceived = OutreachEvent::query()
+            $repliesQuery = OutreachEvent::query()
                 ->where('project_id', $projectId)
-                ->where(function ($query) {
-                    $query->where('event_type', 'ILIKE', '%reply%')
-                        ->orWhere('event_type', 'ILIKE', '%accepted%')
-                        ->orWhere('event_type', 'ILIKE', '%deal_won%');
-                })
-                ->count();
+                ->whereIn(DB::raw('UPPER(event_type)'), $this->strictReplyEventTypes());
+            $this->applyOutreachEventRange($repliesQuery, $rangeStart);
+            $repliesReceived = $repliesQuery->count();
 
             $discoveredCount = DiscoveryItem::query()
                 ->where('project_id', $projectId)
@@ -1533,8 +1538,14 @@ public function creatorDecisionSheet(Request $request, string $id)
                 'tasksDueToday' => $tasksDueToday,
                 'outreachSent' => $outreachSent,
                 'repliesReceived' => $repliesReceived,
-                'scrapeSpend' => $providerSpendUsd,
+                // Legacy key kept for old frontend clients. Value is customer-facing estimated
+                // outreach investment from credits, not internal provider COGS.
+                'scrapeSpend' => $estimatedOutreachInvestmentUsd,
+                'estimatedOutreachInvestment' => $estimatedOutreachInvestmentUsd,
+                'estimatedCreditSpendUsd' => $estimatedCreditSpendUsd,
                 'scrapeCreditsUsed' => $consumedScrapeCredits,
+                'aiCreditsUsed' => $consumedAiCredits,
+                'customerCreditValue' => $billingUsage['customerCreditValue'] ?? null,
             ];
 
             return response()->json([
@@ -1553,8 +1564,12 @@ if (Str::startsWith($sheetId, 'workspace:')) {
             'tasksDueToday' => 0,
             'outreachSent' => 0,
             'repliesReceived' => 0,
-            'scrapeSpend' => $providerSpendUsd,
+            'scrapeSpend' => $estimatedOutreachInvestmentUsd,
+            'estimatedOutreachInvestment' => $estimatedOutreachInvestmentUsd,
+            'estimatedCreditSpendUsd' => $estimatedCreditSpendUsd,
             'scrapeCreditsUsed' => $consumedScrapeCredits,
+            'aiCreditsUsed' => $consumedAiCredits,
+            'customerCreditValue' => $billingUsage['customerCreditValue'] ?? null,
         ],
     ]);
 }
@@ -1583,8 +1598,12 @@ if (Str::startsWith($sheetId, 'workspace:')) {
             'tasksDueToday' => count(array_filter($tasks, fn (array $row) => str_starts_with((string) ($row['Due_At'] ?? ''), $today) && !in_array(strtoupper((string) ($row['Status'] ?? '')), ['DONE', 'COMPLETED', 'SKIPPED'], true))),
             'outreachSent' => count(array_filter($outreach, fn (array $row) => Str::contains(strtoupper((string) ($row['Event_Type'] ?? '')), ['SENT']))),
             'repliesReceived' => count(array_filter($outreach, fn (array $row) => Str::contains(strtoupper((string) ($row['Event_Type'] ?? '')), ['REPLY', 'ACCEPTED']))),
-            'scrapeSpend' => $providerSpendUsd,
+            'scrapeSpend' => $estimatedOutreachInvestmentUsd,
+            'estimatedOutreachInvestment' => $estimatedOutreachInvestmentUsd,
+            'estimatedCreditSpendUsd' => $estimatedCreditSpendUsd,
             'scrapeCreditsUsed' => $consumedScrapeCredits,
+            'aiCreditsUsed' => $consumedAiCredits,
+            'customerCreditValue' => $billingUsage['customerCreditValue'] ?? null,
         ];
 
         return response()->json([
@@ -1593,6 +1612,41 @@ if (Str::startsWith($sheetId, 'workspace:')) {
         ]);
     }
 
+
+
+    private function dashboardRangeStart(string $range): ?CarbonImmutable
+    {
+        return match ($range) {
+            '7d' => CarbonImmutable::now()->subDays(7),
+            '30d' => CarbonImmutable::now()->subDays(30),
+            default => null,
+        };
+    }
+
+    private function applyOutreachEventRange($query, ?CarbonImmutable $rangeStart): void
+    {
+        if (!$rangeStart) {
+            return;
+        }
+
+        $query->where(function ($nested) use ($rangeStart) {
+            $nested->where('sent_at', '>=', $rangeStart)
+                ->orWhere(function ($fallback) use ($rangeStart) {
+                    $fallback->whereNull('sent_at')
+                        ->where('created_at', '>=', $rangeStart);
+                });
+        });
+    }
+
+    private function strictOutreachSentEventTypes(): array
+    {
+        return ['OUTREACH_SENT', 'MESSAGE_SENT', 'DM_SENT', 'EMAIL_SENT', 'SENT'];
+    }
+
+    private function strictReplyEventTypes(): array
+    {
+        return ['REPLY_RECEIVED', 'REPLY', 'CREATOR_REPLIED', 'ACCEPTED', 'DEAL_WON'];
+    }
 
     private function mergeSelectedCreatorsIntoDatabase(int $projectId, string $platform, array $queueIds, array $selectedCreators): array
     {

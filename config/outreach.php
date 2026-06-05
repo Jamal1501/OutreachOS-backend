@@ -30,6 +30,12 @@ return [
             'pro' => env('OUTREACH_PLAN_PRO_PRICE_CENTS', 4900),
             'enterprise' => env('OUTREACH_PLAN_ENTERPRISE_PRICE_CENTS', 14900),
         ],
+        'customer_credit_value_usd' => [
+            // Customer-facing ROI estimates use credit value, not internal provider COGS.
+            // Margin belongs here/top-up pricing, not inside provider_cost_usd.
+            'scrape' => env('OUTREACH_CUSTOMER_SCRAPE_CREDIT_VALUE_USD', 0.015),
+            'ai' => env('OUTREACH_CUSTOMER_AI_CREDIT_VALUE_USD', 0.08),
+        ],
         'credit_packages' => [
             [
                 'id' => '11111111-1111-4111-8111-111111111111',

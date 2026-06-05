@@ -114,6 +114,8 @@ public function createSubscriptionCheckoutSession(
                     'billing_type' => 'credit_topup',
                     'workspace_id' => $workspaceId,
                     'credit_package_id' => $package['id'],
+                    'plan_id_at_checkout' => $package['plan_id'] ?? 'free',
+                    'topup_price_multiplier' => (string) ($package['topup_price_multiplier'] ?? 1),
                 ],
             ],
             'line_items' => [[
@@ -233,6 +235,9 @@ public function createSubscriptionCheckoutSession(
                 'amount_paid_usd' => round(((int) ($session['amount_total'] ?? 0)) / 100, 2),
                 'checkout_session_id' => (string) ($session['id'] ?? ''),
                 'stripe_customer_id' => (string) ($session['customer'] ?? ''),
+                'plan_id_at_purchase' => $package['plan_id'] ?? 'free',
+                'base_price_usd' => $package['base_price_usd'] ?? null,
+                'topup_price_multiplier' => $package['topup_price_multiplier'] ?? 1,
             ],
         );
     }

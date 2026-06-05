@@ -78,7 +78,7 @@ class ApifyRunExecutor
                     'actor_id' => $actorId,
                     'actor_key' => $actorKey,
                     'status' => 'failed_to_start',
-                    'estimated_cost_usd' => $maxTotalChargeUsd,
+                    'max_total_charge_usd' => $maxTotalChargeUsd,
                     'request_payload' => $input,
                     'response_payload' => ['body' => $startResponse->body()],
                     'error_message' => 'Failed to start Apify actor',
@@ -93,19 +93,6 @@ class ApifyRunExecutor
                 throw new RuntimeException('Apify run ID missing in response');
             }
 
-            if ($usageReservationId) {
-                $this->billing->consumeReservation(
-                    $usageReservationId,
-                    providerCostUsd: $maxTotalChargeUsd,
-                    metadata: [
-                        'module_key' => $moduleKey,
-                        'run_id' => $runId,
-                        'dataset_id' => (string) ($startData['defaultDatasetId'] ?? ''),
-                    ],
-                    referenceId: $runId,
-                );
-            }
-
             $runData = $this->pollRun($token, $runId);
             $datasetId = (string) ($runData['defaultDatasetId'] ?? '');
             $datasetFetchLimit = isset($context['fetchLimit']) && is_numeric($context['fetchLimit'])
@@ -115,6 +102,22 @@ class ApifyRunExecutor
                     : (isset($input['directUrls']) && is_array($input['directUrls']) ? max(1, count($input['directUrls'])) : null));
 
             $items = $this->fetchDatasetItems($token, $datasetId, $datasetFetchLimit);
+            $actualProviderCostUsd = $this->extractApifyRunCostUsd($runData);
+
+            if ($usageReservationId) {
+                $this->billing->consumeReservation(
+                    $usageReservationId,
+                    providerCostUsd: $actualProviderCostUsd,
+                    metadata: [
+                        'module_key' => $moduleKey,
+                        'run_id' => $runId,
+                        'dataset_id' => $datasetId,
+                        'provider_cost_source' => $actualProviderCostUsd !== null ? 'apify_run_usage' : 'apify_run_cost_unavailable',
+                        'max_total_charge_usd' => $maxTotalChargeUsd,
+                    ],
+                    referenceId: $runId,
+                );
+            }
 
             $this->usageLogger->logApify([
                 'actor_id' => $actorId,
@@ -122,7 +125,8 @@ class ApifyRunExecutor
                 'run_id' => $runId,
                 'dataset_id' => $datasetId,
                 'status' => $runData['status'] ?? 'SUCCEEDED',
-                'estimated_cost_usd' => $maxTotalChargeUsd,
+                'max_total_charge_usd' => $maxTotalChargeUsd,
+                'estimated_cost_usd' => $actualProviderCostUsd,
                 'request_payload' => $input,
                 'response_payload' => [
                     'start' => $startData,
@@ -184,6 +188,25 @@ class ApifyRunExecutor
         } while (time() < $deadline);
 
         throw new RuntimeException('Timed out while waiting for Apify run ' . $runId);
+    }
+
+    private function extractApifyRunCostUsd(array $runData): ?float
+    {
+        foreach ([
+            'usageTotalUsd',
+            'usageUsd',
+            'costUsd',
+            'stats.costUsd',
+            'usage.totalUsd',
+            'usage.totalCostUsd',
+        ] as $path) {
+            $value = data_get($runData, $path);
+            if (is_numeric($value)) {
+                return round(max(0, (float) $value), 6);
+            }
+        }
+
+        return null;
     }
 
     private function fetchDatasetItems(string $token, string $datasetId, ?int $limit = null): array

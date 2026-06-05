@@ -150,11 +150,15 @@ public function runActor(Request $request)
         if ($usageReservationId) {
             $this->billing->consumeReservation(
                 $usageReservationId,
-                providerCostUsd: isset($query['maxTotalChargeUsd']) ? (float) $query['maxTotalChargeUsd'] : null,
+                // This route only starts an async Apify run, so the real provider cost is not known yet.
+                // Do not store maxTotalChargeUsd as actual spend; it is only a safety cap.
+                providerCostUsd: null,
                 metadata: [
                     'module_key' => $moduleKey,
                     'run_id' => $runId,
                     'dataset_id' => $datasetId,
+                    'provider_cost_source' => 'apify_async_run_pending',
+                    'max_total_charge_usd' => isset($query['maxTotalChargeUsd']) ? (float) $query['maxTotalChargeUsd'] : null,
                 ],
                 referenceId: $runId,
             );

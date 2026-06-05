@@ -67,27 +67,12 @@ class WorkspaceBillingService
     {
         [$subscription, $wallet, $plan] = $this->readWorkspaceBillingSnapshot($workspaceId);
 
-        $usageQuery = WorkspaceUsageEvent::query()
-            ->where('workspace_id', $workspaceId)
-            ->where('status', 'consumed');
-
-        if ($subscription->current_period_start) {
-            $usageQuery->where('consumed_at', '>=', $subscription->current_period_start);
-        }
-
-        if ($subscription->current_period_end) {
-            $usageQuery->where('consumed_at', '<', $subscription->current_period_end);
-        }
-
-        $usage = $usageQuery
-            ->selectRaw("
-                COALESCE(SUM(CASE WHEN credit_bucket = 'scrape' THEN credit_cost ELSE 0 END), 0) as consumed_scrape_credits,
-                COALESCE(SUM(CASE WHEN credit_bucket = 'ai' THEN credit_cost ELSE 0 END), 0) as consumed_ai_credits,
-                COALESCE(SUM(provider_cost_usd), 0) as provider_spend_usd
-            ")
-            ->first();
-
         $currentPlanId = $this->normalizePlanId((string) ($subscription->plan_id ?: Arr::get($plan, 'id', 'free')));
+        $usage = $this->customerUsageEstimate(
+            $workspaceId,
+            $subscription->current_period_start ? CarbonImmutable::instance($subscription->current_period_start) : null,
+            $subscription->current_period_end ? CarbonImmutable::instance($subscription->current_period_end) : null,
+        );
 
         return [
             'workspaceId' => $workspaceId,
@@ -111,9 +96,12 @@ class WorkspaceBillingService
                 'lifetimeAiUsed' => (int) $wallet->lifetime_ai_used,
             ],
             'usage' => [
-                'consumedScrapeCredits' => (int) ($usage->consumed_scrape_credits ?? 0),
-                'consumedAiCredits' => (int) ($usage->consumed_ai_credits ?? 0),
-                'providerSpendUsd' => round((float) ($usage->provider_spend_usd ?? 0), 4),
+                'consumedScrapeCredits' => (int) ($usage['consumedScrapeCredits'] ?? 0),
+                'consumedAiCredits' => (int) ($usage['consumedAiCredits'] ?? 0),
+                'estimatedCreditSpendUsd' => (float) ($usage['estimatedCreditSpendUsd'] ?? 0),
+                'estimatedOutreachInvestmentUsd' => (float) ($usage['estimatedOutreachInvestmentUsd'] ?? 0),
+                'providerCostUsdInternal' => (float) ($usage['providerCostUsdInternal'] ?? 0),
+                'customerCreditValue' => $usage['customerCreditValue'] ?? $this->customerCreditValueForPlan($currentPlanId),
             ],
             'entitlements' => [
                 'monthlyScrapeCredits' => (int) Arr::get($plan, 'monthly_scrape_credits', 0),
@@ -148,7 +136,7 @@ class WorkspaceBillingService
             ->map(function ($row) use ($currentPlanId, $planDisplayNames) {
                 $data = (array) $row;
                 $planId = $this->normalizePlanId((string) ($data['id'] ?? 'free'));
-                $features = $this->normalizeJsonArray($data['features'] ?? []);
+                $features = $this->publicPlanFeatures($planId, $this->normalizeJsonArray($data['features'] ?? []));
                 $priceCents = $this->planPriceCents($planId);
                 $scraperModules = $this->scrapers->availableForPlan($planId);
 
@@ -208,6 +196,16 @@ class WorkspaceBillingService
             'planState' => $this->planState($workspaceId, $subscription, $currentPlanId),
             'plans' => $plans,
             'packages' => $packages,
+            'pricingModel' => [
+                'customerUnit' => 'credits',
+                'providerSpendVisibleToCustomer' => false,
+                'topupPricing' => [
+                    'currentPlanMultiplier' => $multiplier,
+                    'freeMultiplier' => 1.25,
+                    'proMultiplier' => 1.0,
+                    'enterpriseMultiplier' => 0.8,
+                ],
+            ],
         ];
     }
 
@@ -535,6 +533,76 @@ class WorkspaceBillingService
         });
     }
 
+    public function customerUsageEstimate(string $workspaceId, ?CarbonImmutable $from = null, ?CarbonImmutable $to = null): array
+    {
+        [$subscription, , $plan] = $this->readWorkspaceBillingSnapshot($workspaceId);
+        $planId = $this->normalizePlanId((string) ($subscription->plan_id ?: Arr::get($plan, 'id', 'free')));
+
+        $usageQuery = WorkspaceUsageEvent::query()
+            ->where('workspace_id', $workspaceId)
+            ->where('status', 'consumed');
+
+        if ($from) {
+            $usageQuery->where('consumed_at', '>=', $from);
+        }
+
+        if ($to) {
+            $usageQuery->where('consumed_at', '<', $to);
+        }
+
+        $usage = $usageQuery
+            ->selectRaw("
+                COALESCE(SUM(CASE WHEN credit_bucket = 'scrape' THEN credit_cost ELSE 0 END), 0) as consumed_scrape_credits,
+                COALESCE(SUM(CASE WHEN credit_bucket = 'ai' THEN credit_cost ELSE 0 END), 0) as consumed_ai_credits,
+                COALESCE(SUM(provider_cost_usd), 0) as provider_cost_usd_internal
+            ")
+            ->first();
+
+        $scrapeCredits = (int) ($usage->consumed_scrape_credits ?? 0);
+        $aiCredits = (int) ($usage->consumed_ai_credits ?? 0);
+        $customerCreditValue = $this->customerCreditValueForPlan($planId);
+        $estimatedCreditSpendUsd = $this->estimateCustomerCreditSpendUsd($scrapeCredits, $aiCredits, $customerCreditValue);
+
+        return [
+            'consumedScrapeCredits' => $scrapeCredits,
+            'consumedAiCredits' => $aiCredits,
+            'providerCostUsdInternal' => round((float) ($usage->provider_cost_usd_internal ?? 0), 4),
+            'estimatedCreditSpendUsd' => $estimatedCreditSpendUsd,
+            'estimatedOutreachInvestmentUsd' => $estimatedCreditSpendUsd,
+            'customerCreditValue' => $customerCreditValue,
+        ];
+    }
+
+    public function customerCreditValueForPlan(string $planId): array
+    {
+        $planId = $this->normalizePlanId($planId);
+        $plan = $this->resolvePlan($planId);
+        $multiplier = max(0.1, (float) Arr::get($plan, 'topup_price_multiplier', match ($planId) {
+            'free' => 1.25,
+            'enterprise' => 0.8,
+            default => 1.0,
+        }));
+
+        $scrapeUsd = max(0, (float) config('outreach.billing.customer_credit_value_usd.scrape', 0.015)) * $multiplier;
+        $aiUsd = max(0, (float) config('outreach.billing.customer_credit_value_usd.ai', 0.08)) * $multiplier;
+
+        return [
+            'planId' => $planId,
+            'planMultiplier' => $multiplier,
+            'scrapeUsd' => round($scrapeUsd, 6),
+            'aiUsd' => round($aiUsd, 6),
+            'source' => 'customer_credit_value_estimate',
+        ];
+    }
+
+    private function estimateCustomerCreditSpendUsd(int $scrapeCredits, int $aiCredits, array $customerCreditValue): float
+    {
+        $scrapeValue = (float) ($customerCreditValue['scrapeUsd'] ?? 0);
+        $aiValue = (float) ($customerCreditValue['aiUsd'] ?? 0);
+
+        return round(max(0, $scrapeCredits) * $scrapeValue + max(0, $aiCredits) * $aiValue, 2);
+    }
+
     public function getCreditPackageConfig(string $workspaceId, string $packageId): array
     {
         $this->ensureCatalogSeeded();
@@ -561,6 +629,9 @@ class WorkspaceBillingService
             'ai_credits' => (int) $package->ai_credits,
             'price_cents' => $effectivePriceCents,
             'price_usd' => round($effectivePriceCents / 100, 2),
+            'base_price_usd' => round((float) $package->price_usd, 2),
+            'plan_id' => $currentPlanId,
+            'topup_price_multiplier' => $multiplier,
             'currency' => (string) config('outreach.billing.currency', 'usd'),
         ];
     }
@@ -599,6 +670,9 @@ class WorkspaceBillingService
         array $metadata = [],
     ): array {
         [$subscription] = $this->ensureWorkspaceBilling($workspaceId);
+        $planIdAtReservation = $this->normalizePlanId((string) ($subscription->plan_id ?: 'free'));
+        $periodStart = optional($subscription->current_period_start)?->toIso8601String();
+        $periodEnd = optional($subscription->current_period_end)?->toIso8601String();
 
         if (in_array($subscription->status, ['past_due', 'unpaid', 'incomplete_expired'], true)) {
             throw new InsufficientCreditsException('Workspace subscription is not active.', [
@@ -606,7 +680,7 @@ class WorkspaceBillingService
             ]);
         }
 
-        return DB::transaction(function () use ($workspaceId, $type, $bucket, $units, $creditCost, $provider, $source, $metadata) {
+        return DB::transaction(function () use ($workspaceId, $type, $bucket, $units, $creditCost, $provider, $source, $metadata, $subscription, $planIdAtReservation, $periodStart, $periodEnd) {
             $wallet = WorkspaceCreditWallet::query()
                 ->where('workspace_id', $workspaceId)
                 ->lockForUpdate()
@@ -646,6 +720,14 @@ class WorkspaceBillingService
                 'source' => $source,
                 'status' => 'reserved',
                 'metadata' => array_merge($metadata, [
+                    'billing' => [
+                        'subscription_id' => $subscription->id,
+                        'plan_id_at_charge' => $planIdAtReservation,
+                        'period_start' => $periodStart,
+                        'period_end' => $periodEnd,
+                        'credit_model' => 'monthly_reset_plus_bonus_topups',
+                        'customer_billing_unit' => 'credits',
+                    ],
                     'deductions' => [
                         'base' => $deductBase,
                         'bonus' => $deductBonus,
@@ -853,6 +935,16 @@ class WorkspaceBillingService
     }
 
 
+    private function publicPlanFeatures(string $planId, array $features): array
+    {
+        return match ($planId) {
+            'free' => ['welcome credits', 'pay-as-you-go top-ups', 'single workspace'],
+            'pro' => ['team workspace', 'monthly reset credits', 'standard enrichment', 'basic analytics'],
+            'enterprise' => ['team workspace', 'monthly reset credits', 'advanced analytics', 'priority support', 'discounted top-ups'],
+            default => $features,
+        };
+    }
+
     private function maxScraperDepth(array $modules): string
     {
         $depths = array_map(fn (array $module) => strtolower((string) ($module['depth'] ?? 'basic')), $modules);
@@ -943,7 +1035,7 @@ class WorkspaceBillingService
             'monthly_ai_credits' => 0,
             'trial_scrape_credits' => 200,
             'trial_ai_credits' => 20,
-            'topup_price_multiplier' => 1.0,
+            'topup_price_multiplier' => $planId === 'free' ? 1.25 : 1.0,
         ];
     }
 

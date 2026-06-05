@@ -6,6 +6,7 @@ use App\Models\CreatorProfile;
 use App\Models\OutreachEvent;
 use App\Models\Task;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -344,19 +345,12 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
 
         $outreachSent = OutreachEvent::query()
             ->where('project_id', $projectId)
-            ->where(function (Builder $query) {
-                $query->where('event_type', 'ILIKE', '%sent%')
-                    ->orWhere('event_type', 'ILIKE', '%outreach%');
-            })
+            ->whereIn(DB::raw('UPPER(event_type)'), $this->strictOutreachSentEventTypes())
             ->count();
 
         $replies = OutreachEvent::query()
             ->where('project_id', $projectId)
-            ->where(function (Builder $query) {
-                $query->where('event_type', 'ILIKE', '%reply%')
-                    ->orWhere('event_type', 'ILIKE', '%accepted%')
-                    ->orWhere('event_type', 'ILIKE', '%deal_won%');
-            })
+            ->whereIn(DB::raw('UPPER(event_type)'), $this->strictReplyEventTypes())
             ->count();
 
         return [
@@ -988,4 +982,16 @@ return [
 
         return round((float) $normalized, 2);
     }
+
+    private function strictOutreachSentEventTypes(): array
+    {
+        return ['OUTREACH_SENT', 'MESSAGE_SENT', 'DM_SENT', 'EMAIL_SENT', 'SENT'];
+    }
+
+    private function strictReplyEventTypes(): array
+    {
+        return ['REPLY_RECEIVED', 'REPLY', 'CREATOR_REPLIED', 'ACCEPTED', 'DEAL_WON'];
+    }
+
+
 }
