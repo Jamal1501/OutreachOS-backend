@@ -331,6 +331,11 @@ class SheetDataController extends Controller
         $limit = (int) ($validated['limit'] ?? 200);
         $offset = (int) ($validated['offset'] ?? 0);
 
+        $projectForLifecycleSync = $this->projects->findByWorkbookId($sheetId);
+        if ($projectForLifecycleSync) {
+            $this->syncCreatorLifecycleFromConfirmedOutreach($projectForLifecycleSync->id);
+        }
+
         $dbItems = $this->loadCreatorsFromDatabase($sheetId, [
             'search' => $search,
             'platforms' => $platforms,
@@ -352,6 +357,7 @@ if ($dbItems !== null) {
         'message' => 'Creators fetched',
         'items' => $dbItems['items'],
         'total' => $dbItems['total'],
+        'statusCounts' => $dbItems['statusCounts'] ?? [],
     ]);
 }
 
@@ -360,6 +366,7 @@ if (Str::startsWith($sheetId, 'workspace:')) {
         'message' => 'Creators fetched',
         'items' => [],
         'total' => 0,
+        'statusCounts' => [],
     ]);
 }
 
@@ -391,6 +398,7 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
             'message' => 'Creators fetched',
             'items' => array_values(array_slice($items, $offset, $limit)),
             'total' => $total,
+            'statusCounts' => $this->creatorStatusCountsFromItems($items),
         ]);
     }
 
@@ -1512,6 +1520,14 @@ public function creatorDecisionSheet(Request $request, string $id)
             $this->applyOutreachEventRange($outreachSentQuery, $rangeStart);
             $outreachSent = $outreachSentQuery->count();
 
+            $contactedCreatorsQuery = OutreachEvent::query()
+                ->where('project_id', $projectId)
+                ->whereIn(DB::raw('UPPER(event_type)'), $this->strictOutreachSentEventTypes());
+            $this->applyOutreachEventRange($contactedCreatorsQuery, $rangeStart);
+            $creatorsContacted = (int) ($contactedCreatorsQuery
+                ->selectRaw("COUNT(DISTINCT COALESCE(creator_profile_id::text, LOWER(COALESCE(platform, '')) || ':' || LOWER(COALESCE(handle, '')))) as aggregate")
+                ->value('aggregate') ?? 0);
+
             $repliesQuery = OutreachEvent::query()
                 ->where('project_id', $projectId)
                 ->whereIn(DB::raw('UPPER(event_type)'), $this->strictReplyEventTypes());
@@ -1537,6 +1553,7 @@ public function creatorDecisionSheet(Request $request, string $id)
                 'readyForOutreach' => $readyForOutreach,
                 'tasksDueToday' => $tasksDueToday,
                 'outreachSent' => $outreachSent,
+                'creatorsContacted' => $creatorsContacted,
                 'repliesReceived' => $repliesReceived,
                 // Legacy key kept for old frontend clients. Value is customer-facing estimated
                 // outreach investment from credits, not internal provider COGS.
@@ -1563,6 +1580,7 @@ if (Str::startsWith($sheetId, 'workspace:')) {
             'readyForOutreach' => 0,
             'tasksDueToday' => 0,
             'outreachSent' => 0,
+            'creatorsContacted' => 0,
             'repliesReceived' => 0,
             'scrapeSpend' => $estimatedOutreachInvestmentUsd,
             'estimatedOutreachInvestment' => $estimatedOutreachInvestmentUsd,
@@ -1596,8 +1614,9 @@ if (Str::startsWith($sheetId, 'workspace:')) {
             'creatorsEnriched' => count(array_filter($creators, fn (array $row) => ($row['enrichmentStatus'] ?? 'pending') === 'enriched')),
             'readyForOutreach' => count(array_filter($creators, fn (array $row) => in_array((string) ($row['status'] ?? 'discovered'), ['discovered', 'enriched'], true))),
             'tasksDueToday' => count(array_filter($tasks, fn (array $row) => str_starts_with((string) ($row['Due_At'] ?? ''), $today) && !in_array(strtoupper((string) ($row['Status'] ?? '')), ['DONE', 'COMPLETED', 'SKIPPED'], true))),
-            'outreachSent' => count(array_filter($outreach, fn (array $row) => Str::contains(strtoupper((string) ($row['Event_Type'] ?? '')), ['SENT']))),
-            'repliesReceived' => count(array_filter($outreach, fn (array $row) => Str::contains(strtoupper((string) ($row['Event_Type'] ?? '')), ['REPLY', 'ACCEPTED']))),
+            'outreachSent' => count(array_filter($outreach, fn (array $row) => in_array(strtoupper((string) ($row['Event_Type'] ?? '')), $this->strictOutreachSentEventTypes(), true))),
+            'creatorsContacted' => count(array_unique(array_map(fn (array $row) => strtolower((string) ($row['Platform'] ?? '') . ':' . (string) ($row['Handle'] ?? '')), array_filter($outreach, fn (array $row) => in_array(strtoupper((string) ($row['Event_Type'] ?? '')), $this->strictOutreachSentEventTypes(), true))))),
+            'repliesReceived' => count(array_filter($outreach, fn (array $row) => in_array(strtoupper((string) ($row['Event_Type'] ?? '')), $this->strictReplyEventTypes(), true))),
             'scrapeSpend' => $estimatedOutreachInvestmentUsd,
             'estimatedOutreachInvestment' => $estimatedOutreachInvestmentUsd,
             'estimatedCreditSpendUsd' => $estimatedCreditSpendUsd,
@@ -1640,12 +1659,30 @@ if (Str::startsWith($sheetId, 'workspace:')) {
 
     private function strictOutreachSentEventTypes(): array
     {
-        return ['OUTREACH_SENT', 'MESSAGE_SENT', 'DM_SENT', 'EMAIL_SENT', 'SENT'];
+        return [
+            'OUTREACH_SENT',
+            'OUTREACH_SENT_CONFIRMED',
+            'MESSAGE_SENT',
+            'DM_SENT',
+            'DM_SENT_CONFIRMED',
+            'FOLLOWUP_SENT_CONFIRMED',
+            'EMAIL_SENT',
+            'SENT',
+        ];
     }
 
     private function strictReplyEventTypes(): array
     {
-        return ['REPLY_RECEIVED', 'REPLY', 'CREATOR_REPLIED', 'ACCEPTED', 'DEAL_WON'];
+        return [
+            'REPLY_RECEIVED',
+            'REPLY',
+            'CREATOR_REPLIED',
+            'DM_REPLY_RECEIVED',
+            'FOLLOWUP_REPLY_RECEIVED',
+            'EMAIL_REPLY_RECEIVED',
+            'ACCEPTED',
+            'DEAL_WON',
+        ];
     }
 
     private function mergeSelectedCreatorsIntoDatabase(int $projectId, string $platform, array $queueIds, array $selectedCreators): array
@@ -2179,8 +2216,10 @@ return [
         }
 
         $total = (clone $query)->count();
+        $statusCounts = $this->creatorStatusCountsForProject($project->id);
+
         if ($total === 0) {
-            return ['items' => [], 'total' => 0];
+            return ['items' => [], 'total' => 0, 'statusCounts' => $statusCounts];
         }
 
         $profilesQuery = $this->applyCreatorProfileSort($query, $sort, $direction);
@@ -2221,7 +2260,65 @@ return [
             $items = array_values(array_slice($items, $offset, $limit));
         }
 
-        return ['items' => $items, 'total' => $total];
+        return ['items' => $items, 'total' => $total, 'statusCounts' => $statusCounts];
+    }
+
+    private function creatorStatusCountsForProject(int $projectId): array
+    {
+        return CreatorProfile::query()
+            ->where('project_id', $projectId)
+            ->selectRaw("COALESCE(NULLIF(lifecycle_state, ''), 'discovered') as state, COUNT(*) as aggregate_count")
+            ->groupByRaw("COALESCE(NULLIF(lifecycle_state, ''), 'discovered')")
+            ->pluck('aggregate_count', 'state')
+            ->map(fn ($value) => (int) $value)
+            ->all();
+    }
+
+    private function creatorStatusCountsFromItems(array $items): array
+    {
+        $counts = [];
+        foreach ($items as $item) {
+            $status = (string) ($item['status'] ?? 'discovered');
+            $counts[$status] = ($counts[$status] ?? 0) + 1;
+        }
+
+        return $counts;
+    }
+
+    private function syncCreatorLifecycleFromConfirmedOutreach(int $projectId): void
+    {
+        $protectedStates = ['replied', 'negotiating', 'accepted', 'declined', 'won', 'lost', 'archived'];
+
+        $latestSends = OutreachEvent::query()
+            ->where('project_id', $projectId)
+            ->whereNotNull('creator_profile_id')
+            ->whereIn(DB::raw('UPPER(event_type)'), $this->strictOutreachSentEventTypes())
+            ->selectRaw('creator_profile_id, MAX(COALESCE(sent_at, created_at)) as last_sent_at')
+            ->groupBy('creator_profile_id')
+            ->get();
+
+        foreach ($latestSends as $row) {
+            $profile = CreatorProfile::query()
+                ->where('project_id', $projectId)
+                ->where('id', $row->creator_profile_id)
+                ->where(function ($query) use ($protectedStates) {
+                    $query->whereNotIn('lifecycle_state', $protectedStates)
+                        ->orWhereNull('lifecycle_state');
+                })
+                ->first();
+
+            if (!$profile) {
+                continue;
+            }
+
+            $sentAt = $row->last_sent_at ?: now();
+            $profile->status = 'CONTACTED';
+            $profile->lifecycle_state = 'contacted';
+            $profile->dm_sent_at = $profile->dm_sent_at ?: $sentAt;
+            $profile->last_outreach_at = $profile->last_outreach_at ?: $sentAt;
+            $profile->follow_up_needed = true;
+            $profile->save();
+        }
     }
 
     private function attachDuplicateCandidatesToCreatorItems(array $items): array

@@ -985,12 +985,30 @@ return [
 
     private function strictOutreachSentEventTypes(): array
     {
-        return ['OUTREACH_SENT', 'MESSAGE_SENT', 'DM_SENT', 'EMAIL_SENT', 'SENT'];
+        return [
+            'OUTREACH_SENT',
+            'OUTREACH_SENT_CONFIRMED',
+            'MESSAGE_SENT',
+            'DM_SENT',
+            'DM_SENT_CONFIRMED',
+            'FOLLOWUP_SENT_CONFIRMED',
+            'EMAIL_SENT',
+            'SENT',
+        ];
     }
 
     private function strictReplyEventTypes(): array
     {
-        return ['REPLY_RECEIVED', 'REPLY', 'CREATOR_REPLIED', 'ACCEPTED', 'DEAL_WON'];
+        return [
+            'REPLY_RECEIVED',
+            'REPLY',
+            'CREATOR_REPLIED',
+            'DM_REPLY_RECEIVED',
+            'FOLLOWUP_REPLY_RECEIVED',
+            'EMAIL_REPLY_RECEIVED',
+            'ACCEPTED',
+            'DEAL_WON',
+        ];
     }
 
 

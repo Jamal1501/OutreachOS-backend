@@ -68,7 +68,7 @@ class OutreachLogService
                 $profile = $this->findCreatorProfile($project->id, $record['Platform'], $record['Handle'], $payload, $task);
                 $template = $this->findMessageTemplate($project->id, (string) $record['Template_ID']);
 
-                OutreachEvent::updateOrCreate(
+                $event = OutreachEvent::updateOrCreate(
                     [
                         'project_id' => $project->id,
                         'external_event_key' => (string) $record['Event_ID'],
@@ -92,6 +92,10 @@ class OutreachLogService
                         ],
                     ],
                 );
+
+                if ($profile) {
+                    $this->applyOutreachEventToCreatorProfile($profile, $event);
+                }
             }
         }
 
@@ -197,6 +201,75 @@ class OutreachLogService
 
         return $query->first();
     }
+
+    private function applyOutreachEventToCreatorProfile(CreatorProfile $profile, OutreachEvent $event): void
+    {
+        $eventType = Str::upper(trim((string) $event->event_type));
+        $eventAt = $event->sent_at ?: now();
+        $channel = trim((string) ($event->channel ?: $event->platform ?: $profile->platform ?: ''));
+        $url = trim((string) ($event->url ?: ''));
+        $advancedStates = ['replied', 'negotiating', 'accepted', 'declined', 'won', 'lost', 'archived'];
+
+        if (in_array($eventType, $this->strictOutreachSentEventTypes(), true)) {
+            if (!in_array((string) $profile->lifecycle_state, $advancedStates, true)) {
+                $profile->status = 'CONTACTED';
+                $profile->lifecycle_state = 'contacted';
+                $profile->follow_up_needed = true;
+            }
+
+            $profile->dm_sent_at = $profile->dm_sent_at ?: $eventAt;
+            $profile->last_outreach_at = $eventAt;
+            $profile->last_outreach_channel = $channel ?: $profile->last_outreach_channel;
+            $profile->conversation_channel = $channel ?: $profile->conversation_channel;
+            if ($url !== '') {
+                $profile->conversation_url = $url;
+            }
+        } elseif (in_array($eventType, $this->strictReplyEventTypes(), true)) {
+            if (!in_array((string) $profile->lifecycle_state, ['accepted', 'declined', 'won', 'lost', 'archived'], true)) {
+                $profile->status = 'REPLIED';
+                $profile->lifecycle_state = 'replied';
+            }
+            $profile->responded_at = $profile->responded_at ?: $eventAt;
+            $profile->follow_up_needed = false;
+            $profile->conversation_channel = $channel ?: $profile->conversation_channel;
+            if ($url !== '') {
+                $profile->conversation_url = $url;
+            }
+        }
+
+        if ($profile->isDirty()) {
+            $profile->save();
+        }
+    }
+
+    private function strictOutreachSentEventTypes(): array
+    {
+        return [
+            'OUTREACH_SENT',
+            'OUTREACH_SENT_CONFIRMED',
+            'MESSAGE_SENT',
+            'DM_SENT',
+            'DM_SENT_CONFIRMED',
+            'FOLLOWUP_SENT_CONFIRMED',
+            'EMAIL_SENT',
+            'SENT',
+        ];
+    }
+
+    private function strictReplyEventTypes(): array
+    {
+        return [
+            'REPLY_RECEIVED',
+            'REPLY',
+            'CREATOR_REPLIED',
+            'DM_REPLY_RECEIVED',
+            'FOLLOWUP_REPLY_RECEIVED',
+            'EMAIL_REPLY_RECEIVED',
+            'ACCEPTED',
+            'DEAL_WON',
+        ];
+    }
+
     private function isUuid(string $value): bool
     {
         return (bool) preg_match(
