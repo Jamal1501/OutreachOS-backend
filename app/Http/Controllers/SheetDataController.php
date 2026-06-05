@@ -8,6 +8,7 @@ use App\Models\Task;
 use App\Models\OutreachEvent;
 use App\Models\DiscoveryItem;
 use App\Models\MessageTemplate;
+use App\Services\AnalyticsSummaryService;
 use App\Services\CreatorLifecycleService;
 use App\Services\CreatorLocationInferenceService;
 use App\Services\CreatorMergeService;
@@ -46,6 +47,7 @@ class SheetDataController extends Controller
         private WorkspaceContextService $workspaceContext,
         private WorkspaceBillingService $billing,
         private CreatorLocationInferenceService $locationInference,
+        private AnalyticsSummaryService $analytics,
     ) {
     }
 
@@ -333,7 +335,7 @@ class SheetDataController extends Controller
 
         $projectForLifecycleSync = $this->projects->findByWorkbookId($sheetId);
         if ($projectForLifecycleSync) {
-            $this->syncCreatorLifecycleFromConfirmedOutreach($projectForLifecycleSync->id);
+            $this->analytics->reconcileProjectLifecycle((int) $projectForLifecycleSync->id);
         }
 
         $dbItems = $this->loadCreatorsFromDatabase($sheetId, [
@@ -1460,6 +1462,62 @@ public function creatorDecisionSheet(Request $request, string $id)
     }
 
 
+    public function analyticsSummary(Request $request)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+            'range' => ['nullable', Rule::in(['7d', '30d', 'all'])],
+        ]);
+
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
+        $workspaceId = (string) $request->attributes->get('workspace_id');
+        $summary = $this->analytics->summary($sheetId, $workspaceId, (string) ($validated['range'] ?? '30d'));
+
+        return response()->json([
+            'message' => 'Analytics summary fetched',
+            'summary' => $summary,
+            'metrics' => $summary['metrics'] ?? [],
+        ]);
+    }
+
+    public function captureRoiEvent(Request $request)
+    {
+        $validated = $request->validate([
+            'projectId' => ['required', 'string', 'max:255'],
+            'eventType' => ['required', 'string', 'max:80'],
+            'creatorHandle' => ['nullable', 'string', 'max:255'],
+            'platform' => ['nullable', 'string', 'max:40'],
+            'amount' => ['nullable', 'numeric'],
+            'metadata' => ['nullable', 'array'],
+        ]);
+
+        $workspaceId = (string) $request->attributes->get('workspace_id');
+        $eventId = (string) Str::uuid();
+        $metadata = array_merge((array) ($validated['metadata'] ?? []), [
+            'manual' => (bool) data_get($validated, 'metadata.manual', true),
+            'source' => data_get($validated, 'metadata.source', 'server_roi_capture'),
+            'captured_server_side' => true,
+        ]);
+
+        DB::table('roi_events')->insert([
+            'id' => $eventId,
+            'project_id' => $validated['projectId'],
+            'workspace_id' => $workspaceId !== '' ? $workspaceId : null,
+            'event_type' => $validated['eventType'],
+            'creator_handle' => $validated['creatorHandle'] ?? null,
+            'platform' => $validated['platform'] ?? null,
+            'amount' => $validated['amount'] ?? null,
+            'metadata' => json_encode($metadata),
+            'event_date' => now()->toDateString(),
+            'created_at' => now(),
+        ]);
+
+        return response()->json([
+            'message' => 'ROI event captured',
+            'eventId' => $eventId,
+        ], 201);
+    }
+
     public function dashboardMetrics(Request $request)
     {
         $validated = $request->validate([
@@ -1469,165 +1527,12 @@ public function creatorDecisionSheet(Request $request, string $id)
 
         $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $workspaceId = (string) $request->attributes->get('workspace_id');
-        $rangeStart = $this->dashboardRangeStart((string) ($validated['range'] ?? '30d'));
-        $billingUsage = $workspaceId !== ''
-            ? $this->billing->customerUsageEstimate($workspaceId, $rangeStart)
-            : [
-                'consumedScrapeCredits' => 0,
-                'consumedAiCredits' => 0,
-                'estimatedCreditSpendUsd' => 0,
-                'estimatedOutreachInvestmentUsd' => 0,
-                'customerCreditValue' => null,
-            ];
-        $consumedScrapeCredits = (int) (($billingUsage['consumedScrapeCredits'] ?? 0));
-        $consumedAiCredits = (int) (($billingUsage['consumedAiCredits'] ?? 0));
-        $estimatedCreditSpendUsd = round((float) (($billingUsage['estimatedCreditSpendUsd'] ?? 0)), 2);
-        $estimatedOutreachInvestmentUsd = round((float) (($billingUsage['estimatedOutreachInvestmentUsd'] ?? $estimatedCreditSpendUsd)), 2);
-        $project = $this->projects->findByWorkbookId($sheetId);
-
-        if ($project) {
-            $projectId = $project->id;
-            $today = now()->toDateString();
-
-            $creatorsEnriched = CreatorProfile::query()
-                ->where('project_id', $projectId)
-                ->count();
-
-            $readyForOutreach = CreatorProfile::query()
-                ->where('project_id', $projectId)
-                ->where(function ($query) {
-                    $query->whereIn('lifecycle_state', ['approved_for_outreach', 'queued'])
-                        ->orWhere(function ($nested) {
-                            $nested->where('lifecycle_state', 'enriched')
-                                ->where('value_score', '>=', 55);
-                        })
-                        ->orWhere(function ($nested) {
-                            $nested->whereNull('lifecycle_state')
-                                ->whereIn('status', ['APPROVED_FOR_OUTREACH', 'QUEUED']);
-                        });
-                })
-                ->count();
-
-            $tasksDueToday = Task::query()
-                ->where('project_id', $projectId)
-                ->whereDate('due_at', $today)
-                ->whereNotIn(DB::raw("UPPER(COALESCE(status, 'PENDING'))"), ['DONE', 'COMPLETED', 'SKIPPED'])
-                ->count();
-
-            $outreachSentQuery = OutreachEvent::query()
-                ->where('project_id', $projectId)
-                ->whereIn(DB::raw('UPPER(event_type)'), $this->strictOutreachSentEventTypes());
-            $this->applyOutreachEventRange($outreachSentQuery, $rangeStart);
-            $outreachSent = $outreachSentQuery->count();
-
-            $contactedCreatorsQuery = OutreachEvent::query()
-                ->where('project_id', $projectId)
-                ->whereIn(DB::raw('UPPER(event_type)'), $this->strictOutreachSentEventTypes());
-            $this->applyOutreachEventRange($contactedCreatorsQuery, $rangeStart);
-            $creatorsContacted = (int) ($contactedCreatorsQuery
-                ->selectRaw("COUNT(DISTINCT COALESCE(creator_profile_id::text, LOWER(COALESCE(platform, '')) || ':' || LOWER(COALESCE(handle, '')))) as aggregate")
-                ->value('aggregate') ?? 0);
-
-            $repliesQuery = OutreachEvent::query()
-                ->where('project_id', $projectId)
-                ->whereIn(DB::raw('UPPER(event_type)'), $this->strictReplyEventTypes());
-            $this->applyOutreachEventRange($repliesQuery, $rangeStart);
-            $repliesReceived = $repliesQuery->count();
-
-            $discoveredCount = DiscoveryItem::query()
-                ->where('project_id', $projectId)
-                ->selectRaw("
-                    COUNT(DISTINCT COALESCE(
-                        NULLIF(duplicate_key, ''),
-                        NULLIF(handle, ''),
-                        NULLIF(username, ''),
-                        NULLIF(post_url, ''),
-                        id::text
-                    )) as aggregate
-                ")
-                ->value('aggregate') ?? 0;
-
-            $metrics = [
-                'creatorsDiscovered' => $discoveredCount,
-                'creatorsEnriched' => $creatorsEnriched,
-                'readyForOutreach' => $readyForOutreach,
-                'tasksDueToday' => $tasksDueToday,
-                'outreachSent' => $outreachSent,
-                'creatorsContacted' => $creatorsContacted,
-                'repliesReceived' => $repliesReceived,
-                // Legacy key kept for old frontend clients. Value is customer-facing estimated
-                // outreach investment from credits, not internal provider COGS.
-                'scrapeSpend' => $estimatedOutreachInvestmentUsd,
-                'estimatedOutreachInvestment' => $estimatedOutreachInvestmentUsd,
-                'estimatedCreditSpendUsd' => $estimatedCreditSpendUsd,
-                'scrapeCreditsUsed' => $consumedScrapeCredits,
-                'aiCreditsUsed' => $consumedAiCredits,
-                'customerCreditValue' => $billingUsage['customerCreditValue'] ?? null,
-            ];
-
-            return response()->json([
-                'message' => 'Dashboard metrics fetched',
-                'metrics' => $metrics,
-            ]);
-        }
-
-if (Str::startsWith($sheetId, 'workspace:')) {
-    return response()->json([
-        'message' => 'Dashboard metrics fetched',
-        'metrics' => [
-            'creatorsDiscovered' => 0,
-            'creatorsEnriched' => 0,
-            'readyForOutreach' => 0,
-            'tasksDueToday' => 0,
-            'outreachSent' => 0,
-            'creatorsContacted' => 0,
-            'repliesReceived' => 0,
-            'scrapeSpend' => $estimatedOutreachInvestmentUsd,
-            'estimatedOutreachInvestment' => $estimatedOutreachInvestmentUsd,
-            'estimatedCreditSpendUsd' => $estimatedCreditSpendUsd,
-            'scrapeCreditsUsed' => $consumedScrapeCredits,
-            'aiCreditsUsed' => $consumedAiCredits,
-            'customerCreditValue' => $billingUsage['customerCreditValue'] ?? null,
-        ],
-    ]);
-}
-        
-        $creatorRows = $this->sheets->getRows($sheetId, 'Creators_CRM');
-        $creators = array_map(fn (array $row) => $this->normalizeCreatorRow($row), $creatorRows);
-        $tasks = $this->sheets->getRows($sheetId, 'Task_Queue');
-        $outreach = $this->sheets->getRows($sheetId, 'Outreach_Log');
-        $discoveredHandles = [];
-
-        foreach ([['instagram', 'Instagram_Posts_Raw', 'ownerUsername'], ['tiktok', 'TikTok_Posts_Raw', 'authorMeta.name']] as [$platformKey, $sheetName, $handleKey]) {
-            foreach ($this->sheets->getRows($sheetId, $sheetName) as $row) {
-                $handle = strtolower(trim((string) ($row[$handleKey] ?? '')));
-                if ($handle === '') {
-                    continue;
-                }
-                $discoveredHandles[$platformKey . '|' . $handle] = true;
-            }
-        }
-
-        $today = now()->toDateString();
-        $metrics = [
-            'creatorsDiscovered' => count($discoveredHandles),
-            'creatorsEnriched' => count(array_filter($creators, fn (array $row) => ($row['enrichmentStatus'] ?? 'pending') === 'enriched')),
-            'readyForOutreach' => count(array_filter($creators, fn (array $row) => in_array((string) ($row['status'] ?? 'discovered'), ['discovered', 'enriched'], true))),
-            'tasksDueToday' => count(array_filter($tasks, fn (array $row) => str_starts_with((string) ($row['Due_At'] ?? ''), $today) && !in_array(strtoupper((string) ($row['Status'] ?? '')), ['DONE', 'COMPLETED', 'SKIPPED'], true))),
-            'outreachSent' => count(array_filter($outreach, fn (array $row) => in_array(strtoupper((string) ($row['Event_Type'] ?? '')), $this->strictOutreachSentEventTypes(), true))),
-            'creatorsContacted' => count(array_unique(array_map(fn (array $row) => strtolower((string) ($row['Platform'] ?? '') . ':' . (string) ($row['Handle'] ?? '')), array_filter($outreach, fn (array $row) => in_array(strtoupper((string) ($row['Event_Type'] ?? '')), $this->strictOutreachSentEventTypes(), true))))),
-            'repliesReceived' => count(array_filter($outreach, fn (array $row) => in_array(strtoupper((string) ($row['Event_Type'] ?? '')), $this->strictReplyEventTypes(), true))),
-            'scrapeSpend' => $estimatedOutreachInvestmentUsd,
-            'estimatedOutreachInvestment' => $estimatedOutreachInvestmentUsd,
-            'estimatedCreditSpendUsd' => $estimatedCreditSpendUsd,
-            'scrapeCreditsUsed' => $consumedScrapeCredits,
-            'aiCreditsUsed' => $consumedAiCredits,
-            'customerCreditValue' => $billingUsage['customerCreditValue'] ?? null,
-        ];
+        $summary = $this->analytics->summary($sheetId, $workspaceId, (string) ($validated['range'] ?? '30d'));
 
         return response()->json([
             'message' => 'Dashboard metrics fetched',
-            'metrics' => $metrics,
+            'metrics' => $summary['metrics'] ?? [],
+            'summary' => $summary,
         ]);
     }
 

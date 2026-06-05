@@ -45,6 +45,7 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::post('/crm/link-profiles', [SheetDataController::class, 'linkProfiles']);
 
     Route::post('/outreach/log', [ApifyController::class, 'logOutreachEvent']);
+    Route::post('/roi/events', [SheetDataController::class, 'captureRoiEvent']);
 
     Route::get('/discovery/list', [SheetDataController::class, 'discoveryList']);
     Route::post('/discovery/extract-urls', [SheetDataController::class, 'extractUrls'])->middleware('throttle:expensive');
@@ -58,6 +59,7 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
 
     Route::get('/enrichment/queue', [SheetDataController::class, 'enrichmentQueue']);
     Route::get('/dashboard/metrics', [SheetDataController::class, 'dashboardMetrics']);
+    Route::get('/analytics/summary', [SheetDataController::class, 'analyticsSummary']);
     Route::get('/operator/view', [SheetDataController::class, 'operatorView']);
     Route::get('/creators/{id}/decision-sheet', [SheetDataController::class, 'creatorDecisionSheet']);
     Route::post('/creators/{id}/transition', [SheetDataController::class, 'transitionCreator']);

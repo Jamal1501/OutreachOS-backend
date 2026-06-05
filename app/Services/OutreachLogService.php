@@ -255,6 +255,7 @@ class OutreachLogService
             'DM_SENT_CONFIRMED',
             'FOLLOWUP_SENT_CONFIRMED',
             'EMAIL_SENT',
+            'EMAIL_SENT_CONFIRMED',
             'SENT',
         ];
     }
