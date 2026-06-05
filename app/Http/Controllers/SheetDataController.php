@@ -2287,31 +2287,23 @@ return [
 
     private function syncCreatorLifecycleFromConfirmedOutreach(int $projectId): void
     {
-        $protectedStates = ['replied', 'negotiating', 'accepted', 'declined', 'won', 'lost', 'archived'];
+        $advancedStates = ['replied', 'negotiating', 'accepted', 'declined', 'won', 'lost', 'archived'];
+        $terminalStates = ['accepted', 'declined', 'won', 'lost', 'archived'];
 
         $latestSends = OutreachEvent::query()
             ->where('project_id', $projectId)
-            ->whereNotNull('creator_profile_id')
             ->whereIn(DB::raw('UPPER(event_type)'), $this->strictOutreachSentEventTypes())
-            ->selectRaw('creator_profile_id, MAX(COALESCE(sent_at, created_at)) as last_sent_at')
-            ->groupBy('creator_profile_id')
+            ->selectRaw("creator_profile_id, LOWER(COALESCE(platform, '')) as event_platform, LOWER(TRIM(LEADING '@' FROM COALESCE(handle, ''))) as event_handle, MAX(COALESCE(sent_at, created_at)) as last_event_at")
+            ->groupBy('creator_profile_id', DB::raw("LOWER(COALESCE(platform, ''))"), DB::raw("LOWER(TRIM(LEADING '@' FROM COALESCE(handle, '')))"))
             ->get();
 
         foreach ($latestSends as $row) {
-            $profile = CreatorProfile::query()
-                ->where('project_id', $projectId)
-                ->where('id', $row->creator_profile_id)
-                ->where(function ($query) use ($protectedStates) {
-                    $query->whereNotIn('lifecycle_state', $protectedStates)
-                        ->orWhereNull('lifecycle_state');
-                })
-                ->first();
-
-            if (!$profile) {
+            $profile = $this->findCreatorProfileForOutreachEvent($projectId, $row);
+            if (!$profile || in_array((string) $profile->lifecycle_state, $advancedStates, true)) {
                 continue;
             }
 
-            $sentAt = $row->last_sent_at ?: now();
+            $sentAt = $row->last_event_at ?: now();
             $profile->status = 'CONTACTED';
             $profile->lifecycle_state = 'contacted';
             $profile->dm_sent_at = $profile->dm_sent_at ?: $sentAt;
@@ -2319,6 +2311,54 @@ return [
             $profile->follow_up_needed = true;
             $profile->save();
         }
+
+        $latestReplies = OutreachEvent::query()
+            ->where('project_id', $projectId)
+            ->whereIn(DB::raw('UPPER(event_type)'), $this->strictReplyEventTypes())
+            ->selectRaw("creator_profile_id, LOWER(COALESCE(platform, '')) as event_platform, LOWER(TRIM(LEADING '@' FROM COALESCE(handle, ''))) as event_handle, MAX(COALESCE(sent_at, created_at)) as last_event_at")
+            ->groupBy('creator_profile_id', DB::raw("LOWER(COALESCE(platform, ''))"), DB::raw("LOWER(TRIM(LEADING '@' FROM COALESCE(handle, '')))"))
+            ->get();
+
+        foreach ($latestReplies as $row) {
+            $profile = $this->findCreatorProfileForOutreachEvent($projectId, $row);
+            if (!$profile || in_array((string) $profile->lifecycle_state, $terminalStates, true)) {
+                continue;
+            }
+
+            $replyAt = $row->last_event_at ?: now();
+            $profile->status = 'REPLIED';
+            $profile->lifecycle_state = 'replied';
+            $profile->responded_at = $profile->responded_at ?: $replyAt;
+            $profile->follow_up_needed = false;
+            $profile->save();
+        }
+    }
+
+    private function findCreatorProfileForOutreachEvent(int $projectId, object $row): ?CreatorProfile
+    {
+        $profileId = (string) ($row->creator_profile_id ?? '');
+        if ($profileId !== '') {
+            $profile = CreatorProfile::query()
+                ->where('project_id', $projectId)
+                ->where('id', $profileId)
+                ->first();
+
+            if ($profile) {
+                return $profile;
+            }
+        }
+
+        $platform = strtolower(trim((string) ($row->event_platform ?? '')));
+        $handle = strtolower(ltrim(trim((string) ($row->event_handle ?? '')), '@'));
+        if ($platform === '' || $handle === '') {
+            return null;
+        }
+
+        return CreatorProfile::query()
+            ->where('project_id', $projectId)
+            ->whereRaw("LOWER(COALESCE(platform, '')) = ?", [$platform])
+            ->whereRaw("LOWER(TRIM(LEADING '@' FROM COALESCE(handle, ''))) = ?", [$handle])
+            ->first();
     }
 
     private function attachDuplicateCandidatesToCreatorItems(array $items): array

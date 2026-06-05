@@ -166,10 +166,13 @@ class OutreachLogService
             return null;
         }
 
+        $normalizedHandle = ltrim(Str::lower($handle), '@');
+        $normalizedPlatform = Str::lower($platform);
+
         return CreatorProfile::query()
             ->where('project_id', $projectId)
-            ->where('platform', $platform)
-            ->where('handle', $handle)
+            ->whereRaw("LOWER(COALESCE(platform, '')) = ?", [$normalizedPlatform])
+            ->whereRaw("LOWER(TRIM(LEADING '@' FROM COALESCE(handle, ''))) = ?", [$normalizedHandle])
             ->first();
     }
 
