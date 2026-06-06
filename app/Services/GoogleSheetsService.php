@@ -5,11 +5,11 @@ namespace App\Services;
 use Illuminate\Support\Arr;
 
 /**
- * Google Sheets runtime access has been intentionally disabled.
+ * External spreadsheet runtime access has been intentionally disabled.
  *
  * The app is now database/workspace-first. This class remains only as a
  * compatibility shim so older controller/service method signatures keep
- * working while all runtime reads/writes avoid Google Sheets entirely.
+ * working while all runtime reads/writes use the application database.
  */
 class GoogleSheetsService
 {
@@ -26,7 +26,7 @@ class GoogleSheetsService
     public function appendRows(string $sheetId, string $sheetName, array $rows): int
     {
         // Return the intended count so legacy import endpoints do not throw,
-        // but do not write to Google Sheets.
+        // but do not write to external spreadsheets.
         return count($rows);
     }
 

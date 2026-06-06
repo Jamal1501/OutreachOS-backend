@@ -11,10 +11,6 @@ return [
         'https://socialcore.app',
         'https://www.socialcore.app',
 
-        'https://lovable.dev',
-        'https://croos.lovable.app',
-        'https://loveframes.shop',
-        'https://www.loveframes.shop',
 
         'http://127.0.0.1:8080',
         'http://localhost:8080',
@@ -22,8 +18,6 @@ return [
     ], $extraAllowedOrigins))),
 
     'allowed_origins_patterns' => [
-        '#^https://[a-z0-9-]+\.lovable\.app$#',
-        '#^https://[a-z0-9-]+\.lovableproject\.com$#',
         '#^https://[a-z0-9-]+\.onrender\.com$#',
         '#^https://[a-z0-9-]+\.vercel\.app$#',
         '#^http://localhost(:\d+)?$#',

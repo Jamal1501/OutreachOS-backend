@@ -357,7 +357,7 @@ public function getDatasetResults(Request $request, string $datasetId)
         $this->sheets->appendRows($sheetId, $validated['sheetName'], $rows);
 
         return response()->json([
-            'message' => 'Dataset import processed using database-first runtime; Google Sheets writes are disabled',
+            'message' => 'Dataset import processed using database-first runtime; external spreadsheet writes are disabled',
             'datasetId' => $validated['datasetId'],
             'sheetId' => $sheetId,
             'sheetName' => $validated['sheetName'],

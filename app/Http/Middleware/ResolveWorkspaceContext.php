@@ -79,10 +79,10 @@ class ResolveWorkspaceContext
         }
 
         $settings = (array) ($workspace->settings ?? []);
-        $workbookId = trim((string) ($settings['workbookId'] ?? ''));
+        $workbookId = trim((string) ($settings['workspaceDataKey'] ?? $settings['workbookId'] ?? ''));
 
         if ($workbookId === '') {
-            $workbookId = 'workspace:' . $workspace->id;
+            $workbookId = 'workspace:' . ($workspace->slug ?: $workspace->id);
         }
 
         $request->attributes->set('workspace', $workspace);

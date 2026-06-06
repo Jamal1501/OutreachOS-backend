@@ -4,6 +4,7 @@ use App\Http\Controllers\AiController;
 use App\Http\Controllers\ApifyController;
 use App\Http\Controllers\BillingController;
 use App\Http\Controllers\SheetDataController;
+use App\Http\Controllers\WorkspaceController;
 use App\Http\Controllers\PipelineController;
 use App\Http\Controllers\MessagePerformanceController;
 use Illuminate\Support\Facades\Route;
@@ -18,6 +19,12 @@ Route::get('/health', function () {
 Route::get('/avatar-proxy', [SheetDataController::class, 'avatarProxy'])->middleware('throttle:avatar');
 Route::post('/billing/webhooks/stripe', [BillingController::class, 'stripeWebhook'])->middleware('throttle:60,1');
 
+
+Route::middleware(['api.auth', 'throttle:api'])->group(function () {
+    Route::get('/workspaces/bootstrap', [WorkspaceController::class, 'bootstrap']);
+    Route::post('/workspaces', [WorkspaceController::class, 'create']);
+});
+
 Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(function () {
     Route::get('/auth-check', function () {
         return response()->json([
@@ -27,6 +34,10 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
             'legacyAccess' => (bool) request()->attributes->get('legacy_api_access'),
         ]);
     });
+
+    Route::put('/workspaces/settings', [WorkspaceController::class, 'updateSettings'])->middleware('workspace.role:owner,admin');
+    Route::post('/workspaces/invitations', [WorkspaceController::class, 'invite'])->middleware('workspace.role:owner,admin');
+    Route::delete('/workspaces/members/{memberId}', [WorkspaceController::class, 'removeMember'])->middleware('workspace.role:owner,admin');
 
     Route::get('/apify/modules', [ApifyController::class, 'modules']);
     Route::middleware('throttle:expensive')->group(function () {

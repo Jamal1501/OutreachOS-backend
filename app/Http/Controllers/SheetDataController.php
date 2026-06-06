@@ -957,7 +957,7 @@ public function mergeSelectedQueueToCrm(Request $request)
         ]);
     }
 
-    // Legacy Google Sheets fallback
+    // Legacy spreadsheet fallback
     $queueSheet = $this->queueSheetForPlatform($platform);
     $sourceSheet = $this->enrichedSheetForPlatform($platform);
 
@@ -1240,7 +1240,7 @@ $items[] = [
         ]);
     }
 
-    // Legacy Google Sheets fallback
+    // Legacy spreadsheet fallback
     $items = [];
     foreach ($platforms as $platformName) {
         $queueSheet = $this->queueSheetForPlatform($platformName);

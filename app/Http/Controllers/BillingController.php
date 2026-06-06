@@ -129,7 +129,6 @@ class BillingController extends Controller
         $allowedHosts = array_values(array_unique(array_merge([
             'socialcore.app',
             'www.socialcore.app',
-            'croos.lovable.app',
             'localhost',
             '127.0.0.1',
         ], array_map('strtolower', $configured))));
@@ -139,6 +138,6 @@ class BillingController extends Controller
         }
 
         // Temporary preview-host allowance. Replace with explicit hosts in BILLING_ALLOWED_REDIRECT_HOSTS before scale.
-        return Str::endsWith($host, '.vercel.app') || Str::endsWith($host, '.lovable.app');
+        return Str::endsWith($host, '.vercel.app');
     }
 }
