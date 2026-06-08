@@ -23,6 +23,8 @@ public function createSubscriptionCheckoutSession(
     string $cancelUrl
 ): array {
     $config = $this->billing->getPlanCheckoutConfig($workspaceId, $planId);
+    [$currentSubscription] = $this->billing->ensureWorkspaceBilling($workspaceId);
+    $billingAccountId = (string) ($currentSubscription->billing_account_id ?: '');
     $customerId = $this->ensureStripeCustomer($workspaceId);
 
     $trialDays = 0;
@@ -41,6 +43,7 @@ public function createSubscriptionCheckoutSession(
         'metadata' => [
             'billing_type' => 'subscription_checkout',
             'workspace_id' => $workspaceId,
+            'billing_account_id' => $billingAccountId,
             'plan_id'      => $config['id'],
         ],
         'subscription_data' => [
@@ -95,6 +98,8 @@ public function createSubscriptionCheckoutSession(
     public function createTopupCheckoutSession(string $workspaceId, string $packageId, string $successUrl, string $cancelUrl): array
     {
         $package = $this->billing->getCreditPackageConfig($workspaceId, $packageId);
+        [$currentSubscription] = $this->billing->ensureWorkspaceBilling($workspaceId);
+        $billingAccountId = (string) ($currentSubscription->billing_account_id ?: '');
         $customerId = $this->ensureStripeCustomer($workspaceId);
 
         $response = $this->request('POST', '/checkout/sessions', [
@@ -107,6 +112,7 @@ public function createSubscriptionCheckoutSession(
             'metadata' => [
                 'billing_type' => 'credit_topup',
                 'workspace_id' => $workspaceId,
+                'billing_account_id' => $billingAccountId,
                 'credit_package_id' => $package['id'],
             ],
             'payment_intent_data' => [
@@ -246,6 +252,7 @@ public function createSubscriptionCheckoutSession(
     {
         $metadata = (array) ($subscription['metadata'] ?? []);
         $workspaceId = trim((string) ($metadata['workspace_id'] ?? ''));
+        $billingAccountId = trim((string) ($metadata['billing_account_id'] ?? ''));
         $planId = trim((string) ($metadata['plan_id'] ?? ''));
         $subscriptionId = trim((string) ($subscription['id'] ?? ''));
         $customerId = trim((string) ($subscription['customer'] ?? ''));
@@ -260,13 +267,14 @@ public function createSubscriptionCheckoutSession(
         $trialEndsAt = $this->timestampToCarbon($subscription['trial_end'] ?? null);
         $planId = strtolower($planId);
 
-        DB::transaction(function () use ($workspaceId, $planId, $status, $customerId, $subscriptionId, $periodStart, $periodEnd, $trialEndsAt) {
-            $record = WorkspaceSubscription::query()->where('workspace_id', $workspaceId)->lockForUpdate()->first();
-            if (!$record) {
-                $this->billing->ensureWorkspaceBilling($workspaceId);
-                $record = WorkspaceSubscription::query()->where('workspace_id', $workspaceId)->lockForUpdate()->firstOrFail();
-            }
+        DB::transaction(function () use ($workspaceId, $billingAccountId, $planId, $status, $customerId, $subscriptionId, $periodStart, $periodEnd, $trialEndsAt) {
+            [$record] = $this->billing->ensureWorkspaceBilling($workspaceId);
+            $record = WorkspaceSubscription::query()
+                ->where('id', $record->id)
+                ->lockForUpdate()
+                ->firstOrFail();
 
+            $effectiveBillingAccountId = $billingAccountId !== '' ? $billingAccountId : (string) ($record->billing_account_id ?: '');
             $previousPlan = (string) ($record->plan_id ?: 'free');
             $record->plan_id = $planId;
             $record->status = $status;
@@ -283,9 +291,15 @@ if ($trialEndsAt !== null && in_array($planId, ['pro', 'enterprise'], true)) {
 }
 
 $record->metadata = $metadata;
+$record->billing_account_id = $effectiveBillingAccountId ?: $record->billing_account_id;
 $record->save();
 
-            DB::table('workspaces')->where('id', $workspaceId)->update(['plan_id' => $planId]);
+            if ($effectiveBillingAccountId !== '') {
+                DB::table('billing_accounts')->where('id', $effectiveBillingAccountId)->update(['plan_id' => $planId, 'updated_at' => now()]);
+                DB::table('workspaces')->where('billing_account_id', $effectiveBillingAccountId)->update(['plan_id' => $planId, 'updated_at' => now()]);
+            } else {
+                DB::table('workspaces')->where('id', $workspaceId)->update(['plan_id' => $planId]);
+            }
 
             $periodKey = $periodStart?->toIso8601String();
             if ($periodKey && ($previousPlan !== $planId || (($metadata['last_refill_period_key'] ?? null) !== $periodKey && in_array($status, ['active', 'trialing'], true)))) {
@@ -296,7 +310,7 @@ $record->save();
 
     private function ensureStripeCustomer(string $workspaceId): string
     {
-        $subscription = WorkspaceSubscription::query()->where('workspace_id', $workspaceId)->first();
+        [$subscription] = $this->billing->ensureWorkspaceBilling($workspaceId);
         $existing = trim((string) ($subscription?->stripe_customer_id ?? ''));
         if ($existing !== '') {
             return $existing;
@@ -313,6 +327,7 @@ $record->save();
             'name' => (string) ($workspace->name ?? 'Social CORE Workspace'),
             'metadata' => [
                 'workspace_id' => $workspaceId,
+                'billing_account_id' => (string) ($subscription?->billing_account_id ?: ''),
             ],
         ]);
 
@@ -322,9 +337,10 @@ $record->save();
         }
 
         WorkspaceSubscription::query()->updateOrCreate(
-            ['workspace_id' => $workspaceId],
+            ['id' => $subscription?->id ?: (string) \Illuminate\Support\Str::uuid()],
             [
-                'id' => $subscription?->id ?: (string) \Illuminate\Support\Str::uuid(),
+                'workspace_id' => $subscription?->workspace_id ?: $workspaceId,
+                'billing_account_id' => $subscription?->billing_account_id,
                 'plan_id' => $subscription?->plan_id ?: 'free',
                 'status' => $subscription?->status ?: 'trialing',
                 'stripe_customer_id' => $customerId,

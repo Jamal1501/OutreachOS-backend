@@ -15,6 +15,7 @@ class WorkspaceSubscription extends Model
     protected $fillable = [
         'id',
         'workspace_id',
+        'billing_account_id',
         'plan_id',
         'status',
         'stripe_customer_id',

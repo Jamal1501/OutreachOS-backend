@@ -40,18 +40,16 @@ class WorkspaceController extends Controller
             ]);
         }
 
-        if ($requestedWorkspaceId !== '') {
-            $membership = $memberships->firstWhere('workspace_id', $requestedWorkspaceId);
-
-            if (!$membership) {
-                return response()->json([
-                    'error' => 'workspace_not_available',
-                    'message' => 'The requested workspace is not available for this user.',
-                ], 403);
-            }
-        } else {
-            $membership = $memberships->first();
+        if ($requestedWorkspaceId !== '' && !$memberships->firstWhere('workspace_id', $requestedWorkspaceId)) {
+            return response()->json([
+                'error' => 'workspace_not_available',
+                'message' => 'Requested workspace is not available for this user.',
+            ], 403);
         }
+
+        $membership = $requestedWorkspaceId !== ''
+            ? $memberships->firstWhere('workspace_id', $requestedWorkspaceId)
+            : $memberships->first();
 
         $workspace = Workspace::query()->find($membership->workspace_id);
         if (!$workspace) {
@@ -92,13 +90,15 @@ class WorkspaceController extends Controller
             $slug = $this->uniqueSlug($name);
             $workspaceId = (string) Str::uuid();
             $workspaceDataKey = 'workspace:' . $slug;
+            $billingAccount = $this->ensureBillingAccountForOwner($supabaseUserId, $name, $workspaceId);
 
             $workspace = Workspace::query()->create([
                 'id' => $workspaceId,
+                'billing_account_id' => $billingAccount->id,
                 'name' => $name,
                 'slug' => $slug,
                 'owner_id' => $supabaseUserId,
-                'plan_id' => 'free',
+                'plan_id' => $billingAccount->plan_id ?: 'free',
                 'settings' => [
                     'workspaceDataKey' => $workspaceDataKey,
                     // Backward-compatible alias while old request payloads still use sheetId/workbookId.
@@ -264,7 +264,11 @@ class WorkspaceController extends Controller
         $settings['dataSource'] = 'internal_database';
         $settings['legacyGoogleSheetsDisabled'] = true;
 
-        $plan = DB::table('plans')->where('id', $workspace->plan_id ?: 'free')->first();
+        $billingAccount = $workspace->billing_account_id
+            ? DB::table('billing_accounts')->where('id', $workspace->billing_account_id)->first()
+            : null;
+        $effectivePlanId = $billingAccount?->plan_id ?: ($workspace->plan_id ?: 'free');
+        $plan = DB::table('plans')->where('id', $effectivePlanId)->first();
         $members = WorkspaceMember::query()
             ->where('workspace_id', $workspace->id)
             ->orderByRaw("CASE role WHEN 'owner' THEN 1 WHEN 'admin' THEN 2 ELSE 3 END")
@@ -276,8 +280,49 @@ class WorkspaceController extends Controller
             ? (json_decode($featuresRaw, true) ?: [])
             : (is_array($featuresRaw) ? $featuresRaw : []);
 
+        $userWorkspaces = WorkspaceMember::query()
+            ->where('user_id', $membership->user_id)
+            ->join('workspaces', 'workspaces.id', '=', 'workspace_members.workspace_id')
+            ->orderBy('workspace_members.joined_at')
+            ->get([
+                'workspaces.id',
+                'workspaces.name',
+                'workspaces.slug',
+                'workspaces.owner_id',
+                'workspaces.billing_account_id',
+                'workspaces.plan_id',
+                'workspaces.settings',
+                'workspaces.created_at',
+                'workspace_members.role',
+            ])
+            ->map(function ($row) {
+                $settings = is_string($row->settings) ? (json_decode($row->settings, true) ?: []) : ((array) $row->settings);
+                return [
+                    'id' => (string) $row->id,
+                    'name' => (string) $row->name,
+                    'slug' => (string) $row->slug,
+                    'owner_id' => (string) $row->owner_id,
+                    'billing_account_id' => (string) ($row->billing_account_id ?? ''),
+                    'plan_id' => (string) ($row->plan_id ?? 'free'),
+                    'settings' => $settings,
+                    'created_at' => (string) $row->created_at,
+                    'role' => (string) $row->role,
+                ];
+            })
+            ->values()
+            ->all();
+
         return [
             'workspace' => array_merge($workspace->toArray(), ['settings' => $settings]),
+            'billingAccount' => $billingAccount ? [
+                'id' => $billingAccount->id,
+                'name' => $billingAccount->name,
+                'ownerUserId' => $billingAccount->owner_user_id,
+                'primaryWorkspaceId' => $billingAccount->primary_workspace_id,
+                'planId' => $effectivePlanId,
+                'billingScope' => 'shared_account',
+            ] : null,
+            'workspaces' => $userWorkspaces,
             'membership' => $membership->toArray(),
             'plan' => $plan ? [
                 'id' => $plan->id,
@@ -288,6 +333,37 @@ class WorkspaceController extends Controller
             ] : null,
             'members' => $members->map(fn (WorkspaceMember $member) => $member->toArray())->values()->all(),
         ];
+    }
+
+    private function ensureBillingAccountForOwner(string $ownerUserId, string $workspaceName, string $workspaceId): object
+    {
+        $account = DB::table('billing_accounts')
+            ->where('owner_user_id', $ownerUserId)
+            ->lockForUpdate()
+            ->first();
+
+        if ($account) {
+            return $account;
+        }
+
+        $accountId = (string) Str::uuid();
+        DB::table('billing_accounts')->insert([
+            'id' => $accountId,
+            'owner_user_id' => $ownerUserId,
+            'primary_workspace_id' => $workspaceId,
+            'name' => $workspaceName . ' billing',
+            'plan_id' => 'free',
+            'status' => 'active',
+            'metadata' => json_encode([
+                'bootstrap' => true,
+                'free_welcome_credits_account_scoped' => true,
+                'created_from_workspace_id' => $workspaceId,
+            ]),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return DB::table('billing_accounts')->where('id', $accountId)->lockForUpdate()->first();
     }
 
     private function uniqueSlug(string $name): string

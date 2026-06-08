@@ -15,6 +15,7 @@ class WorkspaceUsageEvent extends Model
     protected $fillable = [
         'id',
         'workspace_id',
+        'billing_account_id',
         'type',
         'credit_bucket',
         'units',

@@ -4,9 +4,9 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 
-class CreditPurchase extends Model
+class BillingAccount extends Model
 {
-    protected $table = 'credit_purchases';
+    protected $table = 'billing_accounts';
 
     public $incrementing = false;
 
@@ -14,13 +14,11 @@ class CreditPurchase extends Model
 
     protected $fillable = [
         'id',
-        'workspace_id',
-        'billing_account_id',
-        'credit_package_id',
-        'stripe_payment_intent_id',
-        'scrape_credits_added',
-        'ai_credits_added',
-        'amount_paid_usd',
+        'owner_user_id',
+        'primary_workspace_id',
+        'name',
+        'plan_id',
+        'status',
         'metadata',
     ];
 

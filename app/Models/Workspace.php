@@ -15,6 +15,7 @@ class Workspace extends Model
 
     protected $fillable = [
         'id',
+        'billing_account_id',
         'name',
         'slug',
         'owner_id',

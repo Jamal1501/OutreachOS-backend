@@ -15,6 +15,7 @@ class WorkspaceCreditWallet extends Model
     protected $fillable = [
         'id',
         'workspace_id',
+        'billing_account_id',
         'scrape_credits_balance',
         'ai_credits_balance',
         'bonus_scrape_credits',
