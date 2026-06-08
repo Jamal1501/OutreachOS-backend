@@ -40,9 +40,18 @@ class WorkspaceController extends Controller
             ]);
         }
 
-        $membership = $requestedWorkspaceId !== ''
-            ? ($memberships->firstWhere('workspace_id', $requestedWorkspaceId) ?: $memberships->first())
-            : $memberships->first();
+        if ($requestedWorkspaceId !== '') {
+            $membership = $memberships->firstWhere('workspace_id', $requestedWorkspaceId);
+
+            if (!$membership) {
+                return response()->json([
+                    'error' => 'workspace_not_available',
+                    'message' => 'The requested workspace is not available for this user.',
+                ], 403);
+            }
+        } else {
+            $membership = $memberships->first();
+        }
 
         $workspace = Workspace::query()->find($membership->workspace_id);
         if (!$workspace) {
