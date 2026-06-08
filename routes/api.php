@@ -37,6 +37,7 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
 
     Route::put('/workspaces/settings', [WorkspaceController::class, 'updateSettings'])->middleware('workspace.role:owner,admin');
     Route::post('/workspaces/invitations', [WorkspaceController::class, 'invite'])->middleware('workspace.role:owner,admin');
+    Route::put('/workspaces/members/{userId}/workspaces', [WorkspaceController::class, 'updateMemberWorkspaces'])->middleware('workspace.role:owner,admin');
     Route::delete('/workspaces/members/{memberId}', [WorkspaceController::class, 'removeMember'])->middleware('workspace.role:owner,admin');
 
     Route::get('/apify/modules', [ApifyController::class, 'modules']);

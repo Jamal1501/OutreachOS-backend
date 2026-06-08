@@ -6,6 +6,7 @@ use App\Models\Workspace;
 use App\Models\WorkspaceMember;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
@@ -141,31 +142,140 @@ class WorkspaceController extends Controller
         $validated = $request->validate([
             'email' => ['required', 'email', 'max:255'],
             'role' => ['nullable', Rule::in(['admin', 'member'])],
+            'workspaceIds' => ['nullable', 'array', 'min:1'],
+            'workspaceIds.*' => ['uuid'],
         ]);
 
         $email = Str::lower(trim((string) $validated['email']));
         $role = (string) ($validated['role'] ?? 'member');
+        $workspaceIds = $this->authorizedWorkspaceIdsForAccount($workspace, (array) ($validated['workspaceIds'] ?? [$workspace->id]));
 
-        $invitation = DB::table('workspace_invitations')->updateOrInsert(
-            [
-                'workspace_id' => $workspace->id,
-                'email' => $email,
-                'accepted_at' => null,
-            ],
-            [
-                'id' => (string) Str::uuid(),
-                'role' => $role,
-                'token' => (string) Str::uuid(),
-                'expires_at' => now()->addDays(14),
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]
-        );
+        if (empty($workspaceIds)) {
+            return response()->json(['error' => 'No valid workspaces selected for this invitation.'], 422);
+        }
+
+        $existingUser = DB::table('users')->whereRaw('LOWER(email) = ?', [$email])->first();
+        $assigned = 0;
+        $invited = 0;
+
+        DB::transaction(function () use ($workspaceIds, $email, $role, $existingUser, &$assigned, &$invited) {
+            foreach ($workspaceIds as $workspaceId) {
+                if ($existingUser && trim((string) ($existingUser->supabase_user_id ?? '')) !== '') {
+                    $membership = WorkspaceMember::query()
+                        ->where('workspace_id', $workspaceId)
+                        ->where('user_id', (string) $existingUser->supabase_user_id)
+                        ->first();
+
+                    if ($membership) {
+                        if ($membership->role !== 'owner') {
+                            $membership->role = $role;
+                            $membership->joined_at = $membership->joined_at ?: now();
+                            $membership->save();
+                        }
+                    } else {
+                        WorkspaceMember::query()->create([
+                            'id' => (string) Str::uuid(),
+                            'workspace_id' => $workspaceId,
+                            'user_id' => (string) $existingUser->supabase_user_id,
+                            'role' => $role,
+                            'joined_at' => now(),
+                        ]);
+                    }
+
+                    $assigned++;
+                    continue;
+                }
+
+                $this->upsertWorkspaceInvitation($workspaceId, $email, $role);
+                $invited++;
+            }
+        });
 
         return response()->json([
-            'message' => 'Invitation created',
-            'data' => ['email' => $email, 'role' => $role],
-        ], $invitation ? 201 : 200);
+            'message' => $assigned > 0 ? 'Workspace access assigned' : 'Invitation created',
+            'data' => [
+                'email' => $email,
+                'role' => $role,
+                'workspaceIds' => $workspaceIds,
+                'assignedWorkspaces' => $assigned,
+                'pendingInvitations' => $invited,
+            ],
+        ], 201);
+    }
+
+    public function updateMemberWorkspaces(Request $request, string $userId)
+    {
+        /** @var Workspace|null $workspace */
+        $workspace = $request->attributes->get('workspace');
+        if (!$workspace) {
+            return response()->json(['error' => 'Missing workspace context.'], 400);
+        }
+
+        $validated = $request->validate([
+            'workspaceIds' => ['required', 'array'],
+            'workspaceIds.*' => ['uuid'],
+            'role' => ['nullable', Rule::in(['admin', 'member'])],
+        ]);
+
+        $targetUserId = trim($userId);
+        if ($targetUserId === '') {
+            return response()->json(['error' => 'Missing target user.'], 422);
+        }
+
+        $workspaceIds = $this->authorizedWorkspaceIdsForAccount($workspace, (array) $validated['workspaceIds']);
+        $role = (string) ($validated['role'] ?? 'member');
+
+        $accountWorkspaceIds = $this->accountWorkspaceIds($workspace);
+        $existingOwnerMemberships = WorkspaceMember::query()
+            ->whereIn('workspace_id', $accountWorkspaceIds)
+            ->where('user_id', $targetUserId)
+            ->where('role', 'owner')
+            ->pluck('workspace_id')
+            ->map(fn ($id) => (string) $id)
+            ->all();
+
+        $finalWorkspaceIds = array_values(array_unique(array_merge($workspaceIds, $existingOwnerMemberships)));
+
+        DB::transaction(function () use ($accountWorkspaceIds, $finalWorkspaceIds, $targetUserId, $role) {
+            WorkspaceMember::query()
+                ->whereIn('workspace_id', $accountWorkspaceIds)
+                ->where('user_id', $targetUserId)
+                ->where('role', '!=', 'owner')
+                ->whereNotIn('workspace_id', $finalWorkspaceIds ?: ['00000000-0000-0000-0000-000000000000'])
+                ->delete();
+
+            foreach ($finalWorkspaceIds as $workspaceId) {
+                $existing = WorkspaceMember::query()
+                    ->where('workspace_id', $workspaceId)
+                    ->where('user_id', $targetUserId)
+                    ->first();
+
+                if ($existing) {
+                    if ($existing->role !== 'owner') {
+                        $existing->role = $role;
+                        $existing->joined_at = $existing->joined_at ?: now();
+                        $existing->save();
+                    }
+                    continue;
+                }
+
+                WorkspaceMember::query()->create([
+                    'id' => (string) Str::uuid(),
+                    'workspace_id' => $workspaceId,
+                    'user_id' => $targetUserId,
+                    'role' => $role,
+                    'joined_at' => now(),
+                ]);
+            }
+        });
+
+        /** @var WorkspaceMember|null $membership */
+        $membership = $request->attributes->get('workspace_membership');
+
+        return response()->json([
+            'message' => 'Workspace access updated',
+            'data' => $this->workspacePayload($workspace->fresh(), $membership),
+        ]);
     }
 
     public function removeMember(Request $request, string $memberId)
@@ -243,6 +353,70 @@ class WorkspaceController extends Controller
         ]);
     }
 
+    private function accountWorkspaceIds(Workspace $workspace): array
+    {
+        $billingAccountId = trim((string) ($workspace->billing_account_id ?? ''));
+
+        if ($billingAccountId === '') {
+            return [(string) $workspace->id];
+        }
+
+        return DB::table('workspaces')
+            ->where('billing_account_id', $billingAccountId)
+            ->pluck('id')
+            ->map(fn ($id) => (string) $id)
+            ->all();
+    }
+
+    private function authorizedWorkspaceIdsForAccount(Workspace $workspace, array $requestedWorkspaceIds): array
+    {
+        $accountWorkspaceIds = $this->accountWorkspaceIds($workspace);
+        $allowed = array_flip($accountWorkspaceIds);
+
+        $ids = array_values(array_unique(array_filter(array_map(
+            fn ($id) => trim((string) $id),
+            $requestedWorkspaceIds ?: [(string) $workspace->id]
+        ))));
+
+        return array_values(array_filter($ids, fn ($id) => isset($allowed[$id])));
+    }
+
+    private function upsertWorkspaceInvitation(string $workspaceId, string $email, string $role): void
+    {
+        $now = now();
+        $match = [
+            'workspace_id' => $workspaceId,
+            'email' => $email,
+            'accepted_at' => null,
+        ];
+
+        $values = [
+            'role' => $role,
+            'token' => (string) Str::uuid(),
+            'expires_at' => $now->copy()->addDays(14),
+        ];
+
+        if (Schema::hasColumn('workspace_invitations', 'updated_at')) {
+            $values['updated_at'] = $now;
+        }
+
+        $existing = DB::table('workspace_invitations')->where($match)->first();
+        if ($existing) {
+            DB::table('workspace_invitations')->where('id', $existing->id)->update($values);
+            return;
+        }
+
+        $insert = array_merge($match, $values, [
+            'id' => (string) Str::uuid(),
+        ]);
+
+        if (Schema::hasColumn('workspace_invitations', 'created_at')) {
+            $insert['created_at'] = $now;
+        }
+
+        DB::table('workspace_invitations')->insert($insert);
+    }
+
     private function workspacePayload(?Workspace $workspace, ?WorkspaceMember $membership): array
     {
         if (!$workspace || !$membership) {
@@ -251,6 +425,10 @@ class WorkspaceController extends Controller
                 'membership' => null,
                 'plan' => null,
                 'members' => [],
+                'workspaces' => [],
+                'accountWorkspaces' => [],
+                'accountMembers' => [],
+                'pendingInvitations' => [],
             ];
         }
 
@@ -312,6 +490,83 @@ class WorkspaceController extends Controller
             ->values()
             ->all();
 
+        $accountWorkspaceRows = $workspace->billing_account_id
+            ? DB::table('workspaces')->where('billing_account_id', $workspace->billing_account_id)->orderBy('created_at')->get()
+            : collect([$workspace]);
+
+        $accountWorkspaces = $accountWorkspaceRows->map(function ($row) {
+            $rowSettings = is_string($row->settings ?? null) ? (json_decode($row->settings, true) ?: []) : ((array) ($row->settings ?? []));
+            return [
+                'id' => (string) $row->id,
+                'name' => (string) $row->name,
+                'slug' => (string) $row->slug,
+                'owner_id' => (string) ($row->owner_id ?? ''),
+                'billing_account_id' => (string) ($row->billing_account_id ?? ''),
+                'plan_id' => (string) ($row->plan_id ?? 'free'),
+                'settings' => $rowSettings,
+                'created_at' => (string) ($row->created_at ?? ''),
+            ];
+        })->values()->all();
+
+        $accountWorkspaceIds = array_map(fn ($item) => (string) $item['id'], $accountWorkspaces);
+
+        $accountMemberRows = empty($accountWorkspaceIds)
+            ? collect()
+            : WorkspaceMember::query()
+                ->whereIn('workspace_id', $accountWorkspaceIds)
+                ->leftJoin('users', 'users.supabase_user_id', '=', 'workspace_members.user_id')
+                ->get([
+                    'workspace_members.id',
+                    'workspace_members.workspace_id',
+                    'workspace_members.user_id',
+                    'workspace_members.role',
+                    'workspace_members.joined_at',
+                    'users.email',
+                    'users.name',
+                ]);
+
+        $accountMembers = $accountMemberRows
+            ->groupBy('user_id')
+            ->map(function ($rows, $userId) {
+                $first = $rows->first();
+                $roles = $rows->pluck('role')->map(fn ($role) => (string) $role)->all();
+                $primaryRole = in_array('owner', $roles, true) ? 'owner' : (in_array('admin', $roles, true) ? 'admin' : 'member');
+
+                return [
+                    'user_id' => (string) $userId,
+                    'email' => (string) ($first->email ?? ''),
+                    'name' => (string) ($first->name ?? ''),
+                    'role' => $primaryRole,
+                    'workspaceIds' => $rows->pluck('workspace_id')->map(fn ($id) => (string) $id)->unique()->values()->all(),
+                    'memberships' => $rows->map(fn ($row) => [
+                        'id' => (string) $row->id,
+                        'workspace_id' => (string) $row->workspace_id,
+                        'role' => (string) $row->role,
+                        'joined_at' => (string) $row->joined_at,
+                    ])->values()->all(),
+                ];
+            })
+            ->values()
+            ->all();
+
+        $pendingInvitations = empty($accountWorkspaceIds) || !Schema::hasTable('workspace_invitations')
+            ? []
+            : DB::table('workspace_invitations')
+                ->whereIn('workspace_id', $accountWorkspaceIds)
+                ->whereNull('accepted_at')
+                ->orderByDesc('created_at')
+                ->get()
+                ->map(fn ($row) => [
+                    'id' => (string) $row->id,
+                    'workspace_id' => (string) $row->workspace_id,
+                    'email' => (string) $row->email,
+                    'role' => (string) $row->role,
+                    'expires_at' => (string) $row->expires_at,
+                    'created_at' => (string) ($row->created_at ?? ''),
+                ])
+                ->values()
+                ->all();
+
         return [
             'workspace' => array_merge($workspace->toArray(), ['settings' => $settings]),
             'billingAccount' => $billingAccount ? [
@@ -323,6 +578,9 @@ class WorkspaceController extends Controller
                 'billingScope' => 'shared_account',
             ] : null,
             'workspaces' => $userWorkspaces,
+            'accountWorkspaces' => $accountWorkspaces,
+            'accountMembers' => $accountMembers,
+            'pendingInvitations' => $pendingInvitations,
             'membership' => $membership->toArray(),
             'plan' => $plan ? [
                 'id' => $plan->id,
