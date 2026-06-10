@@ -514,7 +514,9 @@ class WorkspaceController extends Controller
             ? collect()
             : WorkspaceMember::query()
                 ->whereIn('workspace_id', $accountWorkspaceIds)
-                ->leftJoin('users', 'users.supabase_user_id', '=', 'workspace_members.user_id')
+                ->leftJoin('users', function ($join) {
+                    $join->on(DB::raw('users.supabase_user_id::text'), '=', DB::raw('workspace_members.user_id::text'));
+                })
                 ->get([
                     'workspace_members.id',
                     'workspace_members.workspace_id',
