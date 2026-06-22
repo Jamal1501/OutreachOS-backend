@@ -8,6 +8,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 use RuntimeException;
 
 class StripeBillingService
@@ -155,34 +156,55 @@ public function createSubscriptionCheckoutSession(
             throw new RuntimeException('Invalid Stripe webhook payload.');
         }
 
+        $eventId = trim((string) ($event['id'] ?? ''));
         $type = (string) ($event['type'] ?? '');
         $object = (array) Arr::get($event, 'data.object', []);
 
-        switch ($type) {
-            case 'checkout.session.completed':
-            case 'checkout.session.async_payment_succeeded':
-                $this->handleCheckoutSessionCompleted($object);
-                break;
-            case 'customer.subscription.created':
-            case 'customer.subscription.updated':
-            case 'customer.subscription.deleted':
-                $this->syncSubscriptionFromStripeObject($object);
-                break;
-            case 'invoice.payment_failed':
-                $subscriptionId = trim((string) ($object['subscription'] ?? ''));
-                if ($subscriptionId !== '') {
-                    WorkspaceSubscription::query()
-                        ->where('stripe_subscription_id', $subscriptionId)
-                        ->update(['status' => 'past_due']);
-                }
-                break;
-            case 'invoice.payment_succeeded':
-                $subscriptionId = trim((string) ($object['subscription'] ?? ''));
-                if ($subscriptionId !== '') {
-                    $subscription = $this->retrieveSubscription($subscriptionId);
-                    $this->syncSubscriptionFromStripeObject($subscription);
-                }
-                break;
+        if ($eventId !== '' && !$this->claimWebhookEvent($eventId, $type)) {
+            return [
+                'received' => true,
+                'type' => $type,
+                'duplicate' => true,
+            ];
+        }
+
+        try {
+            switch ($type) {
+                case 'checkout.session.completed':
+                case 'checkout.session.async_payment_succeeded':
+                    $this->handleCheckoutSessionCompleted($object);
+                    break;
+                case 'customer.subscription.created':
+                case 'customer.subscription.updated':
+                case 'customer.subscription.deleted':
+                    $this->syncSubscriptionFromStripeObject($object);
+                    break;
+                case 'invoice.payment_failed':
+                    $subscriptionId = trim((string) ($object['subscription'] ?? ''));
+                    if ($subscriptionId !== '') {
+                        WorkspaceSubscription::query()
+                            ->where('stripe_subscription_id', $subscriptionId)
+                            ->update(['status' => 'past_due']);
+                    }
+                    break;
+                case 'invoice.payment_succeeded':
+                    $subscriptionId = trim((string) ($object['subscription'] ?? ''));
+                    if ($subscriptionId !== '') {
+                        $subscription = $this->retrieveSubscription($subscriptionId);
+                        $this->syncSubscriptionFromStripeObject($subscription);
+                    }
+                    break;
+            }
+
+            if ($eventId !== '') {
+                $this->markWebhookEventProcessed($eventId);
+            }
+        } catch (\Throwable $e) {
+            if ($eventId !== '') {
+                $this->markWebhookEventFailed($eventId, $e->getMessage());
+            }
+
+            throw $e;
         }
 
         return [
@@ -423,6 +445,71 @@ $record->save();
         }
 
         throw new RuntimeException('Stripe webhook signature verification failed.');
+    }
+
+    private function claimWebhookEvent(string $eventId, string $type): bool
+    {
+        $inserted = DB::table('stripe_webhook_events')->insertOrIgnore([
+            'id' => (string) Str::uuid(),
+            'stripe_event_id' => $eventId,
+            'type' => $type,
+            'status' => 'processing',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        if ($inserted === 1) {
+            return true;
+        }
+
+        return DB::transaction(function () use ($eventId, $type) {
+            $row = DB::table('stripe_webhook_events')
+                ->where('stripe_event_id', $eventId)
+                ->lockForUpdate()
+                ->first();
+
+            if ($row && in_array($row->status, ['processing', 'processed'], true)) {
+                return false;
+            }
+
+            if ($row) {
+                DB::table('stripe_webhook_events')
+                    ->where('stripe_event_id', $eventId)
+                    ->update([
+                        'type' => $type,
+                        'status' => 'processing',
+                        'last_error' => null,
+                        'updated_at' => now(),
+                    ]);
+
+                return true;
+            }
+
+            return false;
+        });
+    }
+
+    private function markWebhookEventProcessed(string $eventId): void
+    {
+        DB::table('stripe_webhook_events')
+            ->where('stripe_event_id', $eventId)
+            ->update([
+                'status' => 'processed',
+                'processed_at' => now(),
+                'last_error' => null,
+                'updated_at' => now(),
+            ]);
+    }
+
+    private function markWebhookEventFailed(string $eventId, string $message): void
+    {
+        DB::table('stripe_webhook_events')
+            ->where('stripe_event_id', $eventId)
+            ->update([
+                'status' => 'failed',
+                'last_error' => Str::limit($message, 2000, ''),
+                'updated_at' => now(),
+            ]);
     }
 
     private function retrieveSubscription(string $subscriptionId): array

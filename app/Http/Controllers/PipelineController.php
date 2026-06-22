@@ -25,17 +25,17 @@ class PipelineController extends Controller
         $validated = $request->validate([
             'sheetId' => ['nullable', 'string'],
             'platform' => ['required', 'string', Rule::in(['instagram', 'tiktok'])],
-            'hashtags' => ['required', 'array', 'min:1'],
-            'hashtags.*' => ['string'],
+            'hashtags' => ['required', 'array', 'min:1', 'max:20'],
+            'hashtags.*' => ['string', 'max:80'],
             'discoveryLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
             'enrichmentLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
             'dedupeAgainstCRM' => ['nullable', 'boolean'],
             'rankingMetric' => ['nullable', 'string', Rule::in(['none', 'views_desc', 'views_asc', 'likes_desc', 'likes_asc', 'comments_desc', 'comments_asc', 'shares_desc', 'shares_asc'])],
             'wait' => ['nullable', 'boolean'],
-            'brief' => ['nullable', 'string'],
-            'criteria' => ['nullable', 'array'],
-            'discoveryModuleKey' => ['nullable', 'string'],
-            'enrichmentModuleKey' => ['nullable', 'string'],
+            'brief' => ['nullable', 'string', 'max:5000'],
+            'criteria' => ['nullable', 'array', 'max:100'],
+            'discoveryModuleKey' => ['nullable', 'string', 'max:120'],
+            'enrichmentModuleKey' => ['nullable', 'string', 'max:120'],
         ]);
 
         $criteria = $this->normalizeDiscoveryCriteria((array) ($validated['criteria'] ?? []));
@@ -63,14 +63,14 @@ class PipelineController extends Controller
             'sheetId' => ['nullable', 'string'],
             'platform' => ['required', 'string', Rule::in(['instagram', 'tiktok'])],
             'brief' => ['required', 'string', 'min:8', 'max:5000'],
-            'projectContext' => ['nullable', 'string'],
+            'projectContext' => ['nullable', 'string', 'max:5000'],
             'discoveryLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
             'enrichmentLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
             'dedupeAgainstCRM' => ['nullable', 'boolean'],
             'rankingMetric' => ['nullable', 'string', Rule::in(['none', 'views_desc', 'views_asc', 'likes_desc', 'likes_asc', 'comments_desc', 'comments_asc', 'shares_desc', 'shares_asc'])],
             'wait' => ['nullable', 'boolean'],
-            'discoveryModuleKey' => ['nullable', 'string'],
-            'enrichmentModuleKey' => ['nullable', 'string'],
+            'discoveryModuleKey' => ['nullable', 'string', 'max:120'],
+            'enrichmentModuleKey' => ['nullable', 'string', 'max:120'],
         ]);
 
         $criteria = $this->normalizeDiscoveryCriteria($this->briefs->parse((string) $validated['brief'], [
@@ -105,10 +105,11 @@ class PipelineController extends Controller
             'platform' => ['required', 'string', Rule::in(['instagram', 'tiktok'])],
             'discoveryLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
             'enrichmentLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
-            'hashtags' => ['nullable', 'array'],
+            'hashtags' => ['nullable', 'array', 'max:20'],
+            'hashtags.*' => ['string', 'max:80'],
             'seedCount' => ['nullable', 'integer', 'min:1', 'max:50'],
-            'discoveryModuleKey' => ['nullable', 'string'],
-            'enrichmentModuleKey' => ['nullable', 'string'],
+            'discoveryModuleKey' => ['nullable', 'string', 'max:120'],
+            'enrichmentModuleKey' => ['nullable', 'string', 'max:120'],
         ]);
 
         $workspaceId = (string) $request->attributes->get('workspace_id');
@@ -229,4 +230,3 @@ class PipelineController extends Controller
         return $criteria;
     }
 }
-

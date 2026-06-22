@@ -22,6 +22,12 @@ class ResolveWorkspaceContext
         $user = $request->user();
         $supabaseUserId = trim((string) ($request->attributes->get('supabase_user_id') ?: $user?->supabase_user_id));
 
+        if ($request->attributes->get('legacy_api_access')) {
+            return response()->json([
+                'error' => 'Legacy API key access is not allowed for workspace-scoped routes.',
+            ], 403);
+        }
+
         if ($workspaceId === '' && $supabaseUserId !== '') {
             $memberships = Cache::remember(
                 sprintf('workspace-context:user-memberships:%s', $supabaseUserId),
@@ -72,7 +78,7 @@ class ResolveWorkspaceContext
                     'error' => 'You do not have access to this workspace.',
                 ], 403);
             }
-        } elseif (!$request->attributes->get('legacy_api_access')) {
+        } else {
             return response()->json([
                 'error' => 'Authentication required for workspace access.',
             ], 401);

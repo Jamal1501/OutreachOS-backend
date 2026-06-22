@@ -16,7 +16,7 @@ class AiController extends Controller
         $validated = $request->validate([
             'brief' => ['required', 'string', 'min:8', 'max:5000'],
             'platform' => ['nullable', 'string', 'in:instagram,tiktok'],
-            'projectContext' => ['nullable', 'string'],
+            'projectContext' => ['nullable', 'string', 'max:5000'],
         ]);
 
         return response()->json([
@@ -37,8 +37,9 @@ class AiController extends Controller
     public function scoreCreators(Request $request)
     {
         $validated = $request->validate([
-            'creators' => ['required', 'array', 'min:1'],
-            'projectContext' => ['nullable', 'string'],
+            'creators' => ['required', 'array', 'min:1', 'max:50'],
+            'creators.*' => ['array', 'max:80'],
+            'projectContext' => ['nullable', 'string', 'max:5000'],
         ]);
 
         return response()->json([
@@ -52,18 +53,18 @@ class AiController extends Controller
     public function personalizeMessage(Request $request)
     {
         $validated = $request->validate([
-            'creator' => ['required', 'array'],
-            'template' => ['nullable', 'string'],
+            'creator' => ['required', 'array', 'max:100'],
+            'template' => ['nullable', 'string', 'max:5000'],
             'generationMode' => ['nullable', 'string', 'max:64'],
             'tonePreference' => ['nullable', 'string', 'max:64'],
-            'stage' => ['nullable', 'string'],
-            'projectContext' => ['nullable', 'string'],
-            'templateContext' => ['nullable', 'array'],
-            'messageType' => ['nullable', 'string'],
-            'taskContext' => ['nullable', 'array'],
-            'replyContext' => ['nullable', 'array'],
-            'previousMessage' => ['nullable', 'string'],
-            'conversationGoal' => ['nullable', 'string'],
+            'stage' => ['nullable', 'string', 'max:120'],
+            'projectContext' => ['nullable', 'string', 'max:5000'],
+            'templateContext' => ['nullable', 'array', 'max:100'],
+            'messageType' => ['nullable', 'string', 'max:80'],
+            'taskContext' => ['nullable', 'array', 'max:100'],
+            'replyContext' => ['nullable', 'array', 'max:100'],
+            'previousMessage' => ['nullable', 'string', 'max:5000'],
+            'conversationGoal' => ['nullable', 'string', 'max:2000'],
         ]);
 
         return response()->json($this->personalization->personalize($validated));
@@ -72,7 +73,8 @@ class AiController extends Controller
     public function detectDuplicates(Request $request)
     {
         $validated = $request->validate([
-            'creators' => ['required', 'array', 'min:2'],
+            'creators' => ['required', 'array', 'min:2', 'max:100'],
+            'creators.*' => ['array', 'max:80'],
         ]);
 
         return response()->json([

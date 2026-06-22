@@ -53,13 +53,13 @@ public function runActor(Request $request)
 
         $configuredActorKeys = array_keys($this->actorMap());
         $validated = $request->validate([
-            'moduleKey' => ['nullable', 'string'],
-            'actorKey' => ['nullable', 'string', Rule::in($configuredActorKeys)],
-            'actorId' => ['nullable', 'string'],
-            'maxTotalChargeUsd' => ['nullable', 'numeric', 'min:0'],
-            'memoryMbytes' => ['nullable', 'integer', 'min:128'],
-            'timeoutSecs' => ['nullable', 'integer', 'min:1'],
-            'input' => ['nullable', 'array'],
+            'moduleKey' => ['nullable', 'string', 'max:120'],
+            'actorKey' => ['nullable', 'string', 'max:120', Rule::in($configuredActorKeys)],
+            'actorId' => ['nullable', 'string', 'max:255'],
+            'maxTotalChargeUsd' => ['nullable', 'numeric', 'min:0', 'max:25'],
+            'memoryMbytes' => ['nullable', 'integer', 'min:128', 'max:4096'],
+            'timeoutSecs' => ['nullable', 'integer', 'min:1', 'max:600'],
+            'input' => ['nullable', 'array', 'max:100'],
         ]);
 
         $workspaceId = (string) $request->attributes->get('workspace_id');

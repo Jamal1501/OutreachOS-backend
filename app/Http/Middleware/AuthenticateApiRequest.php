@@ -38,7 +38,7 @@ class AuthenticateApiRequest
 
         $legacyKey = trim((string) $request->header('X-APP-KEY'));
         $configuredKey = trim((string) config('services.app_security.key'));
-        $allowLegacy = (bool) config('services.app_security.allow_legacy_key', true);
+        $allowLegacy = (bool) config('services.app_security.allow_legacy_key', false);
 
         if ($allowLegacy && $configuredKey !== '' && hash_equals($configuredKey, $legacyKey)) {
             $request->attributes->set('legacy_api_access', true);
