@@ -3,6 +3,7 @@
 use App\Http\Controllers\AiController;
 use App\Http\Controllers\ApifyController;
 use App\Http\Controllers\BillingController;
+use App\Http\Controllers\DuplicateLinkController;
 use App\Http\Controllers\SheetDataController;
 use App\Http\Controllers\WorkspaceController;
 use App\Http\Controllers\PipelineController;
@@ -55,6 +56,10 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::put('/crm/{id}', [SheetDataController::class, 'updateCreator']);
     Route::delete('/crm/{id}', [SheetDataController::class, 'deleteCreator'])->middleware('workspace.role:owner,admin');
     Route::post('/crm/link-profiles', [SheetDataController::class, 'linkProfiles']);
+
+    Route::get('/crm/duplicate-links', [DuplicateLinkController::class, 'index']);
+    Route::post('/crm/duplicate-links', [DuplicateLinkController::class, 'store'])->middleware('throttle:expensive');
+    Route::put('/crm/duplicate-links/{id}', [DuplicateLinkController::class, 'update']);
 
     Route::post('/outreach/log', [ApifyController::class, 'logOutreachEvent']);
     Route::post('/roi/events', [SheetDataController::class, 'captureRoiEvent']);
