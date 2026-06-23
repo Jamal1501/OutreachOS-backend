@@ -27,6 +27,7 @@ use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use RuntimeException;
@@ -99,6 +100,14 @@ class SheetDataController extends Controller
             ], 403);
         }
 
+        $cacheKey = hash('sha256', $url);
+        $cachedAvatarPath = "avatar-cache/{$cacheKey}.bin";
+        $cachedMetaPath = "avatar-cache/{$cacheKey}.json";
+        $cachedAvatar = $this->readCachedAvatar($cachedAvatarPath, $cachedMetaPath);
+        if ($cachedAvatar !== null) {
+            return $this->avatarResponse($cachedAvatar['body'], $cachedAvatar['contentType'], 604800);
+        }
+
         try {
             $upstream = Http::timeout(12)
                 ->withoutRedirecting()
@@ -109,7 +118,8 @@ class SheetDataController extends Controller
                 ->get($url);
         } catch (\Throwable $e) {
             Log::warning('avatar proxy fetch failed', [
-                'url' => $url,
+                'host' => $host,
+                'url_hash' => $cacheKey,
                 'error' => $e->getMessage(),
             ]);
 
@@ -124,15 +134,10 @@ class SheetDataController extends Controller
             ], 422);
         }
 
-        if ($upstream->redirect()) {
-            return response()->json([
-                'message' => 'Avatar redirects are not allowed',
-            ], 422);
-        }
-
         if (!$upstream->ok()) {
             Log::warning('avatar proxy upstream not ok', [
-                'url' => $url,
+                'host' => $host,
+                'url_hash' => $cacheKey,
                 'status' => $upstream->status(),
             ]);
 
@@ -151,23 +156,64 @@ class SheetDataController extends Controller
             ], 413);
         }
 
-        $maxAvatarBytes = 2 * 1024 * 1024;
-        $contentLength = (int) $upstream->header('Content-Length', 0);
-        if ($contentLength > $maxAvatarBytes || strlen($upstream->body()) > $maxAvatarBytes) {
-            return response()->json([
-                'message' => 'Avatar image is too large',
-            ], 413);
-        }
-
         if (!Str::startsWith(Str::lower($contentType), 'image/')) {
             return response()->json([
                 'message' => 'Avatar response was not an image',
             ], 415);
         }
 
-        return response($upstream->body(), 200)
+        $body = $upstream->body();
+        $this->writeCachedAvatar($cachedAvatarPath, $cachedMetaPath, $body, $contentType);
+
+        return $this->avatarResponse($body, $contentType, 604800);
+    }
+
+    private function readCachedAvatar(string $avatarPath, string $metaPath): ?array
+    {
+        $disk = Storage::disk('local');
+
+        if (!$disk->exists($avatarPath) || !$disk->exists($metaPath)) {
+            return null;
+        }
+
+        $meta = json_decode((string) $disk->get($metaPath), true);
+        $contentType = is_array($meta) ? (string) ($meta['contentType'] ?? '') : '';
+
+        if (!Str::startsWith(Str::lower($contentType), 'image/')) {
+            return null;
+        }
+
+        $body = $disk->get($avatarPath);
+        if (!is_string($body) || $body === '') {
+            return null;
+        }
+
+        return [
+            'body' => $body,
+            'contentType' => $contentType,
+        ];
+    }
+
+    private function writeCachedAvatar(string $avatarPath, string $metaPath, string $body, string $contentType): void
+    {
+        try {
+            Storage::disk('local')->put($avatarPath, $body);
+            Storage::disk('local')->put($metaPath, json_encode([
+                'contentType' => $contentType,
+                'cachedAt' => now()->toIso8601String(),
+            ], JSON_THROW_ON_ERROR));
+        } catch (\Throwable $e) {
+            Log::warning('avatar proxy cache write failed', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function avatarResponse(string $body, string $contentType, int $maxAgeSeconds)
+    {
+        return response($body, 200)
             ->header('Content-Type', $contentType)
-            ->header('Cache-Control', 'public, max-age=86400')
+            ->header('Cache-Control', "public, max-age={$maxAgeSeconds}")
             ->header('Cross-Origin-Resource-Policy', 'cross-origin')
             ->header('X-Content-Type-Options', 'nosniff');
     }
