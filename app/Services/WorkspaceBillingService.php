@@ -17,6 +17,10 @@ use RuntimeException;
 
 class WorkspaceBillingService
 {
+    private const CREDIT_ELIGIBLE_SUBSCRIPTION_STATUSES = ['active', 'trialing'];
+
+    private const CREDIT_BLOCKED_SUBSCRIPTION_STATUSES = ['past_due', 'unpaid', 'canceled', 'incomplete', 'incomplete_expired'];
+
     private const PLAN_ALIASES = [
         'trial' => 'free',
         'starter' => 'free',
@@ -573,6 +577,18 @@ class WorkspaceBillingService
     public function applyPurchasedCredits(string $workspaceId, int $scrapeCredits, int $aiCredits, array $purchaseData = []): void
     {
         DB::transaction(function () use ($workspaceId, $scrapeCredits, $aiCredits, $purchaseData) {
+            $paymentIntentId = trim((string) Arr::get($purchaseData, 'stripe_payment_intent_id', ''));
+            if ($paymentIntentId !== '') {
+                $existingPurchase = CreditPurchase::query()
+                    ->where('stripe_payment_intent_id', $paymentIntentId)
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($existingPurchase) {
+                    return;
+                }
+            }
+
             [$workspace, $billingAccount] = $this->billingAccountForWorkspaceLocked($workspaceId);
             $billingAccountId = (string) $billingAccount->id;
             $canonicalWorkspaceId = (string) ($billingAccount->primary_workspace_id ?: $workspace->id);
@@ -812,7 +828,7 @@ class WorkspaceBillingService
         $periodStart = optional($subscription->current_period_start)?->toIso8601String();
         $periodEnd = optional($subscription->current_period_end)?->toIso8601String();
 
-        if (in_array($subscription->status, ['past_due', 'unpaid', 'incomplete_expired'], true)) {
+        if ($this->subscriptionBlocksCreditUsage((string) $subscription->status)) {
             throw new InsufficientCreditsException('Workspace subscription is not active.', [
                 'subscriptionStatus' => $subscription->status,
             ]);
@@ -1020,7 +1036,18 @@ class WorkspaceBillingService
                 $walletChanged = true;
                 $subscriptionChanged = true;
                 $baseBalanceResetThisPass = true;
-            } elseif (!in_array($subscription->status, ['past_due', 'unpaid', 'incomplete_expired'], true) && $currentPeriodKey !== $lastRefillKey) {
+            }
+
+            if (!$this->subscriptionCanUseIncludedCredits((string) $subscription->status)) {
+                if ((int) $wallet->scrape_credits_balance !== 0) {
+                    $wallet->scrape_credits_balance = 0;
+                    $walletChanged = true;
+                }
+                if ((int) $wallet->ai_credits_balance !== 0) {
+                    $wallet->ai_credits_balance = 0;
+                    $walletChanged = true;
+                }
+            } elseif ($currentPeriodKey !== $lastRefillKey) {
                 $wallet->scrape_credits_balance = $monthlyScrapeCredits;
                 $wallet->ai_credits_balance = $monthlyAiCredits;
                 $metadata['last_refill_period_key'] = $currentPeriodKey;
@@ -1032,7 +1059,7 @@ class WorkspaceBillingService
             }
 
             $safety = 0;
-            while (!in_array($subscription->status, ['past_due', 'unpaid', 'incomplete_expired'], true) && $now->greaterThanOrEqualTo($currentPeriodEnd) && $safety < 24) {
+            while ($this->subscriptionCanUseIncludedCredits((string) $subscription->status) && $now->greaterThanOrEqualTo($currentPeriodEnd) && $safety < 24) {
                 $currentPeriodStart = $currentPeriodEnd;
                 $currentPeriodEnd = $currentPeriodEnd->addMonth();
                 $wallet->scrape_credits_balance = $monthlyScrapeCredits;
@@ -1264,6 +1291,16 @@ class WorkspaceBillingService
     {
         $planId = strtolower(trim($planId));
         return self::PLAN_ALIASES[$planId] ?? ($planId !== '' ? $planId : 'free');
+    }
+
+    private function subscriptionCanUseIncludedCredits(string $status): bool
+    {
+        return in_array(strtolower(trim($status)), self::CREDIT_ELIGIBLE_SUBSCRIPTION_STATUSES, true);
+    }
+
+    private function subscriptionBlocksCreditUsage(string $status): bool
+    {
+        return in_array(strtolower(trim($status)), self::CREDIT_BLOCKED_SUBSCRIPTION_STATUSES, true);
     }
 
     private function normalizeJsonArray(mixed $value): array

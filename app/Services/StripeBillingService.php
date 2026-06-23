@@ -115,14 +115,19 @@ public function createSubscriptionCheckoutSession(
                 'workspace_id' => $workspaceId,
                 'billing_account_id' => $billingAccountId,
                 'credit_package_id' => $package['id'],
+                'expected_amount_cents' => (string) $package['price_cents'],
+                'currency' => $package['currency'],
             ],
             'payment_intent_data' => [
                 'metadata' => [
                     'billing_type' => 'credit_topup',
                     'workspace_id' => $workspaceId,
+                    'billing_account_id' => $billingAccountId,
                     'credit_package_id' => $package['id'],
                     'plan_id_at_checkout' => $package['plan_id'] ?? 'free',
                     'topup_price_multiplier' => (string) ($package['topup_price_multiplier'] ?? 1),
+                    'expected_amount_cents' => (string) $package['price_cents'],
+                    'currency' => $package['currency'],
                 ],
             ],
             'line_items' => [[
@@ -240,6 +245,7 @@ public function createSubscriptionCheckoutSession(
 
         $metadata = (array) ($session['metadata'] ?? []);
         $workspaceId = trim((string) ($metadata['workspace_id'] ?? ''));
+        $billingAccountId = trim((string) ($metadata['billing_account_id'] ?? ''));
         $packageId = trim((string) ($metadata['credit_package_id'] ?? ''));
         $paymentIntentId = trim((string) ($session['payment_intent'] ?? ''));
 
@@ -252,6 +258,16 @@ public function createSubscriptionCheckoutSession(
         }
 
         $package = $this->billing->getCreditPackageConfig($workspaceId, $packageId);
+        $expectedAmountCents = (int) ($metadata['expected_amount_cents'] ?? $package['price_cents']);
+        $actualAmountCents = (int) ($session['amount_total'] ?? 0);
+        $expectedCurrency = strtolower((string) ($metadata['currency'] ?? $package['currency']));
+        $actualCurrency = strtolower((string) ($session['currency'] ?? $expectedCurrency));
+
+        if ($expectedAmountCents <= 0 || $actualAmountCents < $expectedAmountCents || $actualCurrency !== $expectedCurrency) {
+            throw new RuntimeException('Stripe top-up payment did not match expected package amount.');
+        }
+
+        $this->assertStripeMetadataMatchesWorkspace($workspaceId, $billingAccountId);
 
         $this->billing->applyPurchasedCredits(
             $workspaceId,
@@ -288,6 +304,7 @@ public function createSubscriptionCheckoutSession(
         $periodEnd = $this->timestampToCarbon($subscription['current_period_end'] ?? null);
         $trialEndsAt = $this->timestampToCarbon($subscription['trial_end'] ?? null);
         $planId = strtolower($planId);
+        $this->billing->getPlanCheckoutConfig($workspaceId, $planId);
 
         DB::transaction(function () use ($workspaceId, $billingAccountId, $planId, $status, $customerId, $subscriptionId, $periodStart, $periodEnd, $trialEndsAt) {
             [$record] = $this->billing->ensureWorkspaceBilling($workspaceId);
@@ -297,6 +314,10 @@ public function createSubscriptionCheckoutSession(
                 ->firstOrFail();
 
             $effectiveBillingAccountId = $billingAccountId !== '' ? $billingAccountId : (string) ($record->billing_account_id ?: '');
+            if ($billingAccountId !== '' && $billingAccountId !== (string) ($record->billing_account_id ?: '')) {
+                throw new RuntimeException('Stripe subscription billing account metadata does not match workspace.');
+            }
+
             $previousPlan = (string) ($record->plan_id ?: 'free');
             $record->plan_id = $planId;
             $record->status = $status;
@@ -409,6 +430,18 @@ $record->save();
         ? ['email' => $member->email, 'name' => $member->name]
         : [];
 }
+
+    private function assertStripeMetadataMatchesWorkspace(string $workspaceId, string $billingAccountId): void
+    {
+        if ($billingAccountId === '') {
+            return;
+        }
+
+        [$subscription] = $this->billing->ensureWorkspaceBilling($workspaceId);
+        if ($billingAccountId !== (string) ($subscription->billing_account_id ?: '')) {
+            throw new RuntimeException('Stripe checkout billing account metadata does not match workspace.');
+        }
+    }
 
     private function verifyWebhookSignature(string $payload, ?string $signatureHeader): void
     {
