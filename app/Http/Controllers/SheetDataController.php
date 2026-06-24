@@ -2182,10 +2182,13 @@ return [
         }
 
         if (($filters['search'] ?? '') !== '') {
-            $searchLike = '%' . $filters['search'] . '%';
-            $query->where(function ($q) use ($searchLike) {
-                $q->whereRaw('LOWER(handle) LIKE ?', [$searchLike])
-                    ->orWhereRaw("LOWER(COALESCE(username, '')) LIKE ?", [$searchLike])
+            $searchTerm = strtolower(trim((string) $filters['search']));
+            $searchLike = '%' . $searchTerm . '%';
+            $handlePrefix = ltrim($searchTerm, '@') . '%';
+            $query->where(function ($q) use ($searchLike, $handlePrefix) {
+                $q->where('handle', 'LIKE', '@' . $handlePrefix)
+                    ->orWhere('handle', 'LIKE', $handlePrefix)
+                    ->orWhere('username', 'LIKE', $handlePrefix)
                     ->orWhereRaw("LOWER(CAST(source_metadata AS TEXT)) LIKE ?", [$searchLike])
                     ->orWhereHas('creator', function ($creatorQuery) use ($searchLike) {
                         $creatorQuery->whereRaw("LOWER(COALESCE(display_name, '')) LIKE ?", [$searchLike])

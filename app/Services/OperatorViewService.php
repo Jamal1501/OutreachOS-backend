@@ -196,31 +196,53 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         throw new \RuntimeException('Creator not found');
     }
 
-    $creator = $this->normalizeCreatorProfileCard($profile);
-    $allCreators = CreatorProfile::query()
+    $linkedProfileRows = CreatorProfile::query()
         ->with('creator')
         ->where('project_id', $project->id)
+        ->where('creator_id', $profile->creator_id)
+        ->orderByDesc('updated_at')
+        ->limit(20)
+        ->get();
+
+    $creator = $this->normalizeCreatorProfileCard($profile, $linkedProfileRows->count());
+    $linkedProfiles = $linkedProfileRows
+        ->map(fn (CreatorProfile $item) => $this->normalizeCreatorProfileCard($item, $linkedProfileRows->count()))
+        ->values()
+        ->all();
+
+    if ($linkedProfiles === []) {
+        $linkedProfiles = [$creator];
+    }
+
+    $duplicateCandidates = CreatorProfile::query()
+        ->with('creator')
+        ->where('project_id', $project->id)
+        ->where('id', '<>', $profile->id)
+        ->where(function (Builder $query) use ($profile) {
+            $handle = ltrim(strtolower((string) $profile->handle), '@');
+            $email = strtolower(trim((string) ($profile->creator?->primary_email ?? '')));
+            $displayName = strtolower(trim((string) ($profile->creator?->display_name ?? '')));
+
+            $query->where(function (Builder $handleQuery) use ($profile, $handle) {
+                $handleQuery->whereRaw("LOWER(COALESCE(platform, '')) = ?", [strtolower((string) $profile->platform)])
+                    ->whereRaw("LOWER(REPLACE(COALESCE(handle, ''), '@', '')) = ?", [$handle]);
+            });
+
+            if ($email !== '') {
+                $query->orWhereHas('creator', fn (Builder $creatorQuery) => $creatorQuery->whereRaw("LOWER(COALESCE(primary_email, '')) = ?", [$email]));
+            }
+
+            if ($displayName !== '') {
+                $query->orWhereHas('creator', fn (Builder $creatorQuery) => $creatorQuery->whereRaw("LOWER(COALESCE(display_name, '')) = ?", [$displayName]));
+            }
+        })
+        ->limit(25)
         ->get()
         ->map(fn (CreatorProfile $item) => $this->normalizeCreatorProfileCard($item))
         ->values()
         ->all();
 
-    $duplicates = array_values(array_filter(
-        $this->detectDuplicateWarnings($allCreators),
-        fn (array $warning) => collect($warning['creators'])
-            ->contains(fn (array $item) => $item['id'] === $creator['id'])
-    ));
-
-    $linkedProfiles = array_values(array_filter(
-        $allCreators,
-        fn (array $item) => ($item['creatorIdentityId'] ?? null) !== null
-            && ($creator['creatorIdentityId'] ?? null) !== null
-            && (string) $item['creatorIdentityId'] === (string) $creator['creatorIdentityId']
-    ));
-
-    if ($linkedProfiles === []) {
-        $linkedProfiles = [$creator];
-    }
+    $duplicates = $this->detectDuplicateWarnings([$creator, ...$duplicateCandidates]);
 
     $relatedTasks = $this->normalizeDbTasks(
         Task::query()
@@ -238,6 +260,7 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
                     });
             })
             ->orderByDesc('created_at')
+            ->limit(20)
             ->get()
             ->all()
     );
@@ -248,6 +271,7 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
             ->where('platform', strtolower($creator['platform']))
             ->where('handle', $creator['handle'])
             ->orderByDesc('sent_at')
+            ->limit(30)
             ->get()
             ->all(),
         $creator['platform'],
