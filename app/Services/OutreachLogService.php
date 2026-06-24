@@ -7,15 +7,13 @@ use App\Models\MessageTemplate;
 use App\Models\OutreachEvent;
 use App\Models\Task;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class OutreachLogService
 {
     public function __construct(
-        private GoogleSheetsService $sheets,
-        private OperationalMirrorService $mirror,
         private ProjectResolverService $projects,
+        private LearningEventService $learningEvents,
     ) {
     }
 
@@ -96,22 +94,9 @@ class OutreachLogService
                 if ($profile) {
                     $this->applyOutreachEventToCreatorProfile($profile, $event);
                 }
-            }
-        }
 
-        try {
-            $headers = $this->sheets->getHeaders($sheetId, 'Outreach_Log');
-            $this->sheets->appendAssocRows($sheetId, 'Outreach_Log', $records, $headers);
-
-            if ($project && $this->mirror->enabled()) {
-                $this->mirror->syncOutreachEvents($sheetId, $eventIds);
+                $this->learningEvents->recordOutreachEvent($event->fresh(['creatorProfile.creator', 'task', 'messageTemplate']) ?: $event, $project);
             }
-        } catch (\Throwable $e) {
-            Log::warning('Outreach_Log sheet sync failed after database write', [
-                'sheet_id' => $sheetId,
-                'event_ids' => $eventIds,
-                'error' => $e->getMessage(),
-            ]);
         }
 
         return $eventIds;
@@ -172,7 +157,7 @@ class OutreachLogService
         return CreatorProfile::query()
             ->where('project_id', $projectId)
             ->whereRaw("LOWER(COALESCE(platform, '')) = ?", [$normalizedPlatform])
-            ->whereRaw("LOWER(TRIM(LEADING '@' FROM COALESCE(handle, ''))) = ?", [$normalizedHandle])
+            ->whereRaw("LOWER(REPLACE(COALESCE(handle, ''), '@', '')) = ?", [$normalizedHandle])
             ->first();
     }
 

@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Services\MessagePerformanceService;
 use App\Services\WorkspaceContextService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Validation\Rule;
 
 class MessagePerformanceController extends Controller
@@ -30,11 +31,16 @@ class MessagePerformanceController extends Controller
         ]);
 
         $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
+        $workspaceId = (string) $request->attributes->get('workspace_id');
+        $cacheKey = 'message-performance:' . md5($workspaceId . '|' . $sheetId . '|' . json_encode($validated));
+        $data = $request->has('_')
+            ? $this->performance->summaryForSheet($sheetId, $validated)
+            : Cache::remember($cacheKey, now()->addSeconds(90), fn () => $this->performance->summaryForSheet($sheetId, $validated));
 
         return response()->json([
             'message' => 'Message performance fetched',
             'sheetId' => $sheetId,
-            'data' => $this->performance->summaryForSheet($sheetId, $validated),
+            'data' => $data,
         ]);
     }
 }

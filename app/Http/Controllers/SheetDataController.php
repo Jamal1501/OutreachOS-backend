@@ -14,6 +14,7 @@ use App\Services\CreatorLocationInferenceService;
 use App\Services\CreatorMergeService;
 use App\Services\GoogleSheetsService;
 use App\Services\InfluencerScoringService;
+use App\Services\LearningEventService;
 use App\Services\OperatorViewService;
 use App\Services\OutreachLogService;
 use App\Services\OperationalMirrorService;
@@ -24,6 +25,7 @@ use App\Services\WorkspaceBillingService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -49,6 +51,7 @@ class SheetDataController extends Controller
         private WorkspaceBillingService $billing,
         private CreatorLocationInferenceService $locationInference,
         private AnalyticsSummaryService $analytics,
+        private LearningEventService $learningEvents,
     ) {
     }
 
@@ -608,6 +611,10 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
             ]);
         }
 
+        if (Str::startsWith($sheetId, 'workspace:')) {
+            return response()->json(['error' => 'Creator not found'], 404);
+        }
+
         $rowNumber = $this->parseRowNumber($id, 'crm');
         $rows = $this->sheets->getRows($sheetId, 'Creators_CRM');
         $target = collect($rows)->first(fn (array $row) => (int) ($row['_row_number'] ?? 0) === $rowNumber);
@@ -675,6 +682,10 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
                 'message' => 'Creator removed',
                 'source' => 'database',
             ]);
+        }
+
+        if (Str::startsWith($sheetId, 'workspace:')) {
+            return response()->json(['error' => 'Creator not found'], 404);
         }
 
         $rowNumber = $this->parseRowNumber($id, 'crm');
@@ -1348,10 +1359,15 @@ public function operatorView(Request $request)
         ]);
 
         $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
+        $workspaceId = (string) $request->attributes->get('workspace_id');
+        $cacheKey = 'operator-view:' . md5($workspaceId . '|' . $sheetId);
+        $data = $request->has('_')
+            ? $this->operatorView->build($sheetId)
+            : Cache::remember($cacheKey, now()->addSeconds(45), fn () => $this->operatorView->build($sheetId));
 
         return response()->json([
             'message' => 'Operator view fetched',
-            'data' => $this->operatorView->build($sheetId),
+            'data' => $data,
         ]);
     } catch (\Throwable $e) {
         report($e);
@@ -1378,6 +1394,10 @@ public function creatorDecisionSheet(Request $request, string $id)
             'message' => 'Creator decision sheet fetched',
             'data' => $this->operatorView->buildDecisionSheetForProfileId($sheetId, $dbProfile->id),
         ]);
+    }
+
+    if (Str::startsWith($sheetId, 'workspace:')) {
+        return response()->json(['error' => 'Creator not found'], 404);
     }
 
     $rowNumber = $this->parseRowNumber($id, 'crm');
@@ -1517,7 +1537,11 @@ public function creatorDecisionSheet(Request $request, string $id)
 
         $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $workspaceId = (string) $request->attributes->get('workspace_id');
-        $summary = $this->analytics->summary($sheetId, $workspaceId, (string) ($validated['range'] ?? '30d'));
+        $range = (string) ($validated['range'] ?? '30d');
+        $cacheKey = 'analytics-summary:' . md5($workspaceId . '|' . $sheetId . '|' . $range);
+        $summary = $request->has('_')
+            ? $this->analytics->summary($sheetId, $workspaceId, $range)
+            : Cache::remember($cacheKey, now()->addSeconds(60), fn () => $this->analytics->summary($sheetId, $workspaceId, $range));
 
         return response()->json([
             'message' => 'Analytics summary fetched',
@@ -1545,7 +1569,7 @@ public function creatorDecisionSheet(Request $request, string $id)
             'captured_server_side' => true,
         ]);
 
-        DB::table('roi_events')->insert([
+        $roiEvent = [
             'id' => $eventId,
             'project_id' => $validated['projectId'],
             'workspace_id' => $workspaceId !== '' ? $workspaceId : null,
@@ -1556,7 +1580,10 @@ public function creatorDecisionSheet(Request $request, string $id)
             'metadata' => json_encode($metadata),
             'event_date' => now()->toDateString(),
             'created_at' => now(),
-        ]);
+        ];
+
+        DB::table('roi_events')->insert($roiEvent);
+        $this->learningEvents->recordRoiEvent(array_merge($roiEvent, ['metadata' => $metadata]));
 
         return response()->json([
             'message' => 'ROI event captured',
@@ -1573,7 +1600,11 @@ public function creatorDecisionSheet(Request $request, string $id)
 
         $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $workspaceId = (string) $request->attributes->get('workspace_id');
-        $summary = $this->analytics->summary($sheetId, $workspaceId, (string) ($validated['range'] ?? '30d'));
+        $range = (string) ($validated['range'] ?? '30d');
+        $cacheKey = 'dashboard-metrics:' . md5($workspaceId . '|' . $sheetId . '|' . $range);
+        $summary = $request->has('_')
+            ? $this->analytics->summary($sheetId, $workspaceId, $range)
+            : Cache::remember($cacheKey, now()->addSeconds(60), fn () => $this->analytics->summary($sheetId, $workspaceId, $range));
 
         return response()->json([
             'message' => 'Dashboard metrics fetched',
@@ -2600,6 +2631,10 @@ return [
 
     private function syncCreatorProfileToSheet(string $sheetId, CreatorProfile $profile): array
     {
+        if (Str::startsWith($sheetId, 'workspace:')) {
+            return ['synced' => false, 'reason' => 'workspace_database_mode'];
+        }
+
         $rowNumber = $this->extractSourceRowNumberFromProfile($profile);
         if ($rowNumber <= 0) {
             return ['synced' => false, 'reason' => 'no_sheet_row'];
@@ -2633,6 +2668,10 @@ return [
 
     private function syncLinkedProfileMetadataToSheet(string $sheetId, CreatorProfile $profile, string $identityId, array $linkedLabels, bool $isPrimary): array
     {
+        if (Str::startsWith($sheetId, 'workspace:')) {
+            return ['synced' => false, 'reason' => 'workspace_database_mode'];
+        }
+
         $rowNumber = $this->extractSourceRowNumberFromProfile($profile);
         if ($rowNumber <= 0) {
             return ['synced' => false, 'reason' => 'no_sheet_row'];

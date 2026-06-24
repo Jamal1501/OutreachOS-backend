@@ -5,7 +5,6 @@ namespace App\Http\Controllers;
 use App\Exceptions\InsufficientCreditsException;
 use App\Services\ApifyRowMapper;
 use App\Services\CreatorMergeService;
-use App\Services\GoogleSheetsService;
 use App\Services\OutreachLogService;
 use App\Services\OperationalMirrorService;
 use App\Services\TaskQueueService;
@@ -27,7 +26,6 @@ class ApifyController extends Controller
 {
     public function __construct(
         private ApifyRowMapper $rowMapper,
-        private GoogleSheetsService $sheets,
         private CreatorMergeService $creatorMerge,
         private TaskQueueService $taskQueue,
         private OutreachLogService $outreachLog,
@@ -354,14 +352,12 @@ public function getDatasetResults(Request $request, string $datasetId)
             ], 422);
         }
 
-        $this->sheets->appendRows($sheetId, $validated['sheetName'], $rows);
-
         return response()->json([
-            'message' => 'Dataset import processed using database-first runtime; external spreadsheet writes are disabled',
+            'message' => 'Dataset rows mapped; external spreadsheet writes are disabled',
             'datasetId' => $validated['datasetId'],
             'sheetId' => $sheetId,
             'sheetName' => $validated['sheetName'],
-            'importedRows' => count($rows),
+            'mappedRows' => count($rows),
         ]);
     }
 

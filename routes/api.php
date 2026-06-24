@@ -3,6 +3,7 @@
 use App\Http\Controllers\AiController;
 use App\Http\Controllers\ApifyController;
 use App\Http\Controllers\BillingController;
+use App\Http\Controllers\CrmImportController;
 use App\Http\Controllers\DuplicateLinkController;
 use App\Http\Controllers\SheetDataController;
 use App\Http\Controllers\WorkspaceController;
@@ -53,6 +54,8 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::post('/crm/merge-selected', [SheetDataController::class, 'mergeSelectedQueueToCrm'])->middleware('throttle:expensive');
     Route::get('/crm/list', [SheetDataController::class, 'crmList']);
     Route::post('/crm/infer-locations', [SheetDataController::class, 'inferCreatorLocations'])->middleware('throttle:expensive');
+    Route::post('/crm/import/creators/preview', [CrmImportController::class, 'previewCreators'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);
+    Route::post('/crm/import/creators', [CrmImportController::class, 'importCreators'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);
     Route::put('/crm/{id}', [SheetDataController::class, 'updateCreator']);
     Route::delete('/crm/{id}', [SheetDataController::class, 'deleteCreator'])->middleware('workspace.role:owner,admin');
     Route::post('/crm/link-profiles', [SheetDataController::class, 'linkProfiles']);

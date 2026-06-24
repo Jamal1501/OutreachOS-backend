@@ -27,6 +27,10 @@ class OperatorViewService
             return $this->buildFromDatabase($project->id);
         }
 
+        if (Str::startsWith($sheetId, 'workspace:')) {
+            return $this->emptyWorkspaceView();
+        }
+
         $creatorRows = $this->safeGetRows($sheetId, 'Creators_CRM');
         $taskRows = $this->safeGetRows($sheetId, 'Task_Queue');
         $outreachRows = $this->safeGetRows($sheetId, 'Outreach_Log');
@@ -137,6 +141,7 @@ class OperatorViewService
         }
 
         $creator = $this->normalizeCreatorCard($creatorRow);
+        $linkedProfiles = [$creator];
 
         $duplicates = array_values(array_filter(
             $this->detectDuplicateWarnings([
@@ -531,6 +536,10 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
 
     private function safeGetRows(string $sheetId, string $sheetName): array
     {
+        if (Str::startsWith($sheetId, 'workspace:')) {
+            return [];
+        }
+
         try {
             return $this->sheets->getRows($sheetId, $sheetName);
         } catch (\Throwable $e) {
@@ -542,6 +551,26 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
 
             return [];
         }
+    }
+
+    private function emptyWorkspaceView(): array
+    {
+        return [
+            'metrics' => [
+                'triageCount' => 0,
+                'duplicateWarnings' => 0,
+                'readyForOutreach' => 0,
+                'tasksDueToday' => 0,
+                'outreachSent' => 0,
+                'repliesReceived' => 0,
+                'replyRate' => 0,
+            ],
+            'triageItems' => [],
+            'duplicateWarnings' => [],
+            'readyQueue' => [],
+            'tasksDueToday' => [],
+            'recentActivity' => [],
+        ];
     }
 
     private function normalizeCreatorCard(array $row): array
