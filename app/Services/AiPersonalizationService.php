@@ -124,6 +124,7 @@ Core rules:
 - Do not force personalization. Weak or thin evidence should produce a clean, honest relevance-based message, not a fake observation.
 - The best first line is usually offer relevance, not creator mirroring.
 - Treat templates as strategic angle memory only. Never copy template wording unless the user clearly wrote a draft and the mode is rewrite_existing_draft.
+- If GENERATION MODE is rewrite_existing_draft, the user-written draft is explicit direction. Preserve concrete offer details, incentives, product facts, constraints, and requested CTA unless they are unsafe or directly conflict with task/brand context.
 - Use creator location only as quiet relevance when confidence is high. Never open with it. Never imply audience location.
 - Match the chosen tonePreference. Tone changes sentence shape and word choice; it does not permit fake compliments.
 - Respect the task context over everything else. If the task asks for a comment, write a comment. If it asks for email, write email.
@@ -256,7 +257,11 @@ PROMPT;
         $sections[] = "CREATOR EVIDENCE PACK - use this before raw profile data\n" . $this->json($evidencePack);
         $sections[] = "RAW CREATOR PROFILE - for backup only; do not invent beyond it\n" . $this->json($creator);
         $sections[] = "TEMPLATE CONTEXT - learned angle memory, not final copy\n" . $this->json($templateContext);
-        $sections[] = "USER DRAFT OR HIDDEN TEMPLATE - use only as guidance; ignore wording when mode is fresh_draft\n" . ($template !== '' ? $template : 'No template supplied. Generate a fresh draft from evidence, brand context, task context, and tone preference.');
+        if ($template !== '' && $generationMode === 'rewrite_existing_draft') {
+            $sections[] = "USER-WRITTEN DRAFT - mandatory message intent, improve wording but preserve concrete facts\n" . $template;
+        } else {
+            $sections[] = "HIDDEN TEMPLATE - learned angle memory, ignore wording when mode is fresh_draft\n" . ($template !== '' ? $template : 'No template supplied. Generate a fresh draft from evidence, brand context, task context, and tone preference.');
+        }
 
         if ($previousMessage !== '') {
             $sections[] = "PREVIOUS MESSAGE - avoid repeating this\n" . $previousMessage;
@@ -314,7 +319,8 @@ WRITE THE DRAFT
 10. Do not over-compliment. One useful content idea beats three generic compliments.
 11. Make the CTA small: quick yes/no, permission to send details, or a simple question.
 12. Never use the em dash character.
-13. Return only the structured payload.
+13. If USER-WRITTEN DRAFT is present, build around its offer and intent. Do not drop concrete user-provided details like "free gift", discount, budget, timeline, product, deliverable, or CTA.
+14. Return only the structured payload.
 INSTRUCTIONS;
 
         return implode("\n\n---\n\n", $sections);

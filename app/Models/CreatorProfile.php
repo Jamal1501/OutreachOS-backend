@@ -97,4 +97,9 @@ class CreatorProfile extends Model
     {
         return $this->hasMany(OutreachEvent::class);
     }
+
+    public function relationshipEvents(): HasMany
+    {
+        return $this->hasMany(CreatorRelationshipEvent::class);
+    }
 }

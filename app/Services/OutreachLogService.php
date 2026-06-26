@@ -14,6 +14,7 @@ class OutreachLogService
     public function __construct(
         private ProjectResolverService $projects,
         private LearningEventService $learningEvents,
+        private CreatorRelationshipTimelineService $relationshipTimeline,
     ) {
     }
 
@@ -96,6 +97,7 @@ class OutreachLogService
                 }
 
                 $this->learningEvents->recordOutreachEvent($event->fresh(['creatorProfile.creator', 'task', 'messageTemplate']) ?: $event, $project);
+                $this->relationshipTimeline->recordOutreachEvent($event->fresh(['task', 'messageTemplate']) ?: $event, $project);
             }
         }
 

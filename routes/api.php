@@ -3,6 +3,7 @@
 use App\Http\Controllers\AiController;
 use App\Http\Controllers\ApifyController;
 use App\Http\Controllers\BillingController;
+use App\Http\Controllers\CreatorRelationshipController;
 use App\Http\Controllers\CrmImportController;
 use App\Http\Controllers\DuplicateLinkController;
 use App\Http\Controllers\SheetDataController;
@@ -82,6 +83,7 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::get('/analytics/summary', [SheetDataController::class, 'analyticsSummary']);
     Route::get('/operator/view', [SheetDataController::class, 'operatorView']);
     Route::get('/creators/{id}/decision-sheet', [SheetDataController::class, 'creatorDecisionSheet']);
+    Route::get('/creators/{id}/relationship-events', [CreatorRelationshipController::class, 'index']);
     Route::post('/creators/{id}/transition', [SheetDataController::class, 'transitionCreator']);
 
     Route::get('/tasks/settings', [ApifyController::class, 'taskSettings']);
