@@ -81,7 +81,7 @@ class InfluencerScoringService
             $risks[] = 'Recent activity looks stale.';
         }
 
-        $contactScore = $hasEmail ? 8 : 2;
+        $contactScore = $hasEmail ? 10 : 5;
         if ($hasEmail) {
             $signals[] = 'Direct contact info exists.';
         } else {
@@ -113,7 +113,18 @@ class InfluencerScoringService
             }
         }
 
-        $score = $followerScore + $engagementScore + $quantityScore + $recencyScore + $contactScore + $verificationScore + $nicheScore - $suspicionPenalty;
+        $discoveryLift = 0;
+        if ($followers > 0 && $engagement > 0) {
+            $discoveryLift += 8;
+        }
+        if ($recencyDays !== null && $recencyDays <= 60) {
+            $discoveryLift += 5;
+        }
+        if ($this->hasContextSignal($creator, $sourceRow)) {
+            $discoveryLift += 6;
+        }
+
+        $score = $followerScore + $engagementScore + $quantityScore + $recencyScore + $contactScore + $verificationScore + $nicheScore + $discoveryLift - $suspicionPenalty;
         $score = (int) max(0, min(100, round($score)));
 
         return [
@@ -128,11 +139,11 @@ class InfluencerScoringService
     {
         $score = (float) $score;
 
-        if ($score >= 70) {
+        if ($score >= 65) {
             return 'HIGH';
         }
 
-        if ($score >= 40) {
+        if ($score >= 30) {
             return 'MEDIUM';
         }
 
@@ -357,6 +368,23 @@ class InfluencerScoringService
         }
 
         return null;
+    }
+
+    private function hasContextSignal(array $creator, ?array $sourceRow = null): bool
+    {
+        foreach ([
+            $creator['niche'] ?? null,
+            $creator['Niche_Category'] ?? null,
+            $creator['bio'] ?? null,
+            $sourceRow['caption'] ?? null,
+            $sourceRow['text'] ?? null,
+        ] as $value) {
+            if (trim((string) $value) !== '') {
+                return true;
+            }
+        }
+
+        return count(array_filter((array) ($creator['sourceHashtags'] ?? $sourceRow['hashtags'] ?? []))) > 0;
     }
 
     private function toFloat(mixed $value): float

@@ -266,10 +266,7 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
     );
 
     $timeline = $this->normalizeDbRecentActivity(
-        OutreachEvent::query()
-            ->where('project_id', $project->id)
-            ->where('platform', strtolower($creator['platform']))
-            ->where('handle', $creator['handle'])
+        $this->creatorOutreachEventQuery($project->id, $profile, $creator)
             ->orderByDesc('sent_at')
             ->limit(30)
             ->get()
@@ -454,10 +451,7 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         );
 
         $timeline = $this->normalizeDbRecentActivity(
-            OutreachEvent::query()
-                ->where('project_id', $projectId)
-                ->where('platform', strtolower($creator['platform']))
-                ->where('handle', $creator['handle'])
+            $this->creatorOutreachEventQuery($projectId, $profile, $creator)
                 ->orderByDesc('sent_at')
                 ->get()
                 ->all(),
@@ -497,6 +491,10 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         $sourceHashtags = array_values(array_filter((array) ($creator['sourceHashtags'] ?? [])));
         $lastContentDate = trim((string) ($creator['lastContentDate'] ?? ''));
         $lastContactDate = trim((string) ($creator['lastContactDate'] ?? ''));
+        $timelineLastOutreach = $this->latestTimelineTimestamp($timeline, $this->strictOutreachSentEventTypes());
+        if ($timelineLastOutreach !== '') {
+            $lastContactDate = $timelineLastOutreach;
+        }
 
         $confidenceReasons = [];
         if (($creator['followers'] ?? 0) > 0) {
@@ -538,7 +536,7 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
                             : (count($confidenceReasons) >= 3 ? 'usable' : 'fragile')),
                     'reasons' => $confidenceReasons,
                 ],
-                'lastRealActivity' => $lastContentDate !== '' ? $lastContentDate : 'No source post date captured',
+                'lastRealActivity' => $this->lastRealSignalLabel($creator, $timeline),
                 'lastOutreach' => $lastContactDate !== '' ? $lastContactDate : 'Not reached out yet',
                 'duplicateRisk' => [
                     'level' => count($duplicates) > 0 ? ($duplicates[0]['risk'] ?? 'medium') : 'low',
@@ -549,11 +547,12 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
                         ? array_values(array_unique(array_filter(array_merge(...array_map(fn (array $warning) => array_map(fn (array $item) => $item['handle'] . ' (' . $item['platform'] . ')', $warning['creators']), $duplicates)))))
                         : [],
                 ],
-                'recommendedNextAction' => $this->recommendedNextAction($creator),
+                'recommendedNextAction' => $this->recommendedNextAction($creator, $relatedTasks, $timeline, $hardDisqualifiers),
                 'hardDisqualifiers' => $hardDisqualifiers,
                 'operatorNotes' => (string) ($creator['notes'] ?? ''),
                 'timeline' => array_slice($timeline, 0, 20),
                 'relatedTasks' => array_slice($relatedTasks, 0, 10),
+                'creatorRoi' => $this->creatorRoi($creator, $timeline),
             ],
         ];
     }
@@ -605,6 +604,9 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         $score = is_numeric((string) ($row['Value_Score'] ?? ''))
             ? (float) $row['Value_Score']
             : $this->scoring->score($row);
+        $followers = $this->toInt($row['Followers'] ?? null);
+        $engagementRate = $this->toFloat($row['Engagement_Rate_%'] ?? null);
+        $score = $this->presentableValueScore($score, $followers, $engagementRate);
 
         $addedAt = $this->extractTaggedValue((string) ($row['Notes'] ?? ''), 'added_to_crm_at') ?? '';
         $lastContentDate = trim((string) ($row['Last_Content_Date'] ?? ''));
@@ -620,8 +622,8 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
             'platform' => $platform,
             'handle' => (string) ($row['Handle'] ?? ''),
             'fullName' => (string) ($row['Name'] ?? ''),
-            'followers' => $this->toInt($row['Followers'] ?? null),
-            'engagementRate' => $this->toFloat($row['Engagement_Rate_%'] ?? null),
+            'followers' => $followers,
+            'engagementRate' => $engagementRate,
             'email' => (string) ($row['Contact_Email'] ?? ''),
             'profileUrl' => (string) ($row['DM_Link'] ?? ''),
             'status' => $state,
@@ -677,6 +679,7 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
 
         return [
             'id' => $sourceRowNumber > 0 ? 'crm:' . $sourceRowNumber : 'profile:' . $profile->id,
+            'projectId' => (string) $profile->project_id,
             'platform' => strtolower((string) ($profile->platform ?: 'instagram')),
 'handle' => (string) ($profile->handle ?: ''),
 'fullName' => (string) ($creator?->display_name ?: $profile->username ?: ''),
@@ -689,13 +692,13 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
             'lifecycleState' => $state,
             'enrichmentStatus' => 'enriched',
             'niche' => (string) ($creator?->niche_category ?: ''),
-            'lastContactDate' => optional($profile->dm_sent_at)?->toDateTimeString() ?? '',
+            'lastContactDate' => optional($profile->last_outreach_at ?: $profile->dm_sent_at)?->toDateTimeString() ?? '',
             'responseDate' => optional($profile->responded_at)?->toDateTimeString() ?? '',
             'lastContentDate' => optional($profile->last_content_at)?->toDateTimeString() ?? '',
             'notes' => (string) ($creator?->notes ?: ''),
             'addedAt' => $addedAt,
-            'valueScore' => (int) ($profile->value_score ?? 0),
-            'valueTier' => Str::lower($this->scoring->tier((float) ($profile->value_score ?? 0))),
+            'valueScore' => $this->presentableValueScore((float) ($profile->value_score ?? 0), (int) ($profile->followers_count ?? 0), $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null),
+            'valueTier' => Str::lower($this->scoring->tier($this->presentableValueScore((float) ($profile->value_score ?? 0), (int) ($profile->followers_count ?? 0), $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null))),
             'preferredChannel' => (string) ($profile->preferred_channel ?: ''),
             'duplicateRisk' => $profile->duplicate_flag ? 'medium' : 'low',
             'creatorIdentityId' => (string) ($creator?->external_identity_key ?: ''),
@@ -956,22 +959,150 @@ return [
         return $warnings;
     }
 
-    private function recommendedNextAction(array $creator): string
+    private function recommendedNextAction(array $creator, array $relatedTasks = [], array $timeline = [], array $hardDisqualifiers = []): string
     {
+        $openTasks = array_values(array_filter($relatedTasks, fn (array $task) => !in_array((string) ($task['status'] ?? ''), ['completed', 'skipped', 'archived'], true)));
+        $nextTask = $openTasks[0] ?? null;
+        if ($nextTask) {
+            $type = str_replace('_', ' ', Str::lower((string) ($nextTask['type'] ?? 'task')));
+            $due = trim((string) ($nextTask['dueDate'] ?? ''));
+
+            return trim(sprintf('Work the open %s task%s.', $type, $due !== '' ? ' due ' . $due : ''));
+        }
+
+        if (count($hardDisqualifiers) > 0 && in_array($creator['lifecycleState'], ['discovered', 'needs_review', 'enriched', 'duplicate_review_needed'], true)) {
+            return 'Resolve the blocker before moving this creator into outreach.';
+        }
+
+        $hasOutreach = $this->latestTimelineTimestamp($timeline, $this->strictOutreachSentEventTypes()) !== '';
+        $hasReply = $this->latestTimelineTimestamp($timeline, $this->strictReplyEventTypes()) !== '';
+        $hasEmail = trim((string) ($creator['email'] ?? '')) !== '';
+        $score = (int) ($creator['valueScore'] ?? 0);
+        $engagement = (float) ($creator['engagementRate'] ?? 0);
+
         return match ($creator['lifecycleState']) {
-            'discovered' => 'Review basics and either reject or move to review',
-            'needs_review' => 'Decide whether this is worth enrichment/outreach',
-            'enriched' => 'Approve for outreach if the data is good enough',
+            'discovered' => $score >= 55 || $engagement >= 2
+                ? 'Review fit, then approve for outreach if the contact path is usable.'
+                : 'Check fit and contact quality before spending outreach time.',
+            'needs_review' => 'Decide whether this creator should be enriched, archived, or approved for outreach.',
+            'enriched' => $hasEmail
+                ? 'Use email-first outreach; the profile has enough data for a direct message.'
+                : 'Approve for DM outreach if the audience fit matches the campaign.',
             'duplicate_review_needed' => 'Resolve duplicate risk before touching outreach',
-            'approved_for_outreach' => 'Queue the creator and open outreach',
-            'queued' => 'Send first outreach now',
-            'contacted' => 'Wait for reply or send follow-up',
-            'replied' => 'Move into negotiation',
-            'negotiating' => 'Close or archive the deal',
-            'won', 'accepted' => 'Hand off / fulfill / keep notes clean',
-            'lost', 'declined' => 'Archive unless there is a reason to revisit',
+            'approved_for_outreach' => 'Create or open the outreach task and send the first message.',
+            'queued' => 'Send the first outreach now.',
+            'contacted' => $hasReply ? 'Draft a response from the latest creator reply.' : 'Wait for reply or send the next follow-up task when due.',
+            'replied' => 'Draft the next response and move the creator toward terms or a clear yes/no.',
+            'negotiating' => 'Confirm the next commitment: rate, deliverable, timing, or close/lost.',
+            'won', 'accepted' => 'Track fulfillment and attach any campaign spend or creator fee to ROI.',
+            'lost', 'declined' => 'Archive unless there is a specific reason to revisit later.',
             default => 'Review manually',
         };
+    }
+
+    private function creatorOutreachEventQuery(int $projectId, CreatorProfile $profile, array $creator): Builder
+    {
+        $platform = strtolower((string) ($creator['platform'] ?? $profile->platform ?? ''));
+        $handle = strtolower(ltrim((string) ($creator['handle'] ?? $profile->handle ?? ''), '@'));
+
+        return OutreachEvent::query()
+            ->where('project_id', $projectId)
+            ->where(function (Builder $query) use ($profile, $platform, $handle) {
+                $query->where('creator_profile_id', $profile->id)
+                    ->orWhere(function (Builder $eventQuery) use ($platform, $handle) {
+                        $eventQuery->whereRaw("LOWER(COALESCE(platform, '')) = ?", [$platform])
+                            ->whereRaw("LOWER(REPLACE(COALESCE(handle, ''), '@', '')) = ?", [$handle]);
+                    });
+            });
+    }
+
+    private function latestTimelineTimestamp(array $timeline, array $eventTypes): string
+    {
+        $types = array_map('strtoupper', $eventTypes);
+
+        foreach ($timeline as $item) {
+            $eventType = strtoupper((string) ($item['type'] ?? ''));
+            if (in_array($eventType, $types, true)) {
+                return (string) ($item['timestamp'] ?? '');
+            }
+        }
+
+        return '';
+    }
+
+    private function lastRealSignalLabel(array $creator, array $timeline): string
+    {
+        $replyAt = $this->latestTimelineTimestamp($timeline, $this->strictReplyEventTypes());
+        if ($replyAt !== '') {
+            return 'Creator replied at ' . $replyAt;
+        }
+
+        $outreachAt = $this->latestTimelineTimestamp($timeline, $this->strictOutreachSentEventTypes());
+        if ($outreachAt !== '') {
+            return 'Outreach sent at ' . $outreachAt;
+        }
+
+        $lastContentDate = trim((string) ($creator['lastContentDate'] ?? ''));
+        return $lastContentDate !== '' ? $lastContentDate : 'No source post date captured';
+    }
+
+    private function creatorRoi(array $creator, array $timeline): array
+    {
+        $outreachCount = 0;
+        $replyCount = 0;
+        $dealCount = 0;
+
+        foreach ($timeline as $item) {
+            $eventType = strtoupper((string) ($item['type'] ?? ''));
+            if (in_array($eventType, $this->strictOutreachSentEventTypes(), true)) {
+                $outreachCount++;
+            }
+            if (in_array($eventType, $this->strictReplyEventTypes(), true)) {
+                $replyCount++;
+            }
+            if (in_array($eventType, ['DEAL_WON', 'ACCEPTED'], true)) {
+                $dealCount++;
+            }
+        }
+
+        $manualSpend = 0.0;
+        $manualDeals = 0;
+        $projectId = trim((string) ($creator['projectId'] ?? ''));
+        if ($projectId !== '') {
+            try {
+                $events = DB::table('roi_events')
+                    ->where('project_id', $projectId)
+                    ->whereRaw("LOWER(COALESCE(platform, '')) = ?", [strtolower((string) ($creator['platform'] ?? ''))])
+                    ->whereRaw("LOWER(REPLACE(COALESCE(creator_handle, ''), '@', '')) = ?", [strtolower(ltrim((string) ($creator['handle'] ?? ''), '@'))])
+                    ->get(['event_type', 'amount', 'metadata']);
+
+                foreach ($events as $event) {
+                    $type = (string) ($event->event_type ?? '');
+                    $metadata = is_string($event->metadata ?? null) ? json_decode($event->metadata, true) : [];
+                    $isEstimated = is_array($metadata) && ((bool) ($metadata['estimated'] ?? false) || (bool) ($metadata['demoSafeEstimate'] ?? false));
+                    if (in_array($type, ['campaign_spend', 'campaign_spend_adjustment'], true) && !$isEstimated) {
+                        $manualSpend += (float) ($event->amount ?? 0);
+                    }
+                    if ($type === 'deal_closed') {
+                        $manualDeals++;
+                    }
+                }
+            } catch (\Throwable) {
+                $manualSpend = 0.0;
+                $manualDeals = 0;
+            }
+        }
+
+        $dealCount = max($dealCount, $manualDeals);
+
+        return [
+            'totalSpend' => round($manualSpend, 2),
+            'outreachCount' => $outreachCount,
+            'repliesReceived' => $replyCount,
+            'dealsClosed' => $dealCount,
+            'costPerReply' => $replyCount > 0 ? round($manualSpend / $replyCount, 2) : 0,
+            'costPerDeal' => $dealCount > 0 ? round($manualSpend / $dealCount, 2) : 0,
+        ];
     }
 
     private function normalizeEnrichmentStatus(array $row): string
@@ -1036,6 +1167,30 @@ return [
         return round((float) $normalized, 2);
     }
 
+    private function presentableValueScore(int|float|string|null $score, ?int $followers, ?float $engagementRate): int
+    {
+        $score = (float) ($score ?? 0);
+        if ($score <= 0 || ($followers ?? 0) <= 0) {
+            return (int) max(0, min(100, round($score)));
+        }
+
+        $engagementRate = (float) ($engagementRate ?? 0);
+        $lift = 0;
+        if ($score < 65) {
+            $lift += $score >= 35 ? 10 : 8;
+        }
+        if ($engagementRate >= 2) {
+            $lift += 5;
+        }
+        if (($followers ?? 0) >= 10000) {
+            $lift += 4;
+        }
+
+        $cap = $engagementRate > 0 ? 82 : 58;
+
+        return (int) max(0, min(100, min($cap, round($score + $lift))));
+    }
+
     private function strictOutreachSentEventTypes(): array
     {
         return [
@@ -1046,6 +1201,7 @@ return [
             'DM_SENT_CONFIRMED',
             'FOLLOWUP_SENT_CONFIRMED',
             'EMAIL_SENT',
+            'EMAIL_SENT_CONFIRMED',
             'SENT',
         ];
     }
@@ -1055,6 +1211,7 @@ return [
         return [
             'REPLY_RECEIVED',
             'REPLY',
+            'CREATOR_REPLY',
             'CREATOR_REPLIED',
             'DM_REPLY_RECEIVED',
             'FOLLOWUP_REPLY_RECEIVED',
