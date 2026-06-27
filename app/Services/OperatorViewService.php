@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\CreatorProfile;
 use App\Models\OutreachEvent;
 use App\Models\Task;
+use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -516,6 +517,8 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
             $confidenceReasons[] = 'Relationship history is tracked';
         }
 
+        $nextBestAction = $this->nextBestAction($creator, $relatedTasks, $timeline, $hardDisqualifiers);
+
         return [
             'creator' => $creator,
             'linkedProfiles' => array_values($linkedProfiles),
@@ -553,7 +556,8 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
                         ? array_values(array_unique(array_filter(array_merge(...array_map(fn (array $warning) => array_map(fn (array $item) => $item['handle'] . ' (' . $item['platform'] . ')', $warning['creators']), $duplicates)))))
                         : [],
                 ],
-                'recommendedNextAction' => $this->recommendedNextAction($creator, $relatedTasks, $timeline, $hardDisqualifiers),
+                'recommendedNextAction' => (string) ($nextBestAction['reason'] ?? $nextBestAction['title'] ?? ''),
+                'nextBestAction' => $nextBestAction,
                 'hardDisqualifiers' => $hardDisqualifiers,
                 'operatorNotes' => (string) ($creator['notes'] ?? ''),
                 'timeline' => array_slice($timeline, 0, 20),
@@ -967,48 +971,246 @@ return [
 
     private function recommendedNextAction(array $creator, array $relatedTasks = [], array $timeline = [], array $hardDisqualifiers = []): string
     {
+        $action = $this->nextBestAction($creator, $relatedTasks, $timeline, $hardDisqualifiers);
+        $title = trim((string) ($action['title'] ?? ''));
+        $reason = trim((string) ($action['reason'] ?? ''));
+
+        return trim($title . ($reason !== '' ? '. ' . $reason : ''));
+    }
+
+    private function nextBestAction(array $creator, array $relatedTasks = [], array $timeline = [], array $hardDisqualifiers = []): array
+    {
         $openTasks = array_values(array_filter($relatedTasks, fn (array $task) => !in_array((string) ($task['status'] ?? ''), ['completed', 'skipped', 'archived'], true)));
         $state = (string) ($creator['lifecycleState'] ?? '');
-        $nextTask = collect($openTasks)->first(fn (array $task) => $this->taskCanLeadNextAction($state, (string) ($task['type'] ?? '')));
-        if ($nextTask) {
-            return $this->taskNextActionLabel($nextTask);
-        }
-
-        if (count($hardDisqualifiers) > 0 && in_array($creator['lifecycleState'], ['discovered', 'needs_review', 'enriched', 'duplicate_review_needed'], true)) {
-            return 'Resolve the blocker before moving this creator into outreach.';
-        }
-
-        $hasOutreach = $this->latestTimelineTimestamp($timeline, $this->strictOutreachSentEventTypes()) !== '';
-        $hasReply = $this->latestTimelineTimestamp($timeline, $this->strictReplyEventTypes()) !== '';
         $hasEmail = trim((string) ($creator['email'] ?? '')) !== '';
         $score = (int) ($creator['valueScore'] ?? 0);
         $engagement = (float) ($creator['engagementRate'] ?? 0);
+        $followers = (int) ($creator['followers'] ?? 0);
+        $fitSignal = $this->profileFitSignal($followers, $engagement, $score);
+        $latestOutreachAt = $this->latestTimelineTimestamp($timeline, $this->strictOutreachSentEventTypes());
+        $latestReplyAt = $this->latestTimelineTimestamp($timeline, $this->strictReplyEventTypes());
+        $supportingFacts = array_values(array_filter([
+            $fitSignal,
+            $latestOutreachAt !== '' ? 'Last outreach was ' . $this->agePhrase($latestOutreachAt) . '.' : null,
+            $latestReplyAt !== '' ? 'Last reply was ' . $this->agePhrase($latestReplyAt) . '.' : null,
+            count($openTasks) > 0 ? count($openTasks) . ' open workflow task' . (count($openTasks) === 1 ? '' : 's') . ' attached.' : null,
+        ]));
 
-        return match ($state) {
-            'discovered' => $score >= 55 || $engagement >= 2
-                ? 'Review fit, then approve for outreach if the contact path is usable.'
-                : 'Check fit and contact quality before spending outreach time.',
-            'needs_review' => 'Decide whether this creator should be enriched, archived, or approved for outreach.',
-            'enriched' => $hasEmail
-                ? 'Use email-first outreach; the profile has enough data for a direct message.'
-                : 'Approve for DM outreach if the audience fit matches the campaign.',
-            'duplicate_review_needed' => 'Resolve duplicate risk before touching outreach',
-            'approved_for_outreach' => 'Create or open the outreach task and send the first message.',
-            'queued' => 'Send the first outreach now.',
-            'contacted' => $hasReply ? 'Draft a response from the latest creator reply.' : 'Check the conversation. If they replied, log it; otherwise wait for the next follow-up.',
-            'replied' => 'Draft the next response and move the creator toward terms or a clear yes/no.',
-            'negotiating' => 'Confirm the next commitment: rate, deliverable, timing, or close/lost.',
-            'won', 'accepted' => 'Track fulfillment and attach any campaign spend or creator fee to ROI.',
-            'lost', 'declined' => 'Archive unless there is a specific reason to revisit later.',
-            default => 'Review manually',
+        $candidates = [];
+        $addCandidate = function (array $candidate) use (&$candidates, $supportingFacts) {
+            $candidate['supportingFacts'] = array_values(array_slice(array_unique(array_filter(array_merge(
+                $candidate['supportingFacts'] ?? [],
+                $supportingFacts
+            ))), 0, 4));
+            $candidate['primaryCta'] = (string) ($candidate['primaryCta'] ?? 'Open Outreach');
+            $candidate['route'] = (string) ($candidate['route'] ?? 'outreach');
+            $candidate['priority'] = (string) ($candidate['priority'] ?? 'normal');
+            $candidate['source'] = (string) ($candidate['source'] ?? 'system_inferred');
+            $candidate['requiresUserConfirmation'] = (bool) ($candidate['requiresUserConfirmation'] ?? false);
+            $candidate['score'] = (int) ($candidate['score'] ?? 0);
+            $candidates[] = $candidate;
         };
+
+        if ($this->hasDuplicateBlocker($creator, $hardDisqualifiers)) {
+            $addCandidate([
+                'actionKey' => 'resolve_duplicate_risk',
+                'title' => 'Resolve duplicate risk',
+                'reason' => 'This profile has a duplicate signal, so keep only the correct creator before any new outreach is sent.',
+                'primaryCta' => 'Open duplicate review',
+                'route' => 'duplicates',
+                'priority' => 'urgent',
+                'source' => 'system_blocker',
+                'requiresUserConfirmation' => true,
+                'supportingFacts' => array_slice($hardDisqualifiers, 0, 2),
+                'score' => in_array($state, ['contacted', 'replied', 'negotiating', 'accepted', 'won'], true) ? 82 : 100,
+            ]);
+        }
+
+        if ($latestReplyAt !== '' || $state === 'replied') {
+            $age = $latestReplyAt !== '' ? $this->agePhrase($latestReplyAt) : 'recently';
+            $addCandidate([
+                'actionKey' => 'draft_reply',
+                'title' => 'Draft the response',
+                'reason' => "A creator reply was logged {$age}. Use Outreach to answer while the conversation is warm and move it toward terms or a clear yes/no.",
+                'primaryCta' => 'Draft response',
+                'route' => 'outreach_reply',
+                'priority' => 'urgent',
+                'source' => 'relationship_signal',
+                'score' => 96,
+            ]);
+        }
+
+        foreach ($openTasks as $task) {
+            if (!$this->taskCanLeadNextAction($state, (string) ($task['type'] ?? ''), $latestOutreachAt, $latestReplyAt)) {
+                continue;
+            }
+
+            $candidate = $this->taskNextActionCandidate($task, $hasEmail);
+            if ($candidate !== null) {
+                $addCandidate($candidate);
+            }
+        }
+
+        if ($latestOutreachAt !== '') {
+            $days = $this->daysSince($latestOutreachAt);
+            $age = $this->agePhrase($latestOutreachAt);
+            if ($days !== null && $days >= 3) {
+                $addCandidate([
+                    'actionKey' => 'send_follow_up',
+                    'title' => 'Send a follow-up',
+                    'reason' => "First outreach was sent {$age} and no reply is logged. Send the follow-up now, then record the outcome.",
+                    'primaryCta' => 'Open Outreach',
+                    'route' => 'outreach',
+                    'priority' => 'high',
+                    'source' => 'timing_rule',
+                    'score' => 90,
+                ]);
+            } else {
+                $addCandidate([
+                    'actionKey' => 'check_conversation',
+                    'title' => 'Check the conversation',
+                    'reason' => "First outreach was sent {$age}. Log a reply if one exists; otherwise let the follow-up window mature before sending the next message.",
+                    'primaryCta' => 'Open Outreach',
+                    'route' => 'outreach',
+                    'priority' => 'normal',
+                    'source' => 'timing_rule',
+                    'score' => 64,
+                ]);
+            }
+        }
+
+        match ($state) {
+            'discovered', 'needs_review', 'enriched', 'approved_for_outreach', 'queued' => $addCandidate([
+                'actionKey' => $hasEmail ? 'send_first_email' : 'send_first_dm',
+                'title' => $hasEmail ? 'Send the first email' : 'Send the first DM',
+                'reason' => 'No outreach is logged yet. Start the conversation from Outreach and let the result update the creator history.',
+                'primaryCta' => 'Open Outreach',
+                'route' => 'outreach',
+                'priority' => $score >= 65 ? 'high' : 'normal',
+                'source' => 'lifecycle_state',
+                'score' => $score >= 65 ? 80 : 74,
+            ]),
+            'contacted' => $addCandidate([
+                'actionKey' => 'verify_contact_status',
+                'title' => 'Verify the contact status',
+                'reason' => 'This creator is marked contacted but no sent outreach timestamp is attached. Open Outreach, confirm what was sent, then log the reply or follow-up.',
+                'primaryCta' => 'Open Outreach',
+                'route' => 'outreach',
+                'priority' => 'high',
+                'source' => 'data_gap',
+                'score' => 78,
+            ]),
+            'negotiating' => $addCandidate([
+                'actionKey' => 'confirm_terms',
+                'title' => 'Confirm the next commitment',
+                'reason' => 'The creator is in negotiation. Confirm the rate, deliverable, posting date, or mark the conversation won/lost.',
+                'primaryCta' => 'Open Outreach',
+                'route' => 'outreach',
+                'priority' => 'high',
+                'source' => 'lifecycle_state',
+                'score' => 88,
+            ]),
+            'accepted' => $addCandidate([
+                'actionKey' => 'confirm_delivery',
+                'title' => 'Confirm delivery details',
+                'reason' => 'The creator is accepted. Confirm the deliverable and capture spend or expected outcome data so ROI stays useful.',
+                'primaryCta' => 'Open Outreach',
+                'route' => 'outreach',
+                'priority' => 'normal',
+                'source' => 'lifecycle_state',
+                'score' => 76,
+            ]),
+            'won' => $addCandidate([
+                'actionKey' => 'track_creator_roi',
+                'title' => 'Track creator ROI',
+                'reason' => 'This creator is marked won. Add spend and result data so the relationship history becomes a reusable decision signal.',
+                'primaryCta' => 'Open insights',
+                'route' => 'roi',
+                'priority' => 'normal',
+                'source' => 'lifecycle_state',
+                'score' => 70,
+            ]),
+            'declined', 'lost' => $addCandidate([
+                'actionKey' => 'archive_or_revisit',
+                'title' => 'Archive or set a revisit note',
+                'reason' => 'This creator is not moving forward. Archive them unless there is a specific future reason to revisit the relationship.',
+                'primaryCta' => 'Review profile',
+                'route' => 'none',
+                'priority' => 'low',
+                'source' => 'lifecycle_state',
+                'requiresUserConfirmation' => true,
+                'score' => 48,
+            ]),
+            'archived' => $addCandidate([
+                'actionKey' => 'review_archived_profile',
+                'title' => 'Review archived profile',
+                'reason' => 'This creator is archived. Only reactivate them if a new campaign gives you a clear reason.',
+                'primaryCta' => '',
+                'route' => 'none',
+                'priority' => 'low',
+                'source' => 'lifecycle_state',
+                'score' => 20,
+            ]),
+            default => $addCandidate([
+                'actionKey' => $hasEmail ? 'send_first_email' : 'send_first_dm',
+                'title' => $hasEmail ? 'Send the first email' : 'Send the first DM',
+                'reason' => 'No outreach is logged yet. Start from Outreach and record the outcome.',
+                'primaryCta' => 'Open Outreach',
+                'route' => 'outreach',
+                'priority' => 'normal',
+                'source' => 'fallback_rule',
+                'score' => 60,
+            ]),
+        };
+
+        usort($candidates, fn (array $a, array $b) => ($b['score'] <=> $a['score']) ?: strcmp((string) ($a['actionKey'] ?? ''), (string) ($b['actionKey'] ?? '')));
+        $winner = $candidates[0] ?? [
+            'actionKey' => $hasEmail ? 'send_first_email' : 'send_first_dm',
+            'title' => $hasEmail ? 'Send the first email' : 'Send the first DM',
+            'reason' => 'No outreach is logged yet. Start from Outreach and record the outcome.',
+            'primaryCta' => 'Open Outreach',
+            'route' => 'outreach',
+            'priority' => 'normal',
+            'source' => 'fallback_rule',
+            'requiresUserConfirmation' => false,
+            'supportingFacts' => $supportingFacts,
+            'score' => 1,
+        ];
+
+        unset($winner['score']);
+        return $winner;
     }
 
-    private function taskCanLeadNextAction(string $state, string $taskType): bool
+    private function hasDuplicateBlocker(array $creator, array $hardDisqualifiers): bool
+    {
+        $state = (string) ($creator['lifecycleState'] ?? '');
+        if ($state === 'duplicate_review_needed' || (string) ($creator['duplicateRisk'] ?? 'low') === 'high') {
+            return true;
+        }
+
+        foreach ($hardDisqualifiers as $item) {
+            $normalized = strtolower((string) $item);
+            if (str_contains($normalized, 'duplicate') || str_contains($normalized, 'shared handle') || str_contains($normalized, 'shared email')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function taskCanLeadNextAction(string $state, string $taskType, string $latestOutreachAt = '', string $latestReplyAt = ''): bool
     {
         $taskType = strtoupper(trim($taskType));
         $supportTasks = ['FOLLOW_REQUEST', 'COMMENT_ON_POST'];
         if (in_array($taskType, $supportTasks, true) && in_array($state, ['contacted', 'replied', 'negotiating', 'accepted', 'won', 'lost', 'archived'], true)) {
+            return false;
+        }
+
+        if (in_array($taskType, ['DM_INVITE', 'EMAIL_SEND'], true) && $latestOutreachAt !== '') {
+            return false;
+        }
+
+        if (in_array($taskType, ['DM_FOLLOWUP', 'CHECK_IN'], true) && $latestReplyAt !== '') {
             return false;
         }
 
@@ -1025,24 +1227,165 @@ return [
         ], true);
     }
 
-    private function taskNextActionLabel(array $task): string
+    private function taskNextActionCandidate(array $task, bool $hasEmail): ?array
     {
         $type = strtoupper((string) ($task['type'] ?? ''));
         $due = trim((string) ($task['dueDate'] ?? ''));
-        $dueLabel = $due !== '' ? ' Due ' . $due . '.' : '';
+        $dueFact = $due !== '' ? $this->duePhrase($due) : '';
+
+        $base = [
+            'source' => 'task_due',
+            'requiresUserConfirmation' => false,
+            'supportingFacts' => array_values(array_filter([$dueFact])),
+        ];
 
         return match ($type) {
-            'DM_INVITE' => 'Send the first DM from Outreach.' . $dueLabel,
-            'DM_FOLLOWUP' => 'Send the follow-up from Outreach.' . $dueLabel,
-            'EMAIL_SEND' => 'Send the email from Outreach.' . $dueLabel,
-            'NEGOTIATE_TERMS' => 'Open Outreach and move the creator toward terms.' . $dueLabel,
-            'CHECK_IN' => 'Check the conversation and record the outcome.' . $dueLabel,
-            'CONFIRM_ACCEPTED' => 'Confirm acceptance and update the creator state.' . $dueLabel,
-            'CONFIRM_POSTED' => 'Confirm the post is live and update ROI if needed.' . $dueLabel,
-            'FOLLOW_REQUEST' => 'Open the creator profile and complete the follow request.' . $dueLabel,
-            'COMMENT_ON_POST' => 'Open the source/profile and complete the warm-up comment.' . $dueLabel,
-            default => 'Open the next task and record the outcome.' . $dueLabel,
+            'DM_INVITE' => array_merge($base, [
+                'actionKey' => 'send_first_dm',
+                'title' => 'Send the first DM',
+                'reason' => 'The next open task is a DM invite. Send it from Outreach so the send is logged automatically.',
+                'primaryCta' => 'Open Outreach',
+                'route' => 'outreach',
+                'priority' => 'high',
+                'score' => 86,
+            ]),
+            'DM_FOLLOWUP' => array_merge($base, [
+                'actionKey' => 'send_follow_up',
+                'title' => 'Send the follow-up',
+                'reason' => 'The next open task is a follow-up and no reply is logged. Send it from Outreach and record the outcome.',
+                'primaryCta' => 'Open Outreach',
+                'route' => 'outreach',
+                'priority' => 'high',
+                'score' => 92,
+            ]),
+            'EMAIL_SEND' => array_merge($base, [
+                'actionKey' => 'send_first_email',
+                'title' => 'Send the first email',
+                'reason' => 'The next open task is an email send. Send it from Outreach so the message and creator history stay connected.',
+                'primaryCta' => 'Open Outreach',
+                'route' => 'outreach',
+                'priority' => 'high',
+                'score' => $hasEmail ? 88 : 72,
+            ]),
+            'NEGOTIATE_TERMS' => array_merge($base, [
+                'actionKey' => 'confirm_terms',
+                'title' => 'Confirm terms',
+                'reason' => 'The next open task is negotiation. Ask for the rate, deliverable, posting date, or close the conversation.',
+                'primaryCta' => 'Open Outreach',
+                'route' => 'outreach',
+                'priority' => 'high',
+                'score' => 89,
+            ]),
+            'CHECK_IN' => array_merge($base, [
+                'actionKey' => 'check_conversation',
+                'title' => 'Check the conversation',
+                'reason' => 'The next open task is a check-in. Record whether they replied, declined, or need another follow-up.',
+                'primaryCta' => 'Open Outreach',
+                'route' => 'outreach',
+                'priority' => 'normal',
+                'score' => 74,
+            ]),
+            'CONFIRM_ACCEPTED' => array_merge($base, [
+                'actionKey' => 'confirm_delivery',
+                'title' => 'Confirm acceptance',
+                'reason' => 'The next open task is acceptance confirmation. Confirm the deliverable and schedule the follow-through.',
+                'primaryCta' => 'Open Outreach',
+                'route' => 'outreach',
+                'priority' => 'normal',
+                'score' => 82,
+            ]),
+            'CONFIRM_POSTED' => array_merge($base, [
+                'actionKey' => 'confirm_posted',
+                'title' => 'Confirm the post is live',
+                'reason' => 'The next open task is post confirmation. Confirm the post, then update ROI if spend or outcome data exists.',
+                'primaryCta' => 'Open Outreach',
+                'route' => 'outreach',
+                'priority' => 'normal',
+                'score' => 80,
+            ]),
+            'FOLLOW_REQUEST' => array_merge($base, [
+                'actionKey' => 'complete_follow_request',
+                'title' => 'Complete the follow request',
+                'reason' => 'This warm-up task is still open. Complete it only if you use follow requests before first outreach.',
+                'primaryCta' => 'Open profile',
+                'route' => 'external_profile',
+                'priority' => 'low',
+                'score' => 52,
+            ]),
+            'COMMENT_ON_POST' => array_merge($base, [
+                'actionKey' => 'comment_on_post',
+                'title' => 'Leave the planned comment',
+                'reason' => 'This warm-up task is still open. Use it as support, then send the real outreach from Outreach.',
+                'primaryCta' => 'Open profile',
+                'route' => 'external_profile',
+                'priority' => 'low',
+                'score' => 50,
+            ]),
+            default => null,
         };
+    }
+
+    private function profileFitSignal(int $followers, float $engagement, int $score): string
+    {
+        $parts = [];
+        if ($followers > 0) {
+            $parts[] = number_format($followers) . ' followers';
+        }
+        if ($engagement > 0) {
+            $parts[] = round($engagement, 1) . '% engagement';
+        }
+        if ($score > 0) {
+            $parts[] = 'value score ' . $score;
+        }
+
+        return $parts === []
+            ? 'Profile data is still thin.'
+            : 'Profile signals: ' . implode(', ', $parts) . '.';
+    }
+
+    private function daysSince(string $value): ?int
+    {
+        try {
+            return (int) floor(Carbon::parse($value)->diffInHours(now()) / 24);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private function agePhrase(string $value): string
+    {
+        try {
+            $date = Carbon::parse($value);
+        } catch (\Throwable) {
+            return 'recently';
+        }
+
+        $hours = $date->diffInHours(now());
+        if ($hours < 24) {
+            return 'today';
+        }
+
+        $days = (int) floor($hours / 24);
+        if ($days === 1) {
+            return 'yesterday';
+        }
+
+        return $days . ' days ago';
+    }
+
+    private function duePhrase(string $value): string
+    {
+        try {
+            $date = Carbon::parse($value);
+        } catch (\Throwable) {
+            return 'Due ' . $value . '.';
+        }
+
+        if ($date->isPast()) {
+            return 'This task is due now.';
+        }
+
+        return 'Due ' . $date->diffForHumans(['parts' => 1, 'join' => true]) . '.';
     }
 
     private function confidenceScore(array $creator, array $confidenceReasons, array $hardDisqualifiers, array $timeline): int
