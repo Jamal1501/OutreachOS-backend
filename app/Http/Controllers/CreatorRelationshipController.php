@@ -43,6 +43,53 @@ class CreatorRelationshipController extends Controller
         ]);
     }
 
+    public function conversation(Request $request, string $id)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+            'limit' => ['nullable', 'integer', 'min:1', 'max:50'],
+        ]);
+
+        $workspaceId = trim((string) $request->attributes->get('workspace_id'));
+        abort_if($workspaceId === '', 400, 'Missing workspace context.');
+
+        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
+        $project = $this->projects->findByWorkbookId($sheetId);
+        abort_if(!$project || (string) $project->workspace_id !== $workspaceId, 404, 'Creator not found');
+
+        $profile = $this->resolveCreatorProfileForRoute((string) $project->id, $id);
+        abort_if(!$profile, 404, 'Creator not found');
+
+        return response()->json([
+            'message' => 'Creator conversation fetched',
+            'data' => [
+                'items' => $this->timeline->listConversationForCreator($profile, (int) ($validated['limit'] ?? 30))->values()->all(),
+            ],
+        ]);
+    }
+
+    public function activeConversations(Request $request)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+            'limit' => ['nullable', 'integer', 'min:1', 'max:50'],
+        ]);
+
+        $workspaceId = trim((string) $request->attributes->get('workspace_id'));
+        abort_if($workspaceId === '', 400, 'Missing workspace context.');
+
+        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
+        $project = $this->projects->findByWorkbookId($sheetId);
+        abort_if(!$project || (string) $project->workspace_id !== $workspaceId, 404, 'Project not found');
+
+        return response()->json([
+            'message' => 'Active conversations fetched',
+            'data' => [
+                'items' => $this->timeline->listActiveConversations($project, (int) ($validated['limit'] ?? 30))->values()->all(),
+            ],
+        ]);
+    }
+
     private function resolveCreatorProfileForRoute(string $projectId, string $id): ?CreatorProfile
     {
         $id = trim($id);

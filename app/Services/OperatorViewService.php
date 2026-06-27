@@ -1090,7 +1090,7 @@ return [
                 'source' => 'lifecycle_state',
                 'score' => $score >= 65 ? 80 : 74,
             ]),
-            'contacted' => $addCandidate([
+            'contacted' => $latestOutreachAt === '' ? $addCandidate([
                 'actionKey' => 'verify_contact_status',
                 'title' => 'Verify the contact status',
                 'reason' => 'This creator is marked contacted but no sent outreach timestamp is attached. Open Outreach, confirm what was sent, then log the reply or follow-up.',
@@ -1099,7 +1099,7 @@ return [
                 'priority' => 'high',
                 'source' => 'data_gap',
                 'score' => 78,
-            ]),
+            ]) : null,
             'negotiating' => $addCandidate([
                 'actionKey' => 'confirm_terms',
                 'title' => 'Confirm the next commitment',

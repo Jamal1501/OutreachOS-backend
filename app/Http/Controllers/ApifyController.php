@@ -599,6 +599,7 @@ public function mergeEnrichedToCreators(Request $request)
             'Status' => ['nullable', 'string'],
             'URL' => ['nullable', 'string'],
             'Notes' => ['nullable', 'string'],
+            'Message_Text' => ['nullable', 'string'],
         ]);
 
         $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);

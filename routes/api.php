@@ -66,6 +66,7 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::put('/crm/duplicate-links/{id}', [DuplicateLinkController::class, 'update']);
 
     Route::post('/outreach/log', [ApifyController::class, 'logOutreachEvent']);
+    Route::get('/outreach/conversations', [CreatorRelationshipController::class, 'activeConversations']);
     Route::post('/roi/events', [SheetDataController::class, 'captureRoiEvent']);
 
     Route::get('/discovery/list', [SheetDataController::class, 'discoveryList']);
@@ -84,6 +85,7 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::get('/operator/view', [SheetDataController::class, 'operatorView']);
     Route::get('/creators/{id}/decision-sheet', [SheetDataController::class, 'creatorDecisionSheet']);
     Route::get('/creators/{id}/relationship-events', [CreatorRelationshipController::class, 'index']);
+    Route::get('/creators/{id}/conversation', [CreatorRelationshipController::class, 'conversation']);
     Route::post('/creators/{id}/transition', [SheetDataController::class, 'transitionCreator']);
 
     Route::get('/tasks/settings', [ApifyController::class, 'taskSettings']);

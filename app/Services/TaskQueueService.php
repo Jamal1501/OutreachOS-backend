@@ -846,6 +846,7 @@ class TaskQueueService
             'Status' => $status,
             'URL' => (string) ($task->conversation_url ?: $task->open_url ?: ''),
             'Notes' => implode(' | ', array_values(array_filter([$notes, $outcome, $skipReason, $skipReasonDetail]))),
+            'Message_Text' => (string) ($task->message_draft ?: ''),
         ]);
 
         return [

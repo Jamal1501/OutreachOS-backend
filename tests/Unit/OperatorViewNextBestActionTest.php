@@ -59,6 +59,23 @@ class OperatorViewNextBestActionTest extends TestCase
         $this->assertSame('high', $action['priority']);
     }
 
+    public function test_contacted_creator_with_recent_outreach_does_not_show_data_gap(): void
+    {
+        Carbon::setTestNow('2026-06-27 12:00:00');
+
+        $action = $this->invokeNextBestAction(
+            ['lifecycleState' => 'contacted', 'email' => '', 'valueScore' => 70, 'followers' => 9000, 'engagementRate' => 2.8],
+            [],
+            [
+                ['type' => 'dm_sent', 'timestamp' => '2026-06-26 10:40:30'],
+            ]
+        );
+
+        $this->assertSame('check_conversation', $action['actionKey']);
+        $this->assertSame('timing_rule', $action['source']);
+        $this->assertSame('outreach', $action['route']);
+    }
+
     public function test_duplicate_review_blocks_new_outreach(): void
     {
         Carbon::setTestNow('2026-06-27 12:00:00');

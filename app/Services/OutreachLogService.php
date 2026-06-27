@@ -43,6 +43,12 @@ class OutreachLogService
             $templateId = trim((string) ($payload['Template_ID'] ?? ''));
             $url = trim((string) ($payload['URL'] ?? ''));
             $sentAt = (string) ($payload['Sent_At'] ?? now()->toDateTimeString());
+            $messageText = trim((string) (
+                Arr::get($payload, 'Message_Text')
+                ?: Arr::get($payload, 'messageText')
+                ?: Arr::get($payload, 'message_draft')
+                ?: ''
+            ));
 
             $records[] = [
                 'Event_ID' => $eventId,
@@ -56,6 +62,7 @@ class OutreachLogService
                 'Status' => (string) ($payload['Status'] ?? ''),
                 'URL' => $url,
                 'Notes' => (string) ($payload['Notes'] ?? ''),
+                'Message_Text' => $messageText,
             ];
         }
 
@@ -66,6 +73,9 @@ class OutreachLogService
                 $task = $this->findTask($project->id, $payload);
                 $profile = $this->findCreatorProfile($project->id, $record['Platform'], $record['Handle'], $payload, $task);
                 $template = $this->findMessageTemplate($project->id, (string) $record['Template_ID']);
+                $messageText = $record['Message_Text'] !== ''
+                    ? $record['Message_Text']
+                    : trim((string) ($task?->message_draft ?: ''));
 
                 $event = OutreachEvent::updateOrCreate(
                     [
@@ -85,10 +95,12 @@ class OutreachLogService
                         'status' => trim((string) $record['Status']) ?: null,
                         'url' => trim((string) $record['URL']) ?: null,
                         'notes' => trim((string) $record['Notes']) ?: null,
-                        'metadata' => [
+                        'metadata' => array_filter([
                             'sheet_sync_pending' => true,
                             'task_external_key' => $task?->external_task_key,
-                        ],
+                            'message_text' => $messageText !== '' ? $messageText : null,
+                            'message_direction' => $this->eventDirection((string) $record['Event_Type']),
+                        ], fn ($value) => $value !== null && $value !== ''),
                     ],
                 );
 
@@ -232,6 +244,16 @@ class OutreachLogService
         }
     }
 
+    private function eventDirection(string $eventType): string
+    {
+        $eventType = Str::upper(trim($eventType));
+        if (in_array($eventType, $this->strictReplyEventTypes(), true)) {
+            return 'inbound';
+        }
+
+        return 'outbound';
+    }
+
     private function strictOutreachSentEventTypes(): array
     {
         return [
@@ -252,6 +274,7 @@ class OutreachLogService
         return [
             'REPLY_RECEIVED',
             'REPLY',
+            'CREATOR_REPLY',
             'CREATOR_REPLIED',
             'DM_REPLY_RECEIVED',
             'FOLLOWUP_REPLY_RECEIVED',
