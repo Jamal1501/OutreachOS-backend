@@ -65,7 +65,18 @@ class CreatorRelationshipTimelineService
             ->orderByDesc('occurred_at')
             ->orderByDesc('created_at')
             ->limit($limit)
-            ->get()
+            ->get([
+                'id',
+                'event_type',
+                'channel',
+                'title',
+                'description',
+                'occurred_at',
+                'created_at',
+                'source_type',
+                'source_id',
+                'metadata',
+            ])
             ->map(fn (CreatorRelationshipEvent $event) => $this->toApiItem($event));
     }
 
