@@ -509,6 +509,12 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         if (($creator['evidence']['followers']['source'] ?? 'unknown') !== 'unknown') {
             $confidenceReasons[] = 'Key fields have evidence source';
         }
+        if (($creator['valueScore'] ?? 0) >= 50) {
+            $confidenceReasons[] = 'Value score is usable for prioritization';
+        }
+        if ($lastContactDate !== '' || $this->latestTimelineTimestamp($timeline, $this->strictOutreachSentEventTypes()) !== '') {
+            $confidenceReasons[] = 'Relationship history is tracked';
+        }
 
         return [
             'creator' => $creator,
@@ -528,7 +534,7 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
                     count($sourceHashtags) > 0 ? 'Discovered through #' . implode(', #', array_slice($sourceHashtags, 0, 3)) : null,
                 ])),
                 'confidenceSummary' => [
-                    'score' => min(100, count($confidenceReasons) * 25),
+                    'score' => $this->confidenceScore($creator, $confidenceReasons, $hardDisqualifiers, $timeline),
                     'label' => count($hardDisqualifiers) > 1
                         ? 'fragile'
                         : (count($confidenceReasons) >= 4
@@ -962,12 +968,10 @@ return [
     private function recommendedNextAction(array $creator, array $relatedTasks = [], array $timeline = [], array $hardDisqualifiers = []): string
     {
         $openTasks = array_values(array_filter($relatedTasks, fn (array $task) => !in_array((string) ($task['status'] ?? ''), ['completed', 'skipped', 'archived'], true)));
-        $nextTask = $openTasks[0] ?? null;
+        $state = (string) ($creator['lifecycleState'] ?? '');
+        $nextTask = collect($openTasks)->first(fn (array $task) => $this->taskCanLeadNextAction($state, (string) ($task['type'] ?? '')));
         if ($nextTask) {
-            $type = str_replace('_', ' ', Str::lower((string) ($nextTask['type'] ?? 'task')));
-            $due = trim((string) ($nextTask['dueDate'] ?? ''));
-
-            return trim(sprintf('Work the open %s task%s.', $type, $due !== '' ? ' due ' . $due : ''));
+            return $this->taskNextActionLabel($nextTask);
         }
 
         if (count($hardDisqualifiers) > 0 && in_array($creator['lifecycleState'], ['discovered', 'needs_review', 'enriched', 'duplicate_review_needed'], true)) {
@@ -980,7 +984,7 @@ return [
         $score = (int) ($creator['valueScore'] ?? 0);
         $engagement = (float) ($creator['engagementRate'] ?? 0);
 
-        return match ($creator['lifecycleState']) {
+        return match ($state) {
             'discovered' => $score >= 55 || $engagement >= 2
                 ? 'Review fit, then approve for outreach if the contact path is usable.'
                 : 'Check fit and contact quality before spending outreach time.',
@@ -991,13 +995,74 @@ return [
             'duplicate_review_needed' => 'Resolve duplicate risk before touching outreach',
             'approved_for_outreach' => 'Create or open the outreach task and send the first message.',
             'queued' => 'Send the first outreach now.',
-            'contacted' => $hasReply ? 'Draft a response from the latest creator reply.' : 'Wait for reply or send the next follow-up task when due.',
+            'contacted' => $hasReply ? 'Draft a response from the latest creator reply.' : 'Check the conversation. If they replied, log it; otherwise wait for the next follow-up.',
             'replied' => 'Draft the next response and move the creator toward terms or a clear yes/no.',
             'negotiating' => 'Confirm the next commitment: rate, deliverable, timing, or close/lost.',
             'won', 'accepted' => 'Track fulfillment and attach any campaign spend or creator fee to ROI.',
             'lost', 'declined' => 'Archive unless there is a specific reason to revisit later.',
             default => 'Review manually',
         };
+    }
+
+    private function taskCanLeadNextAction(string $state, string $taskType): bool
+    {
+        $taskType = strtoupper(trim($taskType));
+        $supportTasks = ['FOLLOW_REQUEST', 'COMMENT_ON_POST'];
+        if (in_array($taskType, $supportTasks, true) && in_array($state, ['contacted', 'replied', 'negotiating', 'accepted', 'won', 'lost', 'archived'], true)) {
+            return false;
+        }
+
+        return in_array($taskType, [
+            'DM_INVITE',
+            'DM_FOLLOWUP',
+            'EMAIL_SEND',
+            'NEGOTIATE_TERMS',
+            'CHECK_IN',
+            'CONFIRM_ACCEPTED',
+            'CONFIRM_POSTED',
+            'FOLLOW_REQUEST',
+            'COMMENT_ON_POST',
+        ], true);
+    }
+
+    private function taskNextActionLabel(array $task): string
+    {
+        $type = strtoupper((string) ($task['type'] ?? ''));
+        $due = trim((string) ($task['dueDate'] ?? ''));
+        $dueLabel = $due !== '' ? ' Due ' . $due . '.' : '';
+
+        return match ($type) {
+            'DM_INVITE' => 'Send the first DM from Outreach.' . $dueLabel,
+            'DM_FOLLOWUP' => 'Send the follow-up from Outreach.' . $dueLabel,
+            'EMAIL_SEND' => 'Send the email from Outreach.' . $dueLabel,
+            'NEGOTIATE_TERMS' => 'Open Outreach and move the creator toward terms.' . $dueLabel,
+            'CHECK_IN' => 'Check the conversation and record the outcome.' . $dueLabel,
+            'CONFIRM_ACCEPTED' => 'Confirm acceptance and update the creator state.' . $dueLabel,
+            'CONFIRM_POSTED' => 'Confirm the post is live and update ROI if needed.' . $dueLabel,
+            'FOLLOW_REQUEST' => 'Open the creator profile and complete the follow request.' . $dueLabel,
+            'COMMENT_ON_POST' => 'Open the source/profile and complete the warm-up comment.' . $dueLabel,
+            default => 'Open the next task and record the outcome.' . $dueLabel,
+        };
+    }
+
+    private function confidenceScore(array $creator, array $confidenceReasons, array $hardDisqualifiers, array $timeline): int
+    {
+        $score = 20;
+        $score += min(45, count($confidenceReasons) * 12);
+        if (($creator['valueScore'] ?? 0) >= 65) {
+            $score += 15;
+        } elseif (($creator['valueScore'] ?? 0) >= 45) {
+            $score += 8;
+        }
+        if ($this->latestTimelineTimestamp($timeline, $this->strictOutreachSentEventTypes()) !== '') {
+            $score += 10;
+        }
+        if ($this->latestTimelineTimestamp($timeline, $this->strictReplyEventTypes()) !== '') {
+            $score += 10;
+        }
+        $score -= min(35, count($hardDisqualifiers) * 15);
+
+        return (int) max(0, min(100, $score));
     }
 
     private function creatorOutreachEventQuery(int $projectId, CreatorProfile $profile, array $creator): Builder
