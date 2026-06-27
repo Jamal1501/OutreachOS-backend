@@ -7,14 +7,14 @@ use Illuminate\Console\Command;
 
 class BackfillCreatorConversationsCommand extends Command
 {
-    protected $signature = 'outreach:backfill-conversations {--projectId= : Optional project ID} {--limit=1000 : Max events to inspect}';
+    protected $signature = 'outreach:backfill-conversations {--project-id= : Optional project ID} {--limit=1000 : Max events to inspect}';
 
     protected $description = 'Attach existing outreach events and saved message drafts to creator conversation history.';
 
     public function handle(CreatorRelationshipTimelineService $timeline): int
     {
         $result = $timeline->backfillConversationLinks(
-            projectId: (string) ($this->option('projectId') ?: ''),
+            projectId: (string) ($this->option('project-id') ?: ''),
             limit: (int) ($this->option('limit') ?: 1000),
         );
 
