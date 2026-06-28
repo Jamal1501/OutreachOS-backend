@@ -64,6 +64,7 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
 
     Route::get('/crm/duplicate-links', [DuplicateLinkController::class, 'index']);
     Route::post('/crm/duplicate-links', [DuplicateLinkController::class, 'store'])->middleware('throttle:expensive');
+    Route::post('/crm/duplicate-links/scan', [DuplicateLinkController::class, 'scan'])->middleware('throttle:expensive');
     Route::put('/crm/duplicate-links/{id}', [DuplicateLinkController::class, 'update']);
 
     Route::post('/outreach/log', [ApifyController::class, 'logOutreachEvent']);
