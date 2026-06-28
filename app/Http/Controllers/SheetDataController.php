@@ -382,11 +382,6 @@ class SheetDataController extends Controller
         $limit = (int) ($validated['limit'] ?? 200);
         $offset = (int) ($validated['offset'] ?? 0);
 
-        $projectForLifecycleSync = $this->projects->findByWorkbookId($sheetId);
-        if ($projectForLifecycleSync) {
-            $this->analytics->reconcileProjectLifecycle((int) $projectForLifecycleSync->id);
-        }
-
         $dbItems = $this->loadCreatorsFromDatabase($sheetId, [
             'search' => $search,
             'platforms' => $platforms,
@@ -451,6 +446,48 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
             'total' => $total,
             'statusCounts' => $this->creatorStatusCountsFromItems($items),
         ]);
+    }
+
+    public function crmFacets(Request $request)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+            'refresh' => ['nullable', 'boolean'],
+        ]);
+
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
+        $project = $this->projects->findByWorkbookId($sheetId);
+
+        if ($project && $this->mirror->enabled()) {
+            $cacheKey = 'crm_facets:v1:project:' . (int) $project->id;
+            if ((bool) ($validated['refresh'] ?? false)) {
+                Cache::forget($cacheKey);
+            }
+
+            return response()->json(Cache::remember($cacheKey, now()->addMinutes(3), function () use ($project) {
+                return array_merge(['message' => 'CRM facets fetched'], $this->crmFacetsFromDatabase((int) $project->id));
+            }));
+        }
+
+        if (Str::startsWith($sheetId, 'workspace:')) {
+            return response()->json([
+                'message' => 'CRM facets fetched',
+                'total' => 0,
+                'platforms' => [],
+                'statuses' => [],
+                'niches' => [],
+                'followerRanges' => $this->emptyFollowerRangeFacets(),
+            ]);
+        }
+
+        $items = array_map(
+            fn (array $row) => $this->normalizeCreatorRow($row),
+            $this->sheets->getRows($sheetId, 'Creators_CRM')
+        );
+
+        return response()->json(array_merge([
+            'message' => 'CRM facets fetched',
+        ], $this->crmFacetsFromItems($items)));
     }
 
     public function inferCreatorLocations(Request $request)
@@ -2268,6 +2305,125 @@ return [
         }
 
         return $counts;
+    }
+
+    private function crmFacetsFromDatabase(int $projectId): array
+    {
+        $rows = DB::table('creator_profiles')
+            ->leftJoin('creators', 'creators.id', '=', 'creator_profiles.creator_id')
+            ->where('creator_profiles.project_id', $projectId)
+            ->get([
+                'creator_profiles.platform',
+                'creator_profiles.lifecycle_state',
+                'creator_profiles.status',
+                'creator_profiles.followers_count',
+                'creator_profiles.source_metadata',
+                'creators.niche_category',
+            ]);
+
+        $items = [];
+        foreach ($rows as $row) {
+            $metadata = $this->decodeJsonObject($row->source_metadata ?? null);
+            $sourceHashtags = array_values(array_filter((array) ($metadata['source_hashtags'] ?? []), fn ($tag) => trim((string) $tag) !== ''));
+
+            $items[] = [
+                'platform' => strtolower(trim((string) ($row->platform ?? ''))),
+                'status' => trim((string) (($row->lifecycle_state ?? '') ?: ($row->status ?? 'discovered'))) ?: 'discovered',
+                'followers' => $row->followers_count,
+                'niche' => trim((string) ($row->niche_category ?? '')),
+                'sourceHashtags' => $sourceHashtags,
+            ];
+        }
+
+        return $this->crmFacetsFromItems($items);
+    }
+
+    private function crmFacetsFromItems(array $items): array
+    {
+        $platformCounts = [];
+        $statusCounts = [];
+        $nicheCounts = [];
+        $followerRanges = $this->emptyFollowerRangeFacets();
+
+        foreach ($items as $item) {
+            $platform = strtolower(trim((string) ($item['platform'] ?? '')));
+            if ($platform !== '') {
+                $platformCounts[$platform] = ($platformCounts[$platform] ?? 0) + 1;
+            }
+
+            $status = strtolower(trim((string) ($item['status'] ?? 'discovered'))) ?: 'discovered';
+            $statusCounts[$status] = ($statusCounts[$status] ?? 0) + 1;
+
+            $tags = array_merge([(string) ($item['niche'] ?? '')], (array) ($item['sourceHashtags'] ?? []));
+            foreach ($tags as $tag) {
+                $normalized = strtolower(trim(ltrim((string) $tag, '#')));
+                if ($normalized === '') {
+                    continue;
+                }
+                $nicheCounts[$normalized] = ($nicheCounts[$normalized] ?? 0) + 1;
+            }
+
+            $followers = $this->sanitizeMetric($item['followers'] ?? null);
+            if ($followers === null) {
+                continue;
+            }
+
+            foreach ($followerRanges as &$range) {
+                $min = $range['min'];
+                $max = $range['max'];
+                if ($followers >= $min && ($max === null || $followers <= $max)) {
+                    $range['count']++;
+                }
+            }
+            unset($range);
+        }
+
+        arsort($platformCounts);
+        arsort($statusCounts);
+        arsort($nicheCounts);
+
+        return [
+            'total' => count($items),
+            'platforms' => $this->facetMapToList($platformCounts),
+            'statuses' => $this->facetMapToList($statusCounts),
+            'niches' => array_slice($this->facetMapToList($nicheCounts), 0, 150),
+            'followerRanges' => array_values($followerRanges),
+        ];
+    }
+
+    private function facetMapToList(array $counts): array
+    {
+        return array_values(array_map(
+            fn (string $value, int $count) => ['value' => $value, 'label' => $value, 'count' => $count],
+            array_keys($counts),
+            array_map('intval', array_values($counts))
+        ));
+    }
+
+    private function emptyFollowerRangeFacets(): array
+    {
+        return [
+            ['key' => 'any', 'label' => 'Any', 'min' => 0, 'max' => null, 'count' => 0],
+            ['key' => 'below_1k', 'label' => 'Below 1K', 'min' => 0, 'max' => 999, 'count' => 0],
+            ['key' => '1k_10k', 'label' => '1K - 10K', 'min' => 1000, 'max' => 10000, 'count' => 0],
+            ['key' => '10k_50k', 'label' => '10K - 50K', 'min' => 10000, 'max' => 50000, 'count' => 0],
+            ['key' => '50k_100k', 'label' => '50K - 100K', 'min' => 50000, 'max' => 100000, 'count' => 0],
+            ['key' => '100k_plus', 'label' => '100K+', 'min' => 100000, 'max' => null, 'count' => 0],
+        ];
+    }
+
+    private function decodeJsonObject(mixed $value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (is_string($value) && $value !== '') {
+            $decoded = json_decode($value, true);
+            return is_array($decoded) ? $decoded : [];
+        }
+
+        return [];
     }
 
     private function syncCreatorLifecycleFromConfirmedOutreach(int $projectId): void

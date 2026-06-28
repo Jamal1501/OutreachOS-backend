@@ -54,6 +54,7 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::post('/crm/merge-enriched', [ApifyController::class, 'mergeEnrichedToCreators'])->middleware('throttle:expensive');
     Route::post('/crm/merge-selected', [SheetDataController::class, 'mergeSelectedQueueToCrm'])->middleware('throttle:expensive');
     Route::get('/crm/list', [SheetDataController::class, 'crmList']);
+    Route::get('/crm/facets', [SheetDataController::class, 'crmFacets']);
     Route::post('/crm/infer-locations', [SheetDataController::class, 'inferCreatorLocations'])->middleware('throttle:expensive');
     Route::post('/crm/import/creators/preview', [CrmImportController::class, 'previewCreators'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);
     Route::post('/crm/import/creators', [CrmImportController::class, 'importCreators'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);
