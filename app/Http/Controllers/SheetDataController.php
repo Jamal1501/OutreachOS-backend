@@ -1393,14 +1393,16 @@ public function operatorView(Request $request)
     try {
         $validated = $request->validate([
             'sheetId' => ['nullable', 'string'],
+            'range' => ['nullable', Rule::in(['7d', '30d', 'all'])],
         ]);
 
         $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $workspaceId = (string) $request->attributes->get('workspace_id');
-        $cacheKey = 'operator-view:' . md5($workspaceId . '|' . $sheetId);
+        $range = (string) ($validated['range'] ?? '30d');
+        $cacheKey = 'operator-view:' . md5($workspaceId . '|' . $sheetId . '|' . $range);
         $data = $request->has('_')
-            ? $this->operatorView->build($sheetId)
-            : Cache::remember($cacheKey, now()->addSeconds(45), fn () => $this->operatorView->build($sheetId));
+            ? $this->dashboardOperatorPayload($sheetId, $workspaceId, $range)
+            : Cache::remember($cacheKey, now()->addSeconds(45), fn () => $this->dashboardOperatorPayload($sheetId, $workspaceId, $range));
 
         return response()->json([
             'message' => 'Operator view fetched',
@@ -1415,6 +1417,32 @@ public function operatorView(Request $request)
             'exception' => class_basename($e),
         ], 500);
     }
+}
+
+private function dashboardOperatorPayload(string $sheetId, string $workspaceId, string $range = '30d'): array
+{
+    $data = $this->operatorView->build($sheetId);
+    $summary = $this->analytics->summary($sheetId, $workspaceId, $range);
+
+    return array_merge($data, [
+        'range' => $summary['range'] ?? ['label' => $range],
+        'performance' => $summary['performance'] ?? [],
+        'usage' => $summary['usage'] ?? [],
+        'economics' => $summary['economics'] ?? [],
+        'quality' => $summary['quality'] ?? [],
+        'previousPeriod' => $summary['previousPeriod'] ?? null,
+        'metricDefinitions' => array_merge((array) ($summary['definitions'] ?? []), [
+            'needsAction' => 'Creators and tasks that need an operator decision now: qualification, duplicate blockers, and due follow-ups.',
+            'outreachQueue' => 'Approved or queued creators that also have a real open outreach task.',
+            'lifecycleSignals' => 'Replies, accepted/lost outcomes, state changes, and task signals worth acting on.',
+            'replyRate' => 'Replies divided by confirmed outbound send events in the selected range.',
+        ]),
+        'dataFreshness' => [
+            'generatedAt' => now()->toIso8601String(),
+            'cacheTtlSeconds' => 45,
+            'source' => 'operator_view_unified',
+        ],
+    ]);
 }
 
 public function creatorDecisionSheet(Request $request, string $id)

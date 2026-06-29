@@ -138,6 +138,7 @@ class AnalyticsSummaryService
                 'unmatchedOutreachEvents' => $this->unmatchedOutreachCount($projectId),
                 'reconciliation' => $reconciliation,
             ]),
+            'previousPeriod' => $this->previousPeriodComparison($project, $workspaceId, $range, $rangeStart, $rangeEnd, $performance),
         ]);
     }
 
@@ -312,6 +313,58 @@ class AnalyticsSummaryService
             '30d' => CarbonImmutable::now()->subDays(30),
             default => null,
         };
+    }
+
+    private function previousPeriodComparison(Project $project, string $workspaceId, string $range, ?CarbonImmutable $rangeStart, CarbonImmutable $rangeEnd, array $current): ?array
+    {
+        $days = match ($range) {
+            '7d' => 7,
+            '30d' => 30,
+            default => null,
+        };
+
+        if ($days === null || $rangeStart === null) {
+            return null;
+        }
+
+        $projectId = (int) $project->id;
+        $previousEnd = $rangeStart;
+        $previousStart = $rangeStart->subDays($days);
+
+        $sendQuery = OutreachEvent::query()
+            ->where('project_id', $projectId)
+            ->whereIn(DB::raw('UPPER(event_type)'), $this->strictOutreachSentEventTypes());
+        $this->applyEventRange($sendQuery, $previousStart, $previousEnd);
+
+        $replyQuery = OutreachEvent::query()
+            ->where('project_id', $projectId)
+            ->whereIn(DB::raw('UPPER(event_type)'), $this->strictReplyEventTypes());
+        $this->applyEventRange($replyQuery, $previousStart, $previousEnd);
+
+        $messagesSent = (int) (clone $sendQuery)->count();
+        $repliesReceived = (int) (clone $replyQuery)->count();
+        $manual = $this->manualRoiSummary($project, $workspaceId, $previousStart, $previousEnd);
+        $previous = [
+            'messagesSent' => $messagesSent,
+            'repliesReceived' => $repliesReceived,
+            'dealsClosed' => (int) $manual['dealsClosed'],
+            'replyRate' => $messagesSent > 0 ? round(($repliesReceived / $messagesSent) * 100, 1) : 0.0,
+        ];
+
+        return [
+            'range' => [
+                'label' => 'previous_' . $range,
+                'start' => $previousStart->toIso8601String(),
+                'end' => $previousEnd->toIso8601String(),
+            ],
+            'performance' => $previous,
+            'delta' => [
+                'messagesSent' => (int) ($current['messagesSent'] ?? 0) - $previous['messagesSent'],
+                'repliesReceived' => (int) ($current['repliesReceived'] ?? 0) - $previous['repliesReceived'],
+                'dealsClosed' => (int) ($current['dealsClosed'] ?? 0) - $previous['dealsClosed'],
+                'replyRate' => round((float) ($current['replyRate'] ?? 0) - (float) $previous['replyRate'], 1),
+            ],
+        ];
     }
 
     private function applyEventRange($query, ?CarbonImmutable $from, ?CarbonImmutable $to = null): void

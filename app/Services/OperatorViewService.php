@@ -77,10 +77,9 @@ class OperatorViewService
             ?: strcmp((string) ($b['addedAt'] ?? ''), (string) ($a['addedAt'] ?? ''))
         );
 
-        $readyStates = ['approved_for_outreach', 'queued'];
-        $readyQueue = array_values(array_filter($creators, function (array $creator) use ($readyStates) {
-            return in_array($creator['lifecycleState'], $readyStates, true)
-                || ($creator['lifecycleState'] === 'enriched' && ($creator['valueScore'] ?? 0) >= 55);
+        $readyQueue = array_values(array_filter($creators, function (array $creator) use ($openTaskByCreator) {
+            $taskKey = strtolower($creator['platform'] . '|' . ltrim($creator['handle'], '@'));
+            return $this->isCreatorInOutreachQueue($creator, $openTaskByCreator[$taskKey] ?? []);
         }));
 
         usort($readyQueue, fn (array $a, array $b) =>
@@ -98,7 +97,8 @@ class OperatorViewService
             strcmp((string) ($a['dueDate'] ?? ''), (string) ($b['dueDate'] ?? ''))
         );
 
-        $recentActivity = $this->normalizeRecentActivity($outreachRows);
+        $recentActivity = $this->meaningfulSignals($this->normalizeRecentActivity($outreachRows));
+        $workflowHealth = $this->workflowHealth($creators, $tasks, $duplicates, $readyQueue, $triageItems, $tasksDueToday);
 
         $outreachSent = count(array_filter($outreachRows, fn (array $row) =>
             Str::contains(Str::upper((string) ($row['Event_Type'] ?? '')), ['SENT', 'OUTREACH'])
@@ -123,6 +123,7 @@ class OperatorViewService
             'readyQueue' => array_slice($readyQueue, 0, 12),
             'tasksDueToday' => array_slice($tasksDueToday, 0, 12),
             'recentActivity' => array_slice($recentActivity, 0, 12),
+            'workflowHealth' => $workflowHealth,
         ];
     }
 
@@ -350,10 +351,9 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         $triageItems = array_values(array_filter($creators, fn (array $creator) => in_array($creator['lifecycleState'], $triageStates, true)));
         usort($triageItems, fn (array $a, array $b) => ($b['valueScore'] <=> $a['valueScore']) ?: strcmp((string) ($b['addedAt'] ?? ''), (string) ($a['addedAt'] ?? '')));
 
-        $readyStates = ['approved_for_outreach', 'queued'];
-        $readyQueue = array_values(array_filter($creators, function (array $creator) use ($readyStates) {
-            return in_array($creator['lifecycleState'], $readyStates, true)
-                || ($creator['lifecycleState'] === 'enriched' && ($creator['valueScore'] ?? 0) >= 55);
+        $readyQueue = array_values(array_filter($creators, function (array $creator) use ($openTaskByCreator) {
+            $taskKey = strtolower($creator['platform'] . '|' . ltrim($creator['handle'], '@'));
+            return $this->isCreatorInOutreachQueue($creator, $openTaskByCreator[$taskKey] ?? []);
         }));
         usort($readyQueue, fn (array $a, array $b) => ($b['valueScore'] <=> $a['valueScore']) ?: (($b['followers'] ?? 0) <=> ($a['followers'] ?? 0)));
 
@@ -361,14 +361,15 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         $tasksDueToday = array_values(array_filter($tasks, fn (array $task) => !in_array($task['status'], ['completed', 'skipped'], true) && str_starts_with((string) ($task['dueDate'] ?? ''), $today)));
         usort($tasksDueToday, fn (array $a, array $b) => strcmp((string) ($a['dueDate'] ?? ''), (string) ($b['dueDate'] ?? '')));
 
-        $recentActivity = $this->normalizeDbRecentActivity(
+        $recentActivity = $this->meaningfulSignals($this->normalizeDbRecentActivity(
             OutreachEvent::query()
                 ->where('project_id', $projectId)
                 ->orderByDesc('sent_at')
                 ->limit(24)
                 ->get()
                 ->all()
-        );
+        ));
+        $workflowHealth = $this->workflowHealth($creators, $tasks, $duplicates, $readyQueue, $triageItems, $tasksDueToday);
 
         $outreachSent = OutreachEvent::query()
             ->where('project_id', $projectId)
@@ -395,6 +396,7 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
             'readyQueue' => array_slice($readyQueue, 0, 12),
             'tasksDueToday' => array_slice($tasksDueToday, 0, 12),
             'recentActivity' => array_slice($recentActivity, 0, 12),
+            'workflowHealth' => $workflowHealth,
         ];
     }
 
@@ -603,6 +605,7 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
             'readyQueue' => [],
             'tasksDueToday' => [],
             'recentActivity' => [],
+            'workflowHealth' => $this->workflowHealth([], [], [], [], [], []),
         ];
     }
 
@@ -837,6 +840,294 @@ return [
 
         usort($items, fn (array $a, array $b) => strcmp((string) ($b['timestamp'] ?? ''), (string) ($a['timestamp'] ?? '')));
         return $items;
+    }
+
+    private function hasOpenOutreachTask(array $tasks): bool
+    {
+        $outreachTaskTypes = [
+            'DM_INVITE',
+            'EMAIL_SEND',
+            'FOLLOW_REQUEST',
+            'COMMENT_ON_POST',
+        ];
+
+        foreach ($tasks as $task) {
+            $status = strtolower((string) ($task['status'] ?? ''));
+            if (in_array($status, ['completed', 'skipped', 'archived'], true)) {
+                continue;
+            }
+
+            if (in_array(strtoupper((string) ($task['type'] ?? '')), $outreachTaskTypes, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isCreatorInOutreachQueue(array $creator, array $tasks): bool
+    {
+        return in_array((string) ($creator['lifecycleState'] ?? ''), ['approved_for_outreach', 'queued'], true)
+            && $this->hasOpenOutreachTask($tasks);
+    }
+
+    private function meaningfulSignals(array $items): array
+    {
+        $signalTypes = array_map('strtolower', array_merge(
+            $this->strictReplyEventTypes(),
+            ['DEAL_LOST', 'STATE_CHANGED', 'TASK_CREATED']
+        ));
+
+        $signals = array_values(array_filter($items, function (array $item) use ($signalTypes) {
+            $type = strtolower((string) ($item['type'] ?? ''));
+            if (in_array($type, $signalTypes, true)) {
+                return true;
+            }
+
+            $description = strtolower((string) ($item['description'] ?? ''));
+            return str_contains($description, 'follow')
+                || str_contains($description, 'accepted')
+                || str_contains($description, 'lost')
+                || str_contains($description, 'reply');
+        }));
+
+        return array_slice(array_map(fn (array $item) => $this->decorateSignal($item), $signals), 0, 12);
+    }
+
+    private function decorateSignal(array $item): array
+    {
+        $type = strtoupper((string) ($item['type'] ?? ''));
+
+        if (str_contains($type, 'REPLY')) {
+            return array_merge($item, [
+                'actionLabel' => 'Draft response',
+                'route' => $this->routeForSignal('/outreach?tab=conversations', $item),
+                'severity' => 'high',
+            ]);
+        }
+
+        if (str_contains($type, 'ACCEPTED') || str_contains($type, 'DEAL_WON')) {
+            return array_merge($item, [
+                'actionLabel' => 'Track delivery',
+                'route' => $this->routeForSignal('/crm', $item),
+                'severity' => 'medium',
+            ]);
+        }
+
+        if (str_contains($type, 'LOST') || str_contains($type, 'DECLINED')) {
+            return array_merge($item, [
+                'actionLabel' => 'Review outcome',
+                'route' => '/insights',
+                'severity' => 'low',
+            ]);
+        }
+
+        if (str_contains($type, 'TASK')) {
+            return array_merge($item, [
+                'actionLabel' => 'Open task',
+                'route' => '/tasks',
+                'severity' => 'medium',
+            ]);
+        }
+
+        return array_merge($item, [
+            'actionLabel' => 'Open CRM',
+            'route' => $this->routeForSignal('/crm', $item),
+            'severity' => 'low',
+        ]);
+    }
+
+    private function routeForSignal(string $baseRoute, array $item): string
+    {
+        $handle = ltrim(trim((string) ($item['handle'] ?? '')), '@');
+        if ($handle === '') {
+            return $baseRoute;
+        }
+
+        $separator = str_contains($baseRoute, '?') ? '&' : '?';
+        return $baseRoute . $separator . 'handle=' . rawurlencode($handle);
+    }
+
+    private function workflowHealth(array $creators, array $tasks, array $duplicates, array $readyQueue, array $triageItems, array $tasksDueToday): array
+    {
+        $stateCounts = [];
+        foreach ($creators as $creator) {
+            $state = (string) ($creator['lifecycleState'] ?? 'discovered');
+            $stateCounts[$state] = ($stateCounts[$state] ?? 0) + 1;
+        }
+
+        $overdueTasks = array_values(array_filter($tasks, fn (array $task) => $this->isOpenTask($task) && $this->isTaskOverdue($task)));
+        $repliesWaiting = (int) ($stateCounts['replied'] ?? 0);
+        $negotiating = (int) ($stateCounts['negotiating'] ?? 0);
+        $accepted = (int) ($stateCounts['accepted'] ?? 0);
+        $won = (int) ($stateCounts['won'] ?? 0);
+        $qualifiedButNoTask = count(array_filter($creators, function (array $creator) use ($readyQueue) {
+            if (!in_array((string) ($creator['lifecycleState'] ?? ''), ['approved_for_outreach', 'queued'], true)) {
+                return false;
+            }
+
+            foreach ($readyQueue as $readyCreator) {
+                if ((string) ($readyCreator['id'] ?? '') === (string) ($creator['id'] ?? '')) {
+                    return false;
+                }
+            }
+
+            return true;
+        }));
+
+        $missingContactData = count(array_filter($creators, function (array $creator) {
+            if (!in_array((string) ($creator['lifecycleState'] ?? ''), ['needs_review', 'enriched', 'approved_for_outreach', 'queued'], true)) {
+                return false;
+            }
+
+            return trim((string) ($creator['email'] ?? '')) === ''
+                && trim((string) ($creator['profileUrl'] ?? '')) === '';
+        }));
+
+        $bottlenecks = array_values(array_filter([
+            count($duplicates) > 0 ? [
+                'key' => 'duplicate_blockers',
+                'label' => 'Duplicate blockers',
+                'count' => count($duplicates),
+                'severity' => 'high',
+                'detail' => 'Identity conflicts should be resolved before new outreach.',
+                'route' => '/duplicates',
+            ] : null,
+            count($overdueTasks) > 0 ? [
+                'key' => 'overdue_tasks',
+                'label' => 'Overdue follow-ups',
+                'count' => count($overdueTasks),
+                'severity' => 'high',
+                'detail' => 'Follow-up work is past due and may cool active conversations.',
+                'route' => '/tasks',
+            ] : null,
+            $repliesWaiting > 0 ? [
+                'key' => 'replies_waiting',
+                'label' => 'Replies waiting',
+                'count' => $repliesWaiting,
+                'severity' => 'high',
+                'detail' => 'Creator replies should be handled before cold outreach.',
+                'route' => '/tasks',
+            ] : null,
+            $qualifiedButNoTask > 0 ? [
+                'key' => 'qualified_without_task',
+                'label' => 'Qualified but no task',
+                'count' => $qualifiedButNoTask,
+                'severity' => 'medium',
+                'detail' => 'Creators are approved or queued but missing an open outreach task.',
+                'route' => '/tasks',
+            ] : null,
+            count($triageItems) > 0 ? [
+                'key' => 'qualification_queue',
+                'label' => 'Needs qualification',
+                'count' => count($triageItems),
+                'severity' => 'medium',
+                'detail' => 'New or enriched creators need a pursue, reject, or fix decision.',
+                'route' => '/crm',
+            ] : null,
+            $missingContactData > 0 ? [
+                'key' => 'missing_contact_data',
+                'label' => 'Missing contact path',
+                'count' => $missingContactData,
+                'severity' => 'medium',
+                'detail' => 'Some creators cannot move efficiently until contact data is fixed.',
+                'route' => '/crm',
+            ] : null,
+        ]));
+
+        return [
+            'dailyBrief' => $this->dailyBrief($bottlenecks, count($tasksDueToday), count($readyQueue), $repliesWaiting),
+            'stages' => [
+                [
+                    'key' => 'discovery',
+                    'label' => 'Live discovery',
+                    'count' => (int) (($stateCounts['discovered'] ?? 0) + ($stateCounts['needs_review'] ?? 0)),
+                    'tone' => 'normal',
+                    'route' => '/discover',
+                ],
+                [
+                    'key' => 'qualification',
+                    'label' => 'Qualification',
+                    'count' => count($triageItems) + count($duplicates),
+                    'tone' => count($duplicates) > 0 ? 'blocked' : (count($triageItems) > 0 ? 'attention' : 'normal'),
+                    'route' => '/crm',
+                ],
+                [
+                    'key' => 'outreach',
+                    'label' => 'Outreach',
+                    'count' => count($readyQueue),
+                    'tone' => $qualifiedButNoTask > 0 ? 'attention' : 'normal',
+                    'route' => '/tasks',
+                ],
+                [
+                    'key' => 'follow_up',
+                    'label' => 'Follow-up',
+                    'count' => count($tasksDueToday) + count($overdueTasks),
+                    'tone' => count($overdueTasks) > 0 ? 'blocked' : (count($tasksDueToday) > 0 ? 'attention' : 'normal'),
+                    'route' => '/tasks',
+                ],
+                [
+                    'key' => 'lifecycle',
+                    'label' => 'Lifecycle',
+                    'count' => $repliesWaiting + $negotiating + $accepted + $won,
+                    'tone' => $repliesWaiting > 0 ? 'attention' : 'normal',
+                    'route' => '/crm',
+                ],
+            ],
+            'bottlenecks' => $bottlenecks,
+            'counts' => [
+                'overdueTasks' => count($overdueTasks),
+                'repliesWaiting' => $repliesWaiting,
+                'qualifiedButNoTask' => $qualifiedButNoTask,
+                'missingContactData' => $missingContactData,
+            ],
+            'generatedAt' => now()->toIso8601String(),
+        ];
+    }
+
+    private function dailyBrief(array $bottlenecks, int $tasksDueToday, int $outreachQueue, int $repliesWaiting): string
+    {
+        $parts = [];
+
+        if ($tasksDueToday > 0) {
+            $parts[] = $tasksDueToday . ' smart follow-up ' . ($tasksDueToday === 1 ? 'task is' : 'tasks are') . ' due';
+        }
+        if ($repliesWaiting > 0) {
+            $parts[] = $repliesWaiting . ' creator ' . ($repliesWaiting === 1 ? 'reply needs' : 'replies need') . ' handling';
+        }
+        if ($outreachQueue > 0) {
+            $parts[] = $outreachQueue . ' creator' . ($outreachQueue === 1 ? ' is' : 's are') . ' in the outreach queue';
+        }
+
+        $topBlocker = $bottlenecks[0] ?? null;
+        if (is_array($topBlocker)) {
+            $parts[] = (int) ($topBlocker['count'] ?? 0) . ' ' . strtolower((string) ($topBlocker['label'] ?? 'blockers'));
+        }
+
+        if ($parts === []) {
+            return 'No urgent workflow issue is waiting. Use live discovery or CRM review to create the next useful action.';
+        }
+
+        return 'Today: ' . implode(', ', array_slice($parts, 0, 3)) . '.';
+    }
+
+    private function isOpenTask(array $task): bool
+    {
+        return !in_array(strtolower((string) ($task['status'] ?? '')), ['completed', 'skipped', 'archived'], true);
+    }
+
+    private function isTaskOverdue(array $task): bool
+    {
+        $due = trim((string) ($task['dueDate'] ?? ''));
+        if ($due === '') {
+            return false;
+        }
+
+        try {
+            return Carbon::parse($due)->lt(now()->startOfDay());
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     private function normalizeTasks(array $taskRows): array

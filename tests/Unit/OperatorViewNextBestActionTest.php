@@ -105,18 +105,97 @@ class OperatorViewNextBestActionTest extends TestCase
         $this->assertSame('high', $action['priority']);
     }
 
+    public function test_outreach_queue_requires_approved_state_and_real_open_outreach_task(): void
+    {
+        $this->assertTrue($this->invokePrivate('isCreatorInOutreachQueue', [
+            ['lifecycleState' => 'approved_for_outreach'],
+            [['type' => 'DM_INVITE', 'status' => 'pending']],
+        ]));
+
+        $this->assertFalse($this->invokePrivate('isCreatorInOutreachQueue', [
+            ['lifecycleState' => 'enriched', 'valueScore' => 90],
+            [['type' => 'DM_INVITE', 'status' => 'pending']],
+        ]));
+
+        $this->assertFalse($this->invokePrivate('isCreatorInOutreachQueue', [
+            ['lifecycleState' => 'queued'],
+            [['type' => 'DM_INVITE', 'status' => 'completed']],
+        ]));
+    }
+
+    public function test_workflow_health_surfaces_bottlenecks_from_full_data(): void
+    {
+        Carbon::setTestNow('2026-06-27 12:00:00');
+
+        $health = $this->invokePrivate('workflowHealth', [
+            [
+                ['id' => '1', 'platform' => 'instagram', 'handle' => '@ready', 'lifecycleState' => 'approved_for_outreach', 'email' => '', 'profileUrl' => ''],
+                ['id' => '2', 'platform' => 'instagram', 'handle' => '@reply', 'lifecycleState' => 'replied', 'email' => '', 'profileUrl' => 'https://instagram.com/reply'],
+                ['id' => '3', 'platform' => 'instagram', 'handle' => '@review', 'lifecycleState' => 'needs_review', 'email' => '', 'profileUrl' => ''],
+            ],
+            [
+                ['id' => 'task-1', 'type' => 'DM_FOLLOWUP', 'status' => 'pending', 'dueDate' => '2026-06-26 09:00:00'],
+            ],
+            [
+                ['key' => 'dup-1', 'risk' => 'high'],
+            ],
+            [],
+            [
+                ['id' => '3', 'lifecycleState' => 'needs_review'],
+            ],
+            [
+                ['id' => 'task-1', 'type' => 'DM_FOLLOWUP', 'status' => 'pending', 'dueDate' => '2026-06-26 09:00:00'],
+            ],
+        ]);
+
+        $this->assertStringStartsWith('Today:', $health['dailyBrief']);
+        $this->assertContains('duplicate_blockers', array_column($health['bottlenecks'], 'key'));
+        $this->assertContains('overdue_tasks', array_column($health['bottlenecks'], 'key'));
+        $this->assertContains('replies_waiting', array_column($health['bottlenecks'], 'key'));
+        $this->assertSame(1, $health['counts']['qualifiedButNoTask']);
+    }
+
+    public function test_meaningful_signals_get_action_routes(): void
+    {
+        $signals = $this->invokePrivate('meaningfulSignals', [
+            [
+                ['id' => 'evt-1', 'type' => 'creator_reply', 'handle' => '@creator', 'timestamp' => '2026-06-27 10:00:00'],
+                ['id' => 'evt-2', 'type' => 'message_sent', 'handle' => '@creator', 'timestamp' => '2026-06-27 09:00:00'],
+            ],
+        ]);
+
+        $this->assertCount(1, $signals);
+        $this->assertSame('Draft response', $signals[0]['actionLabel']);
+        $this->assertSame('/outreach?tab=conversations&handle=creator', $signals[0]['route']);
+    }
+
     private function invokeNextBestAction(array $creator, array $relatedTasks = [], array $timeline = [], array $hardDisqualifiers = []): array
     {
-        $service = new OperatorViewService(
-            $this->createMock(GoogleSheetsService::class),
-            $this->createMock(InfluencerScoringService::class),
-            $this->createMock(CreatorLifecycleService::class),
-            $this->createMock(ProjectResolverService::class)
-        );
+        $service = $this->service();
 
         $method = new ReflectionMethod(OperatorViewService::class, 'nextBestAction');
         $method->setAccessible(true);
 
         return $method->invoke($service, $creator, $relatedTasks, $timeline, $hardDisqualifiers);
+    }
+
+    private function invokePrivate(string $methodName, array $arguments): mixed
+    {
+        $service = $this->service();
+
+        $method = new ReflectionMethod(OperatorViewService::class, $methodName);
+        $method->setAccessible(true);
+
+        return $method->invokeArgs($service, $arguments);
+    }
+
+    private function service(): OperatorViewService
+    {
+        return new OperatorViewService(
+            $this->createMock(GoogleSheetsService::class),
+            $this->createMock(InfluencerScoringService::class),
+            $this->createMock(CreatorLifecycleService::class),
+            $this->createMock(ProjectResolverService::class)
+        );
     }
 }
