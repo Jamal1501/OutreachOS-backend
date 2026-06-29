@@ -11,11 +11,21 @@ COPY . .
 
 ENV COMPOSER_ALLOW_SUPERUSER=1
 
+# Production-safe defaults for Render. Render env vars still override these at runtime.
+ENV APP_ENV=production \
+    DB_CONNECTION=pgsql \
+    CACHE_STORE=file \
+    CACHE_DRIVER=file \
+    QUEUE_CONNECTION=database \
+    DB_QUEUE_CONNECTION=pgsql
+
+
 RUN composer install --no-dev --optimize-autoloader --no-interaction --no-progress --prefer-dist \
   || (composer clear-cache && composer install --no-dev --optimize-autoloader --no-interaction --no-progress --prefer-source) \
   && chmod +x artisan
 COPY start.sh /start.sh
-RUN chmod +x /start.sh
+COPY worker.sh /worker.sh
+RUN chmod +x /start.sh /worker.sh
 
 EXPOSE 10000
 CMD ["/start.sh"]

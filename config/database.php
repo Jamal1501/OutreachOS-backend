@@ -4,8 +4,9 @@ use Illuminate\Support\Str;
 
 $databaseUrl = env('DB_URL') ?: env('DATABASE_URL');
 $defaultDatabaseConnection = env('DB_CONNECTION');
+$isProductionRuntime = env('APP_ENV') === 'production' || env('RENDER') === 'true';
 
-if (env('APP_ENV') === 'production' && ($defaultDatabaseConnection === null || $defaultDatabaseConnection === '' || $defaultDatabaseConnection === 'sqlite')) {
+if ($isProductionRuntime && ($defaultDatabaseConnection === null || $defaultDatabaseConnection === '' || $defaultDatabaseConnection === 'sqlite')) {
     $defaultDatabaseConnection = match (true) {
         is_string($databaseUrl) && (str_starts_with($databaseUrl, 'postgres://') || str_starts_with($databaseUrl, 'postgresql://')) => 'pgsql',
         is_string($databaseUrl) && str_starts_with($databaseUrl, 'mysql://') => 'mysql',
@@ -27,7 +28,7 @@ return [
     |
     */
 
-    'default' => $defaultDatabaseConnection ?: (env('APP_ENV') === 'production' ? 'pgsql' : 'sqlite'),
+    'default' => $defaultDatabaseConnection ?: ($isProductionRuntime ? 'pgsql' : 'sqlite'),
 
     /*
     |--------------------------------------------------------------------------
