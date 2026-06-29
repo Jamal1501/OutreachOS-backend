@@ -9,7 +9,11 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 WORKDIR /var/www
 COPY . .
 
-RUN composer install --no-dev --optimize-autoloader && chmod +x artisan
+ENV COMPOSER_ALLOW_SUPERUSER=1
+
+RUN composer install --no-dev --optimize-autoloader --no-interaction --no-progress --prefer-dist \
+  || (composer clear-cache && composer install --no-dev --optimize-autoloader --no-interaction --no-progress --prefer-source) \
+  && chmod +x artisan
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
 

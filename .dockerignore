@@ -1,0 +1,13 @@
+.git
+.github
+.env
+.env.*
+vendor
+node_modules
+npm-debug.log
+yarn-error.log
+storage/logs/*.log
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+tests
