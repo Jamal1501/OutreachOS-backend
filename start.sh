@@ -7,7 +7,7 @@ if [ -n "${DATABASE_URL:-}" ] && [ -z "${DB_URL:-}" ]; then
   export DB_URL="$DATABASE_URL"
 fi
 
-if [ -z "${DB_CONNECTION:-}" ]; then
+if [ -z "${DB_CONNECTION:-}" ] || { [ "${APP_ENV:-}" = "production" ] && [ "${DB_CONNECTION:-}" = "sqlite" ]; }; then
   case "${DB_URL:-}" in
     postgres://*|postgresql://*)
       export DB_CONNECTION=pgsql

@@ -1,5 +1,11 @@
 <?php
 
+$queueDatabaseConnection = env('DB_CONNECTION', env('APP_ENV') === 'production' ? 'pgsql' : 'sqlite');
+
+if (env('APP_ENV') === 'production' && ($queueDatabaseConnection === null || $queueDatabaseConnection === '' || $queueDatabaseConnection === 'sqlite')) {
+    $queueDatabaseConnection = 'pgsql';
+}
+
 return [
 
     /*
@@ -103,7 +109,7 @@ return [
     */
 
     'batching' => [
-        'database' => env('DB_CONNECTION', env('APP_ENV') === 'production' ? 'pgsql' : 'sqlite'),
+        'database' => $queueDatabaseConnection,
         'table' => 'job_batches',
     ],
 
@@ -122,7 +128,7 @@ return [
 
     'failed' => [
         'driver' => env('QUEUE_FAILED_DRIVER', 'database-uuids'),
-        'database' => env('DB_CONNECTION', env('APP_ENV') === 'production' ? 'pgsql' : 'sqlite'),
+        'database' => $queueDatabaseConnection,
         'table' => 'failed_jobs',
     ],
 
