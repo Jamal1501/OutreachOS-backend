@@ -2249,9 +2249,9 @@ return [
             $searchLike = '%' . $searchTerm . '%';
             $handlePrefix = ltrim($searchTerm, '@') . '%';
             $query->where(function ($q) use ($searchLike, $handlePrefix) {
-                $q->where('handle', 'LIKE', '@' . $handlePrefix)
-                    ->orWhere('handle', 'LIKE', $handlePrefix)
-                    ->orWhere('username', 'LIKE', $handlePrefix)
+                $q->whereRaw("LOWER(COALESCE(handle, '')) LIKE ?", ['@' . $handlePrefix])
+                    ->orWhereRaw("LOWER(COALESCE(handle, '')) LIKE ?", [$handlePrefix])
+                    ->orWhereRaw("LOWER(COALESCE(username, '')) LIKE ?", [$handlePrefix])
                     ->orWhereRaw("LOWER(CAST(source_metadata AS TEXT)) LIKE ?", [$searchLike])
                     ->orWhereHas('creator', function ($creatorQuery) use ($searchLike) {
                         $creatorQuery->whereRaw("LOWER(COALESCE(display_name, '')) LIKE ?", [$searchLike])
@@ -2726,7 +2726,7 @@ return [
             'valueTier' => Str::lower($this->scoring->tier($score)),
             'preferredChannel' => (string) ($profile->preferred_channel ?: ''),
             'creatorIdentityId' => (string) (optional($creator)->external_identity_key ?: ''),
-            'linkedProfileCount' => $creator ? $creator->profiles()->count() : 1,
+            'linkedProfileCount' => 1,
         ];
     }
 
