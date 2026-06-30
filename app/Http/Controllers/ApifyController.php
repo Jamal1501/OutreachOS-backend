@@ -399,7 +399,6 @@ public function mergeEnrichedToCreators(Request $request)
                 try {
                     $taskOptions = [
                         'limit' => $validated['taskLimit'] ?? 50,
-                        'forceForImportedProfiles' => true,
                     ];
                     if ($affectedProfileIds !== []) {
                         $taskOptions['profileIds'] = $affectedProfileIds;
@@ -644,11 +643,13 @@ public function mergeEnrichedToCreators(Request $request)
 
     $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
     $tasks = $this->taskQueue->listTasks($sheetId);
+    $queueHealth = $this->taskQueue->queueHealth($sheetId);
 
     return response()->json([
         'message' => 'Tasks fetched',
         'sheetId' => $sheetId,
         'tasks' => $tasks,
+        'queueHealth' => $queueHealth,
     ]);
 }
 

@@ -137,6 +137,62 @@ class TaskQueueService
         ];
     }
 
+    public function queueHealth(string $sheetId): array
+    {
+        $project = $this->projects->findByWorkbookId($sheetId);
+        if (!$project) {
+            return [
+                'source' => str_starts_with($sheetId, 'workspace:') ? 'workspace_runtime' : 'google_sheets',
+                'activeOpenCount' => 0,
+                'maxActiveTasks' => 0,
+                'availableSlots' => 0,
+                'qualifiedBacklogCount' => 0,
+                'maxNewTasksPerGeneration' => 0,
+                'timePressureMode' => false,
+            ];
+        }
+
+        $settings = $this->resolveTaskSettings($this->resolveWorkspaceForSheet($sheetId, $project));
+        $maxActiveTasks = (int) ($settings[$this->timePressureEnabled($settings) ? 'time_pressure_active_task_limit' : 'max_active_tasks'] ?? 18);
+        $activeOpenCount = Task::query()
+            ->where('project_id', $project->id)
+            ->whereIn('status', self::OPEN_TASK_STATUSES)
+            ->count();
+
+        $openByProfileId = Task::query()
+            ->where('project_id', $project->id)
+            ->whereIn('status', self::OPEN_TASK_STATUSES)
+            ->whereNotNull('creator_profile_id')
+            ->pluck('creator_profile_id')
+            ->flip()
+            ->all();
+
+        $qualifiedBacklogCount = 0;
+        CreatorProfile::query()
+            ->with('creator')
+            ->where('project_id', $project->id)
+            ->chunkById(200, function ($profiles) use (&$qualifiedBacklogCount, $settings, $openByProfileId) {
+                foreach ($profiles as $profile) {
+                    if (isset($openByProfileId[$profile->id])) {
+                        continue;
+                    }
+                    if ($this->buildCandidateForProfile($profile, $settings) !== null) {
+                        $qualifiedBacklogCount++;
+                    }
+                }
+            });
+
+        return [
+            'source' => 'database',
+            'activeOpenCount' => $activeOpenCount,
+            'maxActiveTasks' => $maxActiveTasks,
+            'availableSlots' => max(0, $maxActiveTasks - $activeOpenCount),
+            'qualifiedBacklogCount' => $qualifiedBacklogCount,
+            'maxNewTasksPerGeneration' => (int) ($settings['max_new_tasks_per_generation'] ?? 12),
+            'timePressureMode' => $this->timePressureEnabled($settings),
+        ];
+    }
+
     public function updateTaskSettings(string $sheetId, array $updates): array
     {
         $workspace = $this->resolveWorkspaceForSheet($sheetId);
