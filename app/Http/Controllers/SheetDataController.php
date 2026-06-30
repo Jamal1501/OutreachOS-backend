@@ -363,6 +363,7 @@ class SheetDataController extends Controller
             'follower_max' => ['nullable', 'integer', 'min:0'],
             'sort' => ['nullable', Rule::in(['handle', 'followers', 'engagementRate', 'valueScore', 'addedAt'])],
             'direction' => ['nullable', Rule::in(['asc', 'desc'])],
+            'fields' => ['nullable', Rule::in(['summary', 'full'])],
             'limit' => ['nullable', 'integer', 'min:1', 'max:500'],
             'offset' => ['nullable', 'integer', 'min:0'],
         ]);
@@ -379,6 +380,7 @@ class SheetDataController extends Controller
         $followerMax = array_key_exists('follower_max', $validated) ? (int) $validated['follower_max'] : null;
         $sort = (string) ($validated['sort'] ?? 'addedAt');
         $direction = (string) ($validated['direction'] ?? 'desc');
+        $fields = (string) ($validated['fields'] ?? 'full');
         $limit = (int) ($validated['limit'] ?? 200);
         $offset = (int) ($validated['offset'] ?? 0);
 
@@ -394,6 +396,7 @@ class SheetDataController extends Controller
             'follower_max' => $followerMax,
             'sort' => $sort,
             'direction' => $direction,
+            'fields' => $fields,
             'limit' => $limit,
             'offset' => $offset,
         ]);
@@ -2202,6 +2205,28 @@ return [
 
         $query = CreatorProfile::query()
             ->with(['creator:id,display_name,primary_email,country,city,primary_language,niche_category,notes,external_identity_key'])
+            ->select([
+                'id',
+                'creator_id',
+                'project_id',
+                'platform',
+                'handle',
+                'username',
+                'profile_url',
+                'profile_pic_url',
+                'dm_link',
+                'source_reference',
+                'source_metadata',
+                'followers_count',
+                'engagement_rate_pct',
+                'value_score',
+                'lifecycle_state',
+                'status',
+                'preferred_channel',
+                'duplicate_flag',
+                'dm_sent_at',
+                'created_at',
+            ])
             ->where('project_id', $project->id);
 
         $platformFilters = array_values((array) ($filters['platforms'] ?? []));
@@ -2285,16 +2310,16 @@ return [
             ->groupBy('creator_id')
             ->pluck('aggregate_count', 'creator_id');
 
-        $items = $profiles->map(function (CreatorProfile $profile) use ($counts) {
+        $fields = (string) ($filters['fields'] ?? 'full');
+        $items = $profiles->map(function (CreatorProfile $profile) use ($counts, $fields) {
             $profile->loadMissing('creator');
-            $item = $this->buildCreatorListItemFromProfile($profile);
+            $item = $this->buildCreatorListItemFromProfile($profile, $fields === 'summary');
             $item['linkedProfileCount'] = (int) ($counts[$profile->creator_id] ?? ($item['linkedProfileCount'] ?? 1));
             return $item;
         })->values()->all();
 
-        $items = $this->attachDuplicateCandidatesToCreatorItems($items);
-
         if ($duplicateReviewOnly) {
+            $items = $this->attachDuplicateCandidatesToCreatorItems($items);
             $items = array_values(array_filter($items, function (array $item) {
                 if (($item['duplicateReviewOutcome'] ?? '') === 'not_duplicate') {
                     return false;
@@ -2313,13 +2338,13 @@ return [
 
     private function creatorStatusCountsForProject(int $projectId): array
     {
-        return CreatorProfile::query()
+        return Cache::remember("crm_status_counts:v2:project:{$projectId}", now()->addSeconds(45), fn () => CreatorProfile::query()
             ->where('project_id', $projectId)
             ->selectRaw("COALESCE(NULLIF(lifecycle_state, ''), 'discovered') as state, COUNT(*) as aggregate_count")
             ->groupByRaw("COALESCE(NULLIF(lifecycle_state, ''), 'discovered')")
             ->pluck('aggregate_count', 'state')
             ->map(fn ($value) => (int) $value)
-            ->all();
+            ->all());
     }
 
     private function creatorStatusCountsFromItems(array $items): array
@@ -2676,7 +2701,7 @@ return [
         return null;
     }
 
-    private function buildCreatorListItemFromProfile(CreatorProfile $profile): array
+    private function buildCreatorListItemFromProfile(CreatorProfile $profile, bool $summary = false): array
     {
         $creator = $profile->creator;
         $rowNumber = $this->extractSourceRowNumberFromProfile($profile);
@@ -2691,7 +2716,7 @@ return [
         $sourcePostUrls = array_values(array_filter((array) ($metadata['source_post_urls'] ?? []), fn ($url) => trim((string) $url) !== ''));
         $duplicateReviewOutcome = (string) ($metadata['duplicate_review_outcome'] ?? '');
 
-        return [
+        $item = [
             'id' => $id,
             'rowId' => $id,
             'platform' => strtolower((string) ($profile->platform ?: 'instagram')),
@@ -2728,6 +2753,12 @@ return [
             'creatorIdentityId' => (string) (optional($creator)->external_identity_key ?: ''),
             'linkedProfileCount' => 1,
         ];
+
+        if ($summary) {
+            unset($item['sourcePostUrls'], $item['notes'], $item['sourceMetricType'], $item['sourceMetricValue'], $item['matchedPostCount']);
+        }
+
+        return $item;
     }
 
     private function scoreRecordFromProfile(CreatorProfile $profile): array
