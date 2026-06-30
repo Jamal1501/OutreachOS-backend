@@ -39,9 +39,16 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     });
 
     Route::put('/workspaces/settings', [WorkspaceController::class, 'updateSettings'])->middleware('workspace.role:owner,admin');
+    Route::put('/workspaces/current', [WorkspaceController::class, 'updateCurrent'])->middleware('workspace.role:owner');
     Route::post('/workspaces/invitations', [WorkspaceController::class, 'invite'])->middleware('workspace.role:owner,admin');
+    Route::post('/workspaces/invitations/{invitationId}/resend', [WorkspaceController::class, 'resendInvitation'])->middleware('workspace.role:owner,admin');
+    Route::delete('/workspaces/invitations/{invitationId}', [WorkspaceController::class, 'cancelInvitation'])->middleware('workspace.role:owner,admin');
     Route::put('/workspaces/members/{userId}/workspaces', [WorkspaceController::class, 'updateMemberWorkspaces'])->middleware('workspace.role:owner,admin');
     Route::delete('/workspaces/members/{memberId}', [WorkspaceController::class, 'removeMember'])->middleware('workspace.role:owner,admin');
+    Route::post('/workspaces/current/transfer-owner', [WorkspaceController::class, 'transferOwnership'])->middleware('workspace.role:owner');
+    Route::post('/workspaces/{workspaceId}/archive', [WorkspaceController::class, 'archiveWorkspace'])->middleware('workspace.role:owner');
+    Route::post('/workspaces/{workspaceId}/restore', [WorkspaceController::class, 'restoreWorkspace'])->middleware('workspace.role:owner');
+    Route::get('/workspaces/audit', [WorkspaceController::class, 'auditEvents'])->middleware('workspace.role:owner,admin');
 
     Route::get('/apify/modules', [ApifyController::class, 'modules']);
     Route::middleware('throttle:expensive')->group(function () {

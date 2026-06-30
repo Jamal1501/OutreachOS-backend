@@ -518,7 +518,16 @@ class TaskQueueService
             $candidates[] = $candidate;
         }
 
-        usort($candidates, fn (array $a, array $b) => ($b['rank_score'] ?? 0) <=> ($a['rank_score'] ?? 0));
+        usort($candidates, function (array $a, array $b) {
+            $aSupport = $this->isSupportTaskType((string) ($a['task_type'] ?? ''));
+            $bSupport = $this->isSupportTaskType((string) ($b['task_type'] ?? ''));
+
+            if ($aSupport !== $bSupport) {
+                return $aSupport ? 1 : -1;
+            }
+
+            return ($b['rank_score'] ?? 0) <=> ($a['rank_score'] ?? 0);
+        });
 
         $created = 0;
         $logEvents = [];
@@ -1088,6 +1097,9 @@ class TaskQueueService
                 if ($relatedTask->task_type === 'FOLLOW_REQUEST') {
                     $state['warmup_follow_request_sent'] = true;
                     $state['warmup_follow_request_completed'] = true;
+                    $state['follow_status'] = 'requested';
+                    $state['follow_request_sent_at'] = $state['follow_request_sent_at'] ?? $now->toIso8601String();
+                    $state['follow_last_logged_at'] = $now->toIso8601String();
                 } elseif ($relatedTask->task_type === 'COMMENT_ON_POST') {
                     $profile->comment_attempted_at = $profile->comment_attempted_at ?: $now;
                     $state['warmup_comment_completed'] = true;
@@ -1438,7 +1450,6 @@ class TaskQueueService
         $timePressure = $this->timePressureEnabled($settings);
         $score = (int) ($profile->value_score ?? 0);
         $highValueThreshold = (int) ($settings['high_value_threshold'] ?? 75);
-        $mediumValueThreshold = (int) ($settings['medium_value_threshold'] ?? 50);
         $warmupEnabled = (bool) ($settings['high_value_warmup_enabled'] ?? true);
         $executionChannel = $this->resolveExecutionChannel($profile, $state);
         $needsReplyReview = ($state['needs_reply_review'] ?? true) !== false;
@@ -1463,8 +1474,6 @@ class TaskQueueService
                 if (empty($state['warmup_comment_completed'])) {
                     return 'COMMENT_ON_POST';
                 }
-            } elseif ($score >= $mediumValueThreshold && $platform === 'instagram' && empty($state['warmup_follow_request_completed']) && empty($state['warmup_follow_request_sent'])) {
-                return 'FOLLOW_REQUEST';
             }
         }
 
@@ -1540,6 +1549,14 @@ class TaskQueueService
                 $profile->lifecycle_state = 'warming';
                 $state['warmup_follow_request_sent'] = true;
                 $state['warmup_follow_request_completed'] = true;
+                $state['follow_last_logged_at'] = $now->toIso8601String();
+                if ($outcome === 'already_following') {
+                    $state['follow_status'] = 'already_following';
+                    $state['already_following_at'] = $state['already_following_at'] ?? $now->toIso8601String();
+                } else {
+                    $state['follow_status'] = 'requested';
+                    $state['follow_request_sent_at'] = $state['follow_request_sent_at'] ?? $now->toIso8601String();
+                }
                 if (!empty(($task->metadata ?? [])['follow_up_variant'])) {
                     if ($markReplied || in_array($outcome, ['creator_replied', 'replied_elsewhere', 'conversation_active_elsewhere'], true)) {
                         $this->markExternalConversationActive($profile, $state, $settings, $externalChannel ?: (string) ($task->actionable_channel ?: $task->platform), $conversationUrl ?: (string) ($task->conversation_url ?: $task->open_url));
@@ -1925,6 +1942,9 @@ class TaskQueueService
         if (!empty($metadata['follow_up_variant'])) {
             $score += 14;
         }
+        if ($this->isSupportTaskType($taskType)) {
+            $score -= empty($metadata['follow_up_variant']) ? 26 : 14;
+        }
 
         $decision = match ($taskType) {
             'REVIEW_CREATOR' => [
@@ -1990,9 +2010,9 @@ class TaskQueueService
                 'confidence' => 74,
             ],
             'FOLLOW_REQUEST' => [
-                'reason' => 'Following is the lowest-friction warm-up action before direct outreach.',
-                'why' => 'A small visible signal can make the first message feel less cold.',
-                'success' => 'The creator is followed and the next touchpoint is scheduled.',
+                'reason' => 'This is a support warm-up action for a high-value creator, not the main outreach step.',
+                'why' => 'A small visible signal can make the first message feel less cold without consuming the whole queue.',
+                'success' => 'The follow status is logged and the next real touchpoint stays clear.',
                 'fallback' => 'If following is not possible, open the profile and choose another warm-up action.',
                 'confidence' => 72,
             ],
@@ -2245,6 +2265,11 @@ class TaskQueueService
     private function profileAutomationState(CreatorProfile $profile): array
     {
         return is_array($profile->automation_state) ? $profile->automation_state : [];
+    }
+
+    private function isSupportTaskType(string $taskType): bool
+    {
+        return in_array(strtoupper($taskType), ['FOLLOW_REQUEST', 'COMMENT_ON_POST'], true);
     }
 
     private function priorityFromProfile(CreatorProfile $profile, bool $boostUrgency = false): string

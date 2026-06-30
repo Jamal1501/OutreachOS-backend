@@ -3,11 +3,14 @@
 namespace App\Http\Middleware;
 
 use App\Models\User;
+use App\Models\WorkspaceMember;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -26,6 +29,7 @@ class AuthenticateApiRequest
             }
 
             $user = $this->syncLocalUser($supabaseUser);
+            $this->acceptPendingWorkspaceInvitations($user);
 
             Auth::setUser($user);
             $request->setUserResolver(static fn () => $user);
@@ -118,5 +122,120 @@ class AuthenticateApiRequest
         $user->save();
 
         return $user;
+    }
+
+    private function acceptPendingWorkspaceInvitations(User $user): void
+    {
+        if (!Schema::hasTable('workspace_invitations')) {
+            return;
+        }
+
+        $email = Str::lower(trim((string) $user->email));
+        $supabaseUserId = trim((string) $user->supabase_user_id);
+
+        if ($email === '' || $supabaseUserId === '') {
+            return;
+        }
+
+        $acceptedWorkspaceIds = [];
+
+        DB::transaction(function () use ($email, $supabaseUserId, &$acceptedWorkspaceIds) {
+            $invitations = DB::table('workspace_invitations')
+                ->join('workspaces', 'workspaces.id', '=', 'workspace_invitations.workspace_id')
+                ->whereRaw('LOWER(workspace_invitations.email) = ?', [$email])
+                ->whereNull('workspace_invitations.accepted_at')
+                ->where(function ($query) {
+                    $query->whereNull('workspace_invitations.expires_at')
+                        ->orWhere('workspace_invitations.expires_at', '>', now());
+                })
+                ->lockForUpdate()
+                ->get([
+                    'workspace_invitations.id',
+                    'workspace_invitations.workspace_id',
+                    'workspace_invitations.role',
+                    'workspaces.billing_account_id',
+                    'workspaces.plan_id',
+                ]);
+
+            foreach ($invitations as $invite) {
+                $workspaceId = (string) $invite->workspace_id;
+                $role = in_array((string) $invite->role, ['admin', 'member'], true)
+                    ? (string) $invite->role
+                    : 'member';
+
+                $membership = WorkspaceMember::query()
+                    ->where('workspace_id', $workspaceId)
+                    ->where('user_id', $supabaseUserId)
+                    ->first();
+
+                if ($membership) {
+                    if ($membership->role !== 'owner') {
+                        $membership->role = $role;
+                        $membership->joined_at = $membership->joined_at ?: now();
+                        $membership->save();
+                    }
+                } elseif ($this->canAddSeatToWorkspace($invite, $supabaseUserId)) {
+                    WorkspaceMember::query()->create([
+                        'id' => (string) Str::uuid(),
+                        'workspace_id' => $workspaceId,
+                        'user_id' => $supabaseUserId,
+                        'role' => $role,
+                        'joined_at' => now(),
+                    ]);
+                } else {
+                    continue;
+                }
+
+                $update = ['accepted_at' => now()];
+                if (Schema::hasColumn('workspace_invitations', 'updated_at')) {
+                    $update['updated_at'] = now();
+                }
+
+                DB::table('workspace_invitations')
+                    ->where('id', $invite->id)
+                    ->update($update);
+
+                $acceptedWorkspaceIds[] = $workspaceId;
+            }
+        });
+
+        if ($acceptedWorkspaceIds !== []) {
+            Cache::forget(sprintf('workspace-context:user-memberships:%s', $supabaseUserId));
+            foreach (array_unique($acceptedWorkspaceIds) as $workspaceId) {
+                Cache::forget(sprintf('workspace-context:membership:%s:%s', $workspaceId, $supabaseUserId));
+            }
+        }
+    }
+
+    private function canAddSeatToWorkspace(object $workspace, string $userId): bool
+    {
+        $billingAccountId = trim((string) ($workspace->billing_account_id ?? ''));
+        $workspaceIds = $billingAccountId !== ''
+            ? DB::table('workspaces')->where('billing_account_id', $billingAccountId)->pluck('id')->map(fn ($id) => (string) $id)->all()
+            : [(string) $workspace->workspace_id];
+
+        if (empty($workspaceIds)) {
+            return false;
+        }
+
+        $alreadyInAccount = WorkspaceMember::query()
+            ->whereIn('workspace_id', $workspaceIds)
+            ->where('user_id', $userId)
+            ->exists();
+
+        if ($alreadyInAccount) {
+            return true;
+        }
+
+        $planId = $billingAccountId !== ''
+            ? (string) (DB::table('billing_accounts')->where('id', $billingAccountId)->value('plan_id') ?: ($workspace->plan_id ?? 'free'))
+            : (string) ($workspace->plan_id ?? 'free');
+        $maxMembers = (int) (DB::table('plans')->where('id', $planId ?: 'free')->value('max_members') ?: 1);
+        $activeSeats = WorkspaceMember::query()
+            ->whereIn('workspace_id', $workspaceIds)
+            ->distinct('user_id')
+            ->count('user_id');
+
+        return $activeSeats < max(1, $maxMembers);
     }
 }

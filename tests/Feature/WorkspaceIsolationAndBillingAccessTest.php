@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Exceptions\InsufficientCreditsException;
+use App\Mail\WorkspaceInvitationMail;
 use App\Models\User;
 use App\Models\Workspace;
 use App\Models\WorkspaceMember;
@@ -10,6 +11,7 @@ use App\Services\WorkspaceBillingService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -41,6 +43,118 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
                 'packageId' => 'test-package',
             ])
             ->assertForbidden();
+    }
+
+    public function test_owner_can_invite_member_and_email_is_sent(): void
+    {
+        Mail::fake();
+        [$owner, $workspace] = $this->createWorkspaceForRole('owner', maxMembers: 3);
+        $this->fakeSupabaseUser($owner);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/workspaces/invitations', [
+                'email' => 'teammate@example.test',
+                'role' => 'member',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('data.pendingInvitations', 1);
+
+        $this->assertDatabaseHas('workspace_invitations', [
+            'workspace_id' => $workspace->id,
+            'email' => 'teammate@example.test',
+            'role' => 'member',
+            'accepted_at' => null,
+        ]);
+        $this->assertDatabaseHas('workspace_audit_events', [
+            'workspace_id' => $workspace->id,
+            'event_type' => 'invitation_created',
+        ]);
+        Mail::assertSent(WorkspaceInvitationMail::class);
+    }
+
+    public function test_invited_user_is_added_to_workspace_on_authenticated_request(): void
+    {
+        [$owner, $workspace] = $this->createWorkspaceForRole('owner', maxMembers: 3);
+        DB::table('workspace_invitations')->insert([
+            'id' => (string) Str::uuid(),
+            'workspace_id' => $workspace->id,
+            'email' => 'invitee@example.test',
+            'role' => 'member',
+            'token' => (string) Str::uuid(),
+            'accepted_at' => null,
+            'expires_at' => now()->addDays(7),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->fakeSupabaseIdentity((string) Str::uuid(), 'invitee@example.test', 'Invitee User');
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->getJson('/api/auth-check')
+            ->assertOk();
+
+        $inviteeId = DB::table('users')->where('email', 'invitee@example.test')->value('supabase_user_id');
+        $this->assertNotEmpty($inviteeId);
+        $this->assertDatabaseHas('workspace_members', [
+            'workspace_id' => $workspace->id,
+            'user_id' => $inviteeId,
+            'role' => 'member',
+        ]);
+        $this->assertNotNull(DB::table('workspace_invitations')->where('email', 'invitee@example.test')->value('accepted_at'));
+    }
+
+    public function test_admin_cannot_invite_another_admin(): void
+    {
+        [$admin, $workspace] = $this->createWorkspaceForRole('admin', maxMembers: 3);
+        $this->fakeSupabaseUser($admin);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/workspaces/invitations', [
+                'email' => 'new-admin@example.test',
+                'role' => 'admin',
+            ])
+            ->assertForbidden();
+    }
+
+    public function test_owner_can_transfer_workspace_ownership_to_existing_member(): void
+    {
+        [$owner, $workspace] = $this->createWorkspaceForRole('owner', maxMembers: 3);
+        $target = User::query()->create([
+            'supabase_user_id' => (string) Str::uuid(),
+            'name' => 'Future Owner',
+            'email' => 'future-owner@example.test',
+            'password' => 'password',
+        ]);
+        WorkspaceMember::query()->create([
+            'id' => (string) Str::uuid(),
+            'workspace_id' => $workspace->id,
+            'user_id' => $target->supabase_user_id,
+            'role' => 'member',
+            'joined_at' => now(),
+        ]);
+        $this->fakeSupabaseUser($owner);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/workspaces/current/transfer-owner', [
+                'targetUserId' => $target->supabase_user_id,
+            ])
+            ->assertOk();
+
+        $this->assertDatabaseHas('workspace_members', [
+            'workspace_id' => $workspace->id,
+            'user_id' => $target->supabase_user_id,
+            'role' => 'owner',
+        ]);
+        $this->assertDatabaseHas('workspace_members', [
+            'workspace_id' => $workspace->id,
+            'user_id' => $owner->supabase_user_id,
+            'role' => 'admin',
+        ]);
+        $this->assertSame($target->supabase_user_id, Workspace::query()->find($workspace->id)->owner_id);
     }
 
     public function test_legacy_app_key_cannot_access_workspace_scoped_routes(): void
@@ -167,8 +281,20 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
         $this->assertSame('failed', DB::table('stripe_webhook_events')->where('stripe_event_id', 'evt_underpaid_topup')->value('status'));
     }
 
-    private function createWorkspaceForRole(string $role): array
+    private function createWorkspaceForRole(string $role, int $maxMembers = 1): array
     {
+        DB::table('plans')->updateOrInsert(
+            ['id' => 'free'],
+            [
+                'name' => 'Free',
+                'max_members' => $maxMembers,
+                'max_creators' => 100,
+                'features' => json_encode([]),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]
+        );
+
         $user = User::query()->create([
             'supabase_user_id' => (string) Str::uuid(),
             'name' => 'Test User',
@@ -198,6 +324,11 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
 
     private function fakeSupabaseUser(User $user): void
     {
+        $this->fakeSupabaseIdentity($user->supabase_user_id, $user->email, $user->name);
+    }
+
+    private function fakeSupabaseIdentity(string $userId, string $email, string $name = 'Test User'): void
+    {
         config([
             'services.supabase.url' => 'https://supabase.example.test',
             'services.supabase.service_role_key' => 'service-role-key',
@@ -205,10 +336,10 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
 
         Http::fake([
             'supabase.example.test/auth/v1/user' => Http::response([
-                'id' => $user->supabase_user_id,
-                'email' => $user->email,
+                'id' => $userId,
+                'email' => $email,
                 'email_confirmed_at' => now()->toIso8601String(),
-                'user_metadata' => ['full_name' => $user->name],
+                'user_metadata' => ['full_name' => $name],
             ], 200),
         ]);
     }
