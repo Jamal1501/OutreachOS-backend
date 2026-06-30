@@ -364,6 +364,7 @@ class SheetDataController extends Controller
             'sort' => ['nullable', Rule::in(['handle', 'followers', 'engagementRate', 'valueScore', 'addedAt'])],
             'direction' => ['nullable', Rule::in(['asc', 'desc'])],
             'fields' => ['nullable', Rule::in(['summary', 'full'])],
+            'include_counts' => ['nullable', 'boolean'],
             'limit' => ['nullable', 'integer', 'min:1', 'max:500'],
             'offset' => ['nullable', 'integer', 'min:0'],
         ]);
@@ -381,6 +382,7 @@ class SheetDataController extends Controller
         $sort = (string) ($validated['sort'] ?? 'addedAt');
         $direction = (string) ($validated['direction'] ?? 'desc');
         $fields = (string) ($validated['fields'] ?? 'full');
+        $includeCounts = array_key_exists('include_counts', $validated) ? (bool) $validated['include_counts'] : true;
         $limit = (int) ($validated['limit'] ?? 200);
         $offset = (int) ($validated['offset'] ?? 0);
 
@@ -397,6 +399,7 @@ class SheetDataController extends Controller
             'sort' => $sort,
             'direction' => $direction,
             'fields' => $fields,
+            'include_counts' => $includeCounts,
             'limit' => $limit,
             'offset' => $offset,
         ]);
@@ -2202,6 +2205,8 @@ return [
         $offset = max(0, (int) ($filters['offset'] ?? 0));
         $sort = (string) ($filters['sort'] ?? 'addedAt');
         $direction = strtolower((string) ($filters['direction'] ?? 'desc')) === 'asc' ? 'asc' : 'desc';
+        $fields = (string) ($filters['fields'] ?? 'full');
+        $includeCounts = (bool) ($filters['include_counts'] ?? true);
 
         $query = CreatorProfile::query()
             ->with(['creator:id,display_name,primary_email,country,city,primary_language,niche_category,notes,external_identity_key'])
@@ -2288,8 +2293,8 @@ return [
             });
         }
 
-        $total = (clone $query)->count();
-        $statusCounts = $this->creatorStatusCountsForProject($project->id);
+        $total = ($includeCounts || $duplicateReviewOnly) ? (clone $query)->count() : null;
+        $statusCounts = $includeCounts ? $this->creatorStatusCountsForProject($project->id) : [];
 
         if ($total === 0) {
             return ['items' => [], 'total' => 0, 'statusCounts' => $statusCounts];
@@ -2303,14 +2308,16 @@ return [
         }
 
         $profiles = $profilesQuery->get();
-        $creatorIds = $profiles->pluck('creator_id')->filter()->unique()->values();
-        $counts = CreatorProfile::query()
-            ->selectRaw('creator_id, COUNT(*) as aggregate_count')
-            ->whereIn('creator_id', $creatorIds)
-            ->groupBy('creator_id')
-            ->pluck('aggregate_count', 'creator_id');
+        $counts = collect();
+        if ($fields !== 'summary') {
+            $creatorIds = $profiles->pluck('creator_id')->filter()->unique()->values();
+            $counts = CreatorProfile::query()
+                ->selectRaw('creator_id, COUNT(*) as aggregate_count')
+                ->whereIn('creator_id', $creatorIds)
+                ->groupBy('creator_id')
+                ->pluck('aggregate_count', 'creator_id');
+        }
 
-        $fields = (string) ($filters['fields'] ?? 'full');
         $items = $profiles->map(function (CreatorProfile $profile) use ($counts, $fields) {
             $profile->loadMissing('creator');
             $item = $this->buildCreatorListItemFromProfile($profile, $fields === 'summary');

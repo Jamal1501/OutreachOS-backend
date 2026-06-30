@@ -956,7 +956,8 @@ return [
             $stateCounts[$state] = ($stateCounts[$state] ?? 0) + 1;
         }
 
-        $overdueTasks = array_values(array_filter($tasks, fn (array $task) => $this->isOpenTask($task) && $this->isTaskOverdue($task)));
+        $openTasks = array_values(array_filter($tasks, fn (array $task) => $this->isOpenTask($task)));
+        $overdueTasks = array_values(array_filter($openTasks, fn (array $task) => $this->isTaskOverdue($task)));
         $repliesWaiting = (int) ($stateCounts['replied'] ?? 0);
         $negotiating = (int) ($stateCounts['negotiating'] ?? 0);
         $accepted = (int) ($stateCounts['accepted'] ?? 0);
@@ -1076,6 +1077,7 @@ return [
             ],
             'bottlenecks' => $bottlenecks,
             'counts' => [
+                'openTasks' => count($openTasks),
                 'overdueTasks' => count($overdueTasks),
                 'repliesWaiting' => $repliesWaiting,
                 'qualifiedButNoTask' => $qualifiedButNoTask,
