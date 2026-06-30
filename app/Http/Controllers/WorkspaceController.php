@@ -88,6 +88,7 @@ class WorkspaceController extends Controller
             'budget' => ['nullable', 'numeric', 'min:0'],
             'notes' => ['nullable', 'string', 'max:4000'],
             'brandProfile' => ['nullable', 'array'],
+            'onboarding' => ['nullable', 'array'],
         ]);
 
         [$workspace, $membership] = DB::transaction(function () use ($validated, $supabaseUserId) {
@@ -112,6 +113,7 @@ class WorkspaceController extends Controller
                     'budget' => isset($validated['budget']) ? (float) $validated['budget'] : null,
                     'notes' => $validated['notes'] ?? null,
                     'brandProfile' => $validated['brandProfile'] ?? null,
+                    'onboarding' => $this->normalizeOnboardingSettings((array) ($validated['onboarding'] ?? [])),
                     'dataSource' => 'internal_database',
                     'legacyGoogleSheetsDisabled' => true,
                 ],
@@ -1148,5 +1150,46 @@ class WorkspaceController extends Controller
         }
 
         return $candidate;
+    }
+
+    private function normalizeOnboardingSettings(array $input): ?array
+    {
+        if (empty($input)) {
+            return null;
+        }
+
+        $workspaceType = in_array(($input['workspaceType'] ?? ''), ['agency', 'brand', 'client'], true)
+            ? (string) $input['workspaceType']
+            : null;
+        $primaryGoal = in_array(($input['primaryGoal'] ?? ''), ['discover', 'import', 'followups'], true)
+            ? (string) $input['primaryGoal']
+            : null;
+        $platformFocus = in_array(($input['platformFocus'] ?? ''), ['instagram', 'tiktok', 'both'], true)
+            ? (string) $input['platformFocus']
+            : null;
+        $firstAction = in_array(($input['firstAction'] ?? ''), ['discover', 'crm', 'team'], true)
+            ? (string) $input['firstAction']
+            : null;
+
+        $completed = [];
+        $completedInput = is_array($input['completed'] ?? null) ? $input['completed'] : [];
+        foreach (['workspaceCreated', 'brandContext', 'firstDiscovery', 'firstCreators', 'firstOutreach', 'taskQueue', 'teamInvited'] as $key) {
+            if (array_key_exists($key, $completedInput)) {
+                $completed[$key] = (bool) $completedInput[$key];
+            }
+        }
+
+        return array_filter([
+            'version' => 1,
+            'createdAt' => isset($input['createdAt']) ? Str::limit((string) $input['createdAt'], 64, '') : null,
+            'updatedAt' => isset($input['updatedAt']) ? Str::limit((string) $input['updatedAt'], 64, '') : null,
+            'workspaceType' => $workspaceType,
+            'primaryGoal' => $primaryGoal,
+            'platformFocus' => $platformFocus,
+            'monthlyCreatorTarget' => isset($input['monthlyCreatorTarget']) ? max(1, min(100000, (int) $input['monthlyCreatorTarget'])) : null,
+            'teamSize' => isset($input['teamSize']) ? max(1, min(1000, (int) $input['teamSize'])) : null,
+            'firstAction' => $firstAction,
+            'completed' => $completed,
+        ], fn ($value) => $value !== null && $value !== []);
     }
 }
