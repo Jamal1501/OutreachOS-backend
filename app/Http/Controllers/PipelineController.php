@@ -172,11 +172,148 @@ class PipelineController extends Controller
             'totalCreators' => $state['totalCreators'] ?? 0,
             'failedStep' => $state['failedStep'] ?? null,
             'steps' => $state['steps'] ?? [],
+            'progress' => $this->progressSnapshot($state),
             'error' => $state['error'] ?? null,
             'criteria' => $state['criteria'] ?? null,
             'filterSummary' => $state['filterSummary'] ?? null,
             'brief' => $state['brief'] ?? null,
         ]);
+    }
+
+    private function progressSnapshot(array $state): array
+    {
+        $request = is_array($state['request'] ?? null) ? $state['request'] : [];
+        $steps = is_array($state['steps'] ?? null) ? $state['steps'] : [];
+        $completedSteps = is_array($state['completedSteps'] ?? null) ? $state['completedSteps'] : [];
+        $currentStep = (string) ($state['currentStep'] ?? '');
+        $status = (string) ($state['status'] ?? 'running');
+        $creators = is_array($state['creators'] ?? null) ? $state['creators'] : [];
+        $hashtags = array_values(array_filter((array) ($request['hashtags'] ?? []), fn ($value) => trim((string) $value) !== ''));
+        $seedCount = max(1, count($hashtags));
+        $discoveryLimit = max(1, (int) ($request['discoveryLimit'] ?? 50));
+        $enrichmentLimit = max(1, (int) ($request['enrichmentLimit'] ?? 20));
+
+        $stepPayloads = [];
+        foreach ($steps as $step) {
+            if (is_array($step) && isset($step['step'])) {
+                $stepPayloads[(string) $step['step']] = $step;
+            }
+        }
+
+        $foundPosts = $this->numericProgressValue($stepPayloads['discovery_scrape']['itemCount'] ?? null);
+        $importedPosts = $this->numericProgressValue($stepPayloads['import_posts']['importedRows'] ?? null);
+        $uniqueProfiles = $this->numericProgressValue($stepPayloads['extract_urls']['uniqueProfiles'] ?? null);
+        $enrichedProfiles = $this->numericProgressValue($stepPayloads['enrichment_scrape']['itemCount'] ?? null);
+        $readyCreators = $status === 'completed'
+            ? (int) ($state['totalCreators'] ?? count($creators))
+            : null;
+
+        $stages = [
+            [
+                'key' => 'discovery_scrape',
+                'label' => 'Finding public creator signals',
+                'status' => $this->progressStageStatus('discovery_scrape', $currentStep, $completedSteps, $status),
+                'detail' => $foundPosts !== null
+                    ? $foundPosts . ' posts found'
+                    : 'Searching ' . $seedCount . ' hashtag' . ($seedCount === 1 ? '' : 's') . ' with Apify',
+                'count' => $foundPosts,
+            ],
+            [
+                'key' => 'import_posts',
+                'label' => 'Processing discovered posts',
+                'status' => $this->progressStageStatus('import_posts', $currentStep, $completedSteps, $status),
+                'detail' => $importedPosts !== null
+                    ? $importedPosts . ' posts processed'
+                    : 'Preparing discovered posts for profile extraction',
+                'count' => $importedPosts,
+            ],
+            [
+                'key' => 'extract_urls',
+                'label' => 'Selecting creator profiles',
+                'status' => $this->progressStageStatus('extract_urls', $currentStep, $completedSteps, $status),
+                'detail' => $uniqueProfiles !== null
+                    ? $uniqueProfiles . ' unique profiles selected'
+                    : 'Ranking posts and removing duplicate profile URLs',
+                'count' => $uniqueProfiles,
+            ],
+            [
+                'key' => 'enrichment_scrape',
+                'label' => 'Enriching selected profiles',
+                'status' => $this->progressStageStatus('enrichment_scrape', $currentStep, $completedSteps, $status),
+                'detail' => $enrichedProfiles !== null
+                    ? $enrichedProfiles . ' profiles enriched'
+                    : 'Enriching up to ' . min($enrichmentLimit, max($uniqueProfiles ?? $enrichmentLimit, 1)) . ' selected profiles',
+                'count' => $enrichedProfiles,
+            ],
+            [
+                'key' => 'import_profiles',
+                'label' => 'Preparing review queue',
+                'status' => $this->progressStageStatus('import_profiles', $currentStep, $completedSteps, $status),
+                'detail' => $readyCreators !== null
+                    ? $readyCreators . ' creators ready to review'
+                    : 'Scoring fit and preparing the shortlist',
+                'count' => $readyCreators,
+            ],
+        ];
+
+        return [
+            'stages' => $stages,
+            'counters' => [
+                'requestedPosts' => $discoveryLimit,
+                'requestedProfiles' => $enrichmentLimit,
+                'seedCount' => $seedCount,
+                'foundPosts' => $foundPosts,
+                'processedPosts' => $importedPosts,
+                'uniqueProfiles' => $uniqueProfiles,
+                'previewCreators' => count($creators),
+                'enrichedProfiles' => $enrichedProfiles,
+                'readyCreators' => $readyCreators,
+            ],
+            'canPreviewCreators' => $status === 'running' && count($creators) > 0,
+            'message' => $this->progressMessage($currentStep, $status, count($creators)),
+        ];
+    }
+
+    private function progressStageStatus(string $step, string $currentStep, array $completedSteps, string $pipelineStatus): string
+    {
+        if ($pipelineStatus === 'completed' || in_array($step, $completedSteps, true)) {
+            return 'completed';
+        }
+
+        if ($pipelineStatus === 'failed' && $step === $currentStep) {
+            return 'failed';
+        }
+
+        return $step === $currentStep ? 'running' : 'queued';
+    }
+
+    private function numericProgressValue(mixed $value): ?int
+    {
+        return is_numeric($value) ? max(0, (int) $value) : null;
+    }
+
+    private function progressMessage(string $currentStep, string $status, int $previewCount): string
+    {
+        if ($status === 'completed') {
+            return 'Shortlist is ready for review.';
+        }
+
+        if ($status === 'failed') {
+            return 'Discovery stopped before the shortlist was ready.';
+        }
+
+        if ($previewCount > 0) {
+            return $previewCount . ' creator preview' . ($previewCount === 1 ? ' is' : 's are') . ' ready while enrichment continues.';
+        }
+
+        return match ($currentStep) {
+            'discovery_scrape' => 'Apify is collecting public posts. This stage can take the longest.',
+            'import_posts' => 'Posts are back. SocialCore is preparing them for profile extraction.',
+            'extract_urls' => 'SocialCore is selecting unique creator profiles from the discovered posts.',
+            'enrichment_scrape' => 'Apify is enriching selected profiles. You will see previews as soon as they are safe to show.',
+            'import_profiles' => 'SocialCore is scoring fit and preparing the review queue.',
+            default => 'Discovery is running.',
+        };
     }
 
     private function startPipeline(Request $request, array $payload, array $extraResponse = [])
