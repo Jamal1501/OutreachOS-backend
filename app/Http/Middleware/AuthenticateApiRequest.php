@@ -4,6 +4,7 @@ namespace App\Http\Middleware;
 
 use App\Models\User;
 use App\Models\WorkspaceMember;
+use App\Services\WorkspaceIdentityService;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -16,6 +17,10 @@ use Symfony\Component\HttpFoundation\Response;
 
 class AuthenticateApiRequest
 {
+    public function __construct(private WorkspaceIdentityService $workspaceIdentity)
+    {
+    }
+
     public function handle(Request $request, Closure $next): Response
     {
         $bearerToken = trim((string) $request->bearerToken());
@@ -29,13 +34,14 @@ class AuthenticateApiRequest
             }
 
             $user = $this->syncLocalUser($supabaseUser);
-            $this->acceptPendingWorkspaceInvitations($user);
-
             Auth::setUser($user);
             $request->setUserResolver(static fn () => $user);
             $request->attributes->set('auth_user_id', $user->getKey());
             $request->attributes->set('supabase_user_id', $user->supabase_user_id);
             $request->attributes->set('supabase_user', $supabaseUser);
+
+            $this->workspaceIdentity->recoverLegacyMemberships($request);
+            $this->acceptPendingWorkspaceInvitations($user);
 
             return $next($request);
         }
