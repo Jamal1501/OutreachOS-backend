@@ -35,7 +35,10 @@ class CrmFileImportService
         'follow_up_needed' => ['follow_up_needed_(y/n)', 'follow_up_needed'],
     ];
 
-    public function __construct(private ProjectResolverService $projects)
+    public function __construct(
+        private ProjectResolverService $projects,
+        private AvatarCacheService $avatarCache,
+    )
     {
     }
 
@@ -63,8 +66,9 @@ class CrmFileImportService
         $createdProfiles = 0;
         $updatedProfiles = 0;
         $skipped = 0;
+        $avatarUrls = [];
 
-        DB::transaction(function () use ($project, $rows, $file, $mapping, &$createdCreators, &$createdProfiles, &$updatedProfiles, &$skipped): void {
+        DB::transaction(function () use ($project, $rows, $file, $mapping, &$createdCreators, &$createdProfiles, &$updatedProfiles, &$skipped, &$avatarUrls): void {
             foreach ($rows as $index => $row) {
                 $platform = $this->normalizePlatform($this->value($row, 'platform', $mapping));
                 $handle = $this->normalizeHandle($this->value($row, 'handle', $mapping));
@@ -132,6 +136,9 @@ class CrmFileImportService
                 $profile->profile_url = $profileUrl ?: $profile->profile_url;
                 $profile->dm_link = $profileUrl ?: $profile->dm_link;
                 $profile->profile_pic_url = $this->nullableString($this->value($row, 'avatar_url', $mapping)) ?: $profile->profile_pic_url;
+                if ((string) ($profile->profile_pic_url ?? '') !== '') {
+                    $avatarUrls[] = (string) $profile->profile_pic_url;
+                }
                 $profile->status = $this->nullableString($this->value($row, 'status', $mapping)) ?: ($profile->status ?: 'IMPORTED');
                 $profile->lifecycle_state = $this->normalizeLifecycleState((string) $profile->status);
                 $profile->followers_count = $this->nullableInt($this->value($row, 'followers', $mapping)) ?? $profile->followers_count;
@@ -159,6 +166,7 @@ class CrmFileImportService
                 }
             }
         });
+        $this->avatarCache->warmManyAfterResponse($avatarUrls, 25);
 
         return [
             'projectId' => $project->id,

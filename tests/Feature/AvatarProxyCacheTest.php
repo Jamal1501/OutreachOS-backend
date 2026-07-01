@@ -23,7 +23,8 @@ class AvatarProxyCacheTest extends TestCase
 
         $this->get('/api/avatar-proxy?url=' . urlencode($url))
             ->assertOk()
-            ->assertHeader('Content-Type', 'image/jpeg');
+            ->assertHeader('Content-Type', 'image/jpeg')
+            ->assertHeader('X-Avatar-Cache', 'miss');
 
         Storage::disk('local')->assertExists("avatar-cache/{$hash}.bin");
         Storage::disk('local')->assertExists("avatar-cache/{$hash}.json");
@@ -48,6 +49,7 @@ class AvatarProxyCacheTest extends TestCase
         $this->get('/api/avatar-proxy?url=' . urlencode($url))
             ->assertOk()
             ->assertHeader('Content-Type', 'image/jpeg')
+            ->assertHeader('X-Avatar-Cache', 'hit')
             ->assertSee('cached-image');
 
         Http::assertNothingSent();

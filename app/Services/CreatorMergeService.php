@@ -21,6 +21,7 @@ class CreatorMergeService
         private InfluencerScoringService $scoring,
         private ProjectResolverService $projects,
         private CreatorLocationInferenceService $locationInference,
+        private AvatarCacheService $avatarCache,
     ) {
     }
 
@@ -168,6 +169,7 @@ class CreatorMergeService
             $skipped = 0;
             $affectedProfileIds = [];
             $affectedProfiles = [];
+            $avatarUrls = [];
 
             foreach ($sourceRows as $sourceRow) {
                 $creatorRecord = $this->sourceRowToCreatorRecord($sourceSheet, $sourceRow);
@@ -203,6 +205,9 @@ class CreatorMergeService
                 }
 
                 $this->fillDatabaseProfile($profile, $creator, $creatorRecord, $sourceRow);
+                if ((string) ($profile->profile_pic_url ?? '') !== '') {
+                    $avatarUrls[] = (string) $profile->profile_pic_url;
+                }
                 $profile->save();
 
                 $affectedProfileIds[] = $profile->id;
@@ -228,10 +233,12 @@ class CreatorMergeService
                 'skipped' => $skipped,
                 'affectedProfileIds' => array_values(array_unique($affectedProfileIds)),
                 'affectedProfiles' => $affectedProfiles,
+                'avatarUrls' => array_values(array_unique($avatarUrls)),
             ];
         });
 
         $sheetSync = $this->syncMergedProfilesToCrmSheet($sheetId, $project, $result['affectedProfiles']);
+        $this->avatarCache->warmManyAfterResponse($result['avatarUrls'] ?? [], 25);
 
         return [
             'sourceSheet' => 'database',

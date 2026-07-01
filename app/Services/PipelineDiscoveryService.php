@@ -22,6 +22,7 @@ class PipelineDiscoveryService
         private DiscoveryCriteriaService $criteriaService,
         private ScraperRegistryService $scrapers,
         private InfluencerScoringService $scoring,
+        private AvatarCacheService $avatarCache,
     ) {
     }
 
@@ -303,6 +304,7 @@ public function getJobState(string $jobId): ?array
                 'importedRows' => $importedProfiles,
             ];
             $this->completeStep($jobId, 'import_profiles', end($stepResults));
+            $this->avatarCache->warmManyAfterResponse(array_column($creators, 'avatarUrl'), 25);
 
             $final = [
                 'message' => 'Pipeline complete',

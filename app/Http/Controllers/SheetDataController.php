@@ -9,6 +9,7 @@ use App\Models\OutreachEvent;
 use App\Models\DiscoveryItem;
 use App\Models\MessageTemplate;
 use App\Services\AnalyticsSummaryService;
+use App\Services\AvatarCacheService;
 use App\Services\CreatorLifecycleService;
 use App\Services\CreatorLocationInferenceService;
 use App\Services\CreatorMergeService;
@@ -27,9 +28,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use RuntimeException;
@@ -52,6 +51,7 @@ class SheetDataController extends Controller
         private CreatorLocationInferenceService $locationInference,
         private AnalyticsSummaryService $analytics,
         private LearningEventService $learningEvents,
+        private AvatarCacheService $avatarCache,
     ) {
     }
 
@@ -61,164 +61,7 @@ class SheetDataController extends Controller
             'url' => ['required', 'string', 'max:2000'],
         ]);
 
-        $url = trim((string) $validated['url']);
-
-        if (!filter_var($url, FILTER_VALIDATE_URL)) {
-            return response()->json([
-                'message' => 'Invalid avatar URL',
-            ], 422);
-        }
-
-        $parts = parse_url($url);
-        $scheme = Str::lower((string) ($parts['scheme'] ?? ''));
-        $host = Str::lower((string) ($parts['host'] ?? ''));
-
-        if ($scheme !== 'https' || $host === '') {
-            return response()->json([
-                'message' => 'Invalid avatar host',
-            ], 422);
-        }
-
-        $allowedHostSuffixes = [
-            'cdninstagram.com',
-            'fbcdn.net',
-            'instagram.com',
-            'tiktokcdn.com',
-            'muscdn.com',
-            'byteoversea.com',
-            'ibyteimg.com',
-        ];
-
-        $hostAllowed = false;
-        foreach ($allowedHostSuffixes as $suffix) {
-            if ($host === $suffix || Str::endsWith($host, '.' . $suffix)) {
-                $hostAllowed = true;
-                break;
-            }
-        }
-
-        if (!$hostAllowed) {
-            return response()->json([
-                'message' => 'Avatar host not allowed',
-            ], 403);
-        }
-
-        $cacheKey = hash('sha256', $url);
-        $cachedAvatarPath = "avatar-cache/{$cacheKey}.bin";
-        $cachedMetaPath = "avatar-cache/{$cacheKey}.json";
-        $cachedAvatar = $this->readCachedAvatar($cachedAvatarPath, $cachedMetaPath);
-        if ($cachedAvatar !== null) {
-            return $this->avatarResponse($cachedAvatar['body'], $cachedAvatar['contentType'], 604800);
-        }
-
-        try {
-            $upstream = Http::timeout(12)
-                ->withoutRedirecting()
-                ->withHeaders([
-                    'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
-                    'Accept' => 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-                ])
-                ->get($url);
-        } catch (\Throwable $e) {
-            Log::warning('avatar proxy fetch failed', [
-                'host' => $host,
-                'url_hash' => $cacheKey,
-                'error' => $e->getMessage(),
-            ]);
-
-            return response()->json([
-                'message' => 'Avatar fetch failed',
-            ], 502);
-        }
-
-        if ($upstream->redirect()) {
-            return response()->json([
-                'message' => 'Avatar redirects are not allowed',
-            ], 422);
-        }
-
-        if (!$upstream->ok()) {
-            Log::warning('avatar proxy upstream not ok', [
-                'host' => $host,
-                'url_hash' => $cacheKey,
-                'status' => $upstream->status(),
-            ]);
-
-            return response()->json([
-                'message' => 'Avatar fetch failed',
-            ], 502);
-        }
-
-        $contentType = (string) $upstream->header('Content-Type', '');
-
-        $maxAvatarBytes = 2 * 1024 * 1024;
-        $contentLength = (int) $upstream->header('Content-Length', 0);
-        if ($contentLength > $maxAvatarBytes || strlen($upstream->body()) > $maxAvatarBytes) {
-            return response()->json([
-                'message' => 'Avatar image is too large',
-            ], 413);
-        }
-
-        if (!Str::startsWith(Str::lower($contentType), 'image/')) {
-            return response()->json([
-                'message' => 'Avatar response was not an image',
-            ], 415);
-        }
-
-        $body = $upstream->body();
-        $this->writeCachedAvatar($cachedAvatarPath, $cachedMetaPath, $body, $contentType);
-
-        return $this->avatarResponse($body, $contentType, 604800);
-    }
-
-    private function readCachedAvatar(string $avatarPath, string $metaPath): ?array
-    {
-        $disk = Storage::disk('local');
-
-        if (!$disk->exists($avatarPath) || !$disk->exists($metaPath)) {
-            return null;
-        }
-
-        $meta = json_decode((string) $disk->get($metaPath), true);
-        $contentType = is_array($meta) ? (string) ($meta['contentType'] ?? '') : '';
-
-        if (!Str::startsWith(Str::lower($contentType), 'image/')) {
-            return null;
-        }
-
-        $body = $disk->get($avatarPath);
-        if (!is_string($body) || $body === '') {
-            return null;
-        }
-
-        return [
-            'body' => $body,
-            'contentType' => $contentType,
-        ];
-    }
-
-    private function writeCachedAvatar(string $avatarPath, string $metaPath, string $body, string $contentType): void
-    {
-        try {
-            Storage::disk('local')->put($avatarPath, $body);
-            Storage::disk('local')->put($metaPath, json_encode([
-                'contentType' => $contentType,
-                'cachedAt' => now()->toIso8601String(),
-            ], JSON_THROW_ON_ERROR));
-        } catch (\Throwable $e) {
-            Log::warning('avatar proxy cache write failed', [
-                'error' => $e->getMessage(),
-            ]);
-        }
-    }
-
-    private function avatarResponse(string $body, string $contentType, int $maxAgeSeconds)
-    {
-        return response($body, 200)
-            ->header('Content-Type', $contentType)
-            ->header('Cache-Control', "public, max-age={$maxAgeSeconds}")
-            ->header('Cross-Origin-Resource-Policy', 'cross-origin')
-            ->header('X-Content-Type-Options', 'nosniff');
+        return $this->avatarCache->responseForUrl(trim((string) $validated['url']));
     }
 
     public function discoveryList(Request $request)
@@ -1738,7 +1581,7 @@ public function creatorDecisionSheet(Request $request, string $id)
 
     private function mergeSelectedCreatorsIntoDatabase(int $projectId, string $platform, array $queueIds, array $selectedCreators): array
     {
-        return DB::transaction(function () use ($projectId, $platform, $queueIds, $selectedCreators) {
+        $result = DB::transaction(function () use ($projectId, $platform, $queueIds, $selectedCreators) {
             $profiles = CreatorProfile::query()
                 ->with('creator')
                 ->where('project_id', $projectId)
@@ -1749,6 +1592,7 @@ public function creatorDecisionSheet(Request $request, string $id)
             $updated = 0;
             $skipped = 0;
             $affectedProfileIds = [];
+            $avatarUrls = [];
 
             foreach ($selectedCreators as $payload) {
                 $candidate = $this->normalizeSelectedCreatorForMerge($platform, $payload);
@@ -1838,6 +1682,9 @@ $profile->username = ltrim($candidate['handle'], '@');
 $profile->profile_url = $candidate['profileUrl'] ?: $profile->profile_url;
 $profile->dm_link = $candidate['profileUrl'] ?: $profile->dm_link ?: $profile->profile_url;
 $profile->profile_pic_url = $candidate['avatarUrl'] ?: $profile->profile_pic_url;
+if ((string) ($profile->profile_pic_url ?? '') !== '') {
+    $avatarUrls[] = (string) $profile->profile_pic_url;
+}
 $profile->status = $profile->status && !in_array(strtoupper((string) $profile->status), ['NEW', 'DISCOVERED', 'ENRICHED'], true)
     ? $profile->status
     : 'NEW';
@@ -1929,8 +1776,15 @@ $profile->source_reference = $candidate['sourceReference'];
                 'selectedQueueCount' => count($queueIds),
                 'selectionMode' => 'database',
                 'resolvedBy' => ['selectedCreators'],
+                'avatarUrls' => array_values(array_unique($avatarUrls)),
             ];
         });
+
+        $this->avatarCache->warmManyAfterResponse($result['avatarUrls'] ?? [], 25);
+
+        unset($result['avatarUrls']);
+
+        return $result;
     }
 
     private function normalizeSelectedCreatorForMerge(string $platform, array $payload): ?array
