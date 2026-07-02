@@ -4,7 +4,6 @@ namespace App\Http\Middleware;
 
 use App\Models\Workspace;
 use App\Models\WorkspaceMember;
-use App\Services\WorkspaceIdentityService;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -12,10 +11,6 @@ use Symfony\Component\HttpFoundation\Response;
 
 class ResolveWorkspaceContext
 {
-    public function __construct(private WorkspaceIdentityService $workspaceIdentity)
-    {
-    }
-
     public function handle(Request $request, Closure $next): Response
     {
         $workspaceId = trim((string) (
@@ -24,7 +19,8 @@ class ResolveWorkspaceContext
             ?: $request->query('workspaceId')
         ));
 
-        $supabaseUserId = $this->workspaceIdentity->canonicalUserId($request);
+        $user = $request->user();
+        $supabaseUserId = trim((string) ($request->attributes->get('supabase_user_id') ?: $user?->supabase_user_id));
 
         if ($request->attributes->get('legacy_api_access')) {
             return response()->json([
