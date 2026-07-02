@@ -115,7 +115,7 @@ class WorkspaceController extends Controller
                     'brandProfile' => $validated['brandProfile'] ?? null,
                     'onboarding' => $this->normalizeOnboardingSettings((array) ($validated['onboarding'] ?? [])),
                     'dataSource' => 'internal_database',
-                    'legacyGoogleSheetsDisabled' => true,
+                    'legacyLegacyWorkbooksDisabled' => true,
                 ],
             ]);
 
@@ -617,7 +617,7 @@ class WorkspaceController extends Controller
             'workbookId',
             'workspaceDataKey',
             'dataSource',
-            'legacyGoogleSheetsDisabled',
+            'legacyLegacyWorkbooksDisabled',
         ];
 
         $incoming = array_diff_key((array) $validated['settings'], array_flip($protectedKeys));
@@ -625,7 +625,7 @@ class WorkspaceController extends Controller
             'workspaceDataKey' => (string) data_get($workspace->settings, 'workspaceDataKey', 'workspace:' . $workspace->slug),
             'workbookId' => (string) data_get($workspace->settings, 'workbookId', data_get($workspace->settings, 'workspaceDataKey', 'workspace:' . $workspace->slug)),
             'dataSource' => 'internal_database',
-            'legacyGoogleSheetsDisabled' => true,
+            'legacyLegacyWorkbooksDisabled' => true,
         ]);
 
         $workspace->settings = $settings;
@@ -938,7 +938,7 @@ class WorkspaceController extends Controller
         $settings['workspaceDataKey'] = $workspaceDataKey;
         $settings['workbookId'] = $workspaceDataKey;
         $settings['dataSource'] = 'internal_database';
-        $settings['legacyGoogleSheetsDisabled'] = true;
+        $settings['legacyLegacyWorkbooksDisabled'] = true;
 
         $billingAccount = $workspace->billing_account_id
             ? DB::table('billing_accounts')->where('id', $workspace->billing_account_id)->first()

@@ -13,7 +13,7 @@ use App\Services\AvatarCacheService;
 use App\Services\CreatorLifecycleService;
 use App\Services\CreatorLocationInferenceService;
 use App\Services\CreatorMergeService;
-use App\Services\GoogleSheetsService;
+use App\Services\LegacyWorkbookStore;
 use App\Services\InfluencerScoringService;
 use App\Services\LearningEventService;
 use App\Services\OperatorViewService;
@@ -37,7 +37,7 @@ use RuntimeException;
 class SheetDataController extends Controller
 {
     public function __construct(
-        private GoogleSheetsService $sheets,
+        private LegacyWorkbookStore $sheets,
         private CreatorMergeService $creatorMerge,
         private TaskQueueService $taskQueue,
         private InfluencerScoringService $scoring,
@@ -2739,7 +2739,7 @@ return [
                 'error' => $e->getMessage(),
             ]);
 
-            return ['synced' => false, 'reason' => 'google_sheets_disabled'];
+            return ['synced' => false, 'reason' => 'external_workbook_disabled'];
         }
     }
 
@@ -2779,7 +2779,7 @@ return [
                 'error' => $e->getMessage(),
             ]);
 
-            return ['synced' => false, 'reason' => 'google_sheets_disabled'];
+            return ['synced' => false, 'reason' => 'external_workbook_disabled'];
         }
     }
 
@@ -3491,7 +3491,7 @@ return [
                 'row_number' => $rowNumber,
                 'error' => $e->getMessage(),
             ]);
-            return ['mode' => 'disabled', 'rowNumber' => $rowNumber, 'reason' => 'google_sheets_disabled'];
+            return ['mode' => 'disabled', 'rowNumber' => $rowNumber, 'reason' => 'external_workbook_disabled'];
         }
     }
 

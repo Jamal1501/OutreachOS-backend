@@ -14,7 +14,7 @@ use Illuminate\Support\Facades\DB;
 class OperationalMirrorService
 {
     public function __construct(
-        private GoogleSheetsService $sheets,
+        private LegacyWorkbookStore $sheets,
         private ProjectResolverService $projects,
     ) {
     }
@@ -73,7 +73,7 @@ class OperationalMirrorService
                         'follow_up_needed' => $this->parseYesNo($row['Follow_Up_Needed_(Y/N)'] ?? null),
                         'dm_sent_at' => $this->parseDateTime($row['DM_Sent_Date'] ?? null),
                         'responded_at' => $this->parseDateTime($row['Response_Date'] ?? null),
-                        'source_provider' => 'google_sheets',
+                        'source_provider' => 'legacy_workbook',
                         'source_reference' => 'Creators_CRM:' . (int) ($row['_row_number'] ?? 0),
                         'source_metadata' => [
                             'sheet_row_number' => (int) ($row['_row_number'] ?? 0),
@@ -202,7 +202,7 @@ class OperationalMirrorService
                         'due_at' => $this->parseDateTime($row['Due_At'] ?? null),
                         'open_url' => trim((string) ($row['Open_URL'] ?? '')) ?: null,
                         'message_draft' => trim((string) ($row['Message_Draft'] ?? '')) ?: null,
-                        'source_provider' => 'google_sheets',
+                        'source_provider' => 'legacy_workbook',
                         'source_reference' => 'Task_Queue:' . (int) ($row['_row_number'] ?? 0),
                         'notes' => trim((string) ($row['Notes'] ?? '')) ?: null,
                         'completed_at' => $this->parseDateTime($row['Completed_At'] ?? null),

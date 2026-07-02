@@ -21,7 +21,7 @@ class TaskQueueService
     private const REQUIRES_CONNECTION = ['instagram'];
 
     public function __construct(
-        private GoogleSheetsService $sheets,
+        private LegacyWorkbookStore $sheets,
         private OutreachLogService $outreachLog,
         private InfluencerScoringService $scoring,
         private OperationalMirrorService $mirror,
@@ -142,7 +142,7 @@ class TaskQueueService
         $project = $this->projects->findByWorkbookId($sheetId);
         if (!$project) {
             return [
-                'source' => str_starts_with($sheetId, 'workspace:') ? 'workspace_runtime' : 'google_sheets',
+                'source' => str_starts_with($sheetId, 'workspace:') ? 'workspace_runtime' : 'legacy_workbook',
                 'activeOpenCount' => 0,
                 'maxActiveTasks' => 0,
                 'availableSlots' => 0,
@@ -371,7 +371,7 @@ class TaskQueueService
         return [
             'taskId' => $taskId,
             'status' => $status,
-            'source' => 'google_sheets',
+            'source' => 'legacy_workbook',
         ];
     }
 
@@ -397,7 +397,7 @@ class TaskQueueService
                 return [
                     'task' => $this->normalizeSheetTaskRow($row),
                     'created' => false,
-                    'source' => 'google_sheets',
+                    'source' => 'legacy_workbook',
                 ];
             }
         }
@@ -420,7 +420,7 @@ class TaskQueueService
         return [
             'task' => $task,
             'created' => true,
-            'source' => 'google_sheets',
+            'source' => 'legacy_workbook',
         ];
     }
 
@@ -2671,7 +2671,7 @@ class TaskQueueService
             'skipped_existing' => $skippedExisting,
             'skipped_ineligible' => $skippedIneligible,
             'taskSheet' => 'Task_Queue',
-            'source' => 'google_sheets',
+            'source' => 'legacy_workbook',
         ];
     }
 

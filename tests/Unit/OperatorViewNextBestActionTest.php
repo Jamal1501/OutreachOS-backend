@@ -3,7 +3,7 @@
 namespace Tests\Unit;
 
 use App\Services\CreatorLifecycleService;
-use App\Services\GoogleSheetsService;
+use App\Services\LegacyWorkbookStore;
 use App\Services\InfluencerScoringService;
 use App\Services\OperatorViewService;
 use App\Services\ProjectResolverService;
@@ -192,7 +192,7 @@ class OperatorViewNextBestActionTest extends TestCase
     private function service(): OperatorViewService
     {
         return new OperatorViewService(
-            $this->createMock(GoogleSheetsService::class),
+            $this->createMock(LegacyWorkbookStore::class),
             $this->createMock(InfluencerScoringService::class),
             $this->createMock(CreatorLifecycleService::class),
             $this->createMock(ProjectResolverService::class)

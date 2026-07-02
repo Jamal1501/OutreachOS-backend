@@ -14,7 +14,7 @@ use Illuminate\Support\Str;
 class OperatorViewService
 {
     public function __construct(
-        private GoogleSheetsService $sheets,
+        private LegacyWorkbookStore $sheets,
         private InfluencerScoringService $scoring,
         private CreatorLifecycleService $lifecycle,
         private ProjectResolverService $projects,

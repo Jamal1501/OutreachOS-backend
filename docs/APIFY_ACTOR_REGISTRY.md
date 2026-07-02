@@ -1,12 +1,12 @@
 # Apify Actor Registry
 
-This file documents which Apify actor is used for which pipeline step, what input it expects, and which Google Sheet tab it should write to.
+This file documents which Apify actor is used for which pipeline step, what input it expects, and which database import target it maps to.
 
 ## Pipeline rule
 
-- Discovery actors write only to raw post sheets
-- Enrichment actors write only to enriched profile sheets
-- Never import discovery output into enriched profile sheets
+- Discovery actors write only to raw post datasets
+- Enrichment actors write only to enriched profile datasets
+- Never import discovery output into enriched profile datasets
 - Never import raw actor output directly into `Creators_CRM`
 
 ---
@@ -17,7 +17,7 @@ Actor ID: `reGe1ST3OBgYZSsZJ`
 Purpose: Discover Instagram posts/reels by hashtag  
 Pipeline stage: Discovery  
 Input type: hashtags  
-Target sheet: `Instagram_Posts_Raw`  
+Target dataset: `Instagram_Posts_Raw`  
 Status: Confirmed discovery actor  
 
 ### Input JSON
@@ -55,7 +55,7 @@ Actor ID: shu8hvrXbJbY3Eb9W
 Purpose: Enrich Instagram creator profiles from profile URLs
 Pipeline stage: Enrichment
 Input type: directUrls
-Target sheet: Instagram_Profile_Enriched
+Target dataset: Instagram_Profile_Enriched
 Status: Confirmed enrichment actor
 
 Input JSON
@@ -86,7 +86,7 @@ Actor ID: GdWCkxBtKWOsKjdch
 Purpose: Discover TikTok posts/videos by hashtag
 Pipeline stage: Discovery
 Input type: hashtags
-Target sheet: TikTok_Posts_Raw
+Target dataset: TikTok_Posts_Raw
 Status: Confirmed discovery actor
 
 Input JSON
@@ -122,7 +122,7 @@ Actor ID: `0FXVyOXXEmdGcV88a`
 Purpose: Scrapes TikTok posts from specific profile usernames
 Pipeline stage: Mixed
 Input type: profiles
-Target sheet: `TikTok_Posts_Raw`
+Target dataset: `TikTok_Posts_Raw`
 Status: Tested - output is post-centric, not clean profile enrichment
 
 ### Input JSON
@@ -142,7 +142,7 @@ Notes
 
 Uses profile usernames as input, but returns post/video rows with nested author data. Do not import directly into TikTok_Profile_Enriched.
 
-Google Sheet mapping
+Database import mapping
 Discovery outputs
 
 Instagram hashtag discovery -> Instagram_Posts_Raw
@@ -157,7 +157,7 @@ TikTok profile enrichment -> TikTok_Profile_Enriched
 
 Downstream
 
-Enriched profile sheets are merged into Creators_CRM
+Enriched profile datasets are merged into Creators_CRM
 
 Outreach tasks are created in Task_Queue
 

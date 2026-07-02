@@ -17,7 +17,7 @@ class CreatorMergeService
     ];
 
     public function __construct(
-        private GoogleSheetsService $sheets,
+        private LegacyWorkbookStore $sheets,
         private InfluencerScoringService $scoring,
         private ProjectResolverService $projects,
         private CreatorLocationInferenceService $locationInference,

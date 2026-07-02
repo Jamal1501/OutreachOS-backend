@@ -35,11 +35,6 @@ return [
         'auth_timeout' => env('SUPABASE_AUTH_TIMEOUT', 15),
     ],
 
-    'google' => [
-        'runtime_enabled' => false,
-        'default_sheet_id' => null,
-        'service_account_json' => null,
-    ],
 
     'ai' => [
         'openai_key' => env('OPENAI_API_KEY'),

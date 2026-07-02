@@ -15,7 +15,7 @@ class PipelineDiscoveryService
 {
     public function __construct(
         private ApifyRowMapper $rowMapper,
-        private GoogleSheetsService $sheets,
+        private LegacyWorkbookStore $sheets,
         private DiscoveryProvider $discoveryProvider,
         private EnrichmentProvider $enrichmentProvider,
         private ProjectResolverService $projects,
