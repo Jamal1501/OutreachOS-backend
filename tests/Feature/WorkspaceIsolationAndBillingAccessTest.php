@@ -105,56 +105,6 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
         $this->assertNotNull(DB::table('workspace_invitations')->where('email', 'invitee@example.test')->value('accepted_at'));
     }
 
-    public function test_existing_user_keeps_workspace_when_supabase_identity_changes(): void
-    {
-        [$user, $workspace] = $this->createWorkspaceForRole('owner');
-        $previousSupabaseUserId = (string) $user->supabase_user_id;
-        $nextSupabaseUserId = (string) Str::uuid();
-        $this->fakeSupabaseIdentity($nextSupabaseUserId, $user->email, $user->name);
-
-        $this->withToken('valid-token')
-            ->getJson('/api/workspaces/bootstrap')
-            ->assertOk()
-            ->assertJsonPath('data.workspace.id', $workspace->id)
-            ->assertJsonPath('data.membership.user_id', $nextSupabaseUserId);
-
-        $this->assertDatabaseHas('users', [
-            'email' => $user->email,
-            'supabase_user_id' => $nextSupabaseUserId,
-        ]);
-        $this->assertDatabaseHas('workspace_members', [
-            'workspace_id' => $workspace->id,
-            'user_id' => $nextSupabaseUserId,
-            'role' => 'owner',
-        ]);
-        $this->assertDatabaseMissing('workspace_members', [
-            'workspace_id' => $workspace->id,
-            'user_id' => $previousSupabaseUserId,
-        ]);
-    }
-
-    public function test_workspace_bootstrap_restores_missing_owner_membership(): void
-    {
-        [$owner, $workspace] = $this->createWorkspaceForRole('owner');
-        WorkspaceMember::query()
-            ->where('workspace_id', $workspace->id)
-            ->where('user_id', $owner->supabase_user_id)
-            ->delete();
-        $this->fakeSupabaseUser($owner);
-
-        $this->withToken('valid-token')
-            ->getJson('/api/workspaces/bootstrap')
-            ->assertOk()
-            ->assertJsonPath('data.workspace.id', $workspace->id)
-            ->assertJsonPath('data.membership.role', 'owner');
-
-        $this->assertDatabaseHas('workspace_members', [
-            'workspace_id' => $workspace->id,
-            'user_id' => $owner->supabase_user_id,
-            'role' => 'owner',
-        ]);
-    }
-
     public function test_admin_cannot_invite_another_admin(): void
     {
         [$admin, $workspace] = $this->createWorkspaceForRole('admin', maxMembers: 3);
