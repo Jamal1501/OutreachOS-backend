@@ -115,13 +115,117 @@ class AuthenticateApiRequest
             $user->password = Str::random(32);
         }
 
+        $previousSupabaseUserId = trim((string) ($user->supabase_user_id ?? ''));
+
         $user->supabase_user_id = $supabaseUserId !== '' ? $supabaseUserId : $user->supabase_user_id;
         $user->email = $email !== '' ? $email : ($user->email ?: 'missing-email@example.invalid');
         $user->name = $displayName;
         $user->email_verified_at = !empty($supabaseUser['email_confirmed_at']) ? now() : $user->email_verified_at;
         $user->save();
 
+        if (
+            $previousSupabaseUserId !== ''
+            && $supabaseUserId !== ''
+            && $previousSupabaseUserId !== $supabaseUserId
+            && !empty($supabaseUser['email_confirmed_at'])
+        ) {
+            $this->relinkWorkspaceIdentity($previousSupabaseUserId, $supabaseUserId);
+        }
+
         return $user;
+    }
+
+    private function relinkWorkspaceIdentity(string $previousUserId, string $nextUserId): void
+    {
+        $affectedWorkspaceIds = [];
+
+        DB::transaction(function () use ($previousUserId, $nextUserId, &$affectedWorkspaceIds): void {
+            $legacyMemberships = WorkspaceMember::query()
+                ->where('user_id', $previousUserId)
+                ->lockForUpdate()
+                ->get();
+
+            foreach ($legacyMemberships as $legacyMembership) {
+                $workspaceId = (string) $legacyMembership->workspace_id;
+                $affectedWorkspaceIds[] = $workspaceId;
+
+                $currentMembership = WorkspaceMember::query()
+                    ->where('workspace_id', $workspaceId)
+                    ->where('user_id', $nextUserId)
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($currentMembership) {
+                    if ($this->workspaceRoleRank((string) $legacyMembership->role) > $this->workspaceRoleRank((string) $currentMembership->role)) {
+                        $currentMembership->role = $legacyMembership->role;
+                    }
+                    $currentMembership->joined_at = $currentMembership->joined_at ?: $legacyMembership->joined_at;
+                    $currentMembership->save();
+                    $legacyMembership->delete();
+                    continue;
+                }
+
+                $legacyMembership->user_id = $nextUserId;
+                $legacyMembership->save();
+            }
+
+            $ownedWorkspaceIds = DB::table('workspaces')
+                ->where('owner_id', $previousUserId)
+                ->pluck('id')
+                ->map(fn ($id) => (string) $id)
+                ->all();
+
+            foreach ($ownedWorkspaceIds as $workspaceId) {
+                $affectedWorkspaceIds[] = $workspaceId;
+
+                $ownerMembership = WorkspaceMember::query()
+                    ->where('workspace_id', $workspaceId)
+                    ->where('user_id', $nextUserId)
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$ownerMembership) {
+                    WorkspaceMember::query()->create([
+                        'id' => (string) Str::uuid(),
+                        'workspace_id' => $workspaceId,
+                        'user_id' => $nextUserId,
+                        'role' => 'owner',
+                        'joined_at' => now(),
+                    ]);
+                } elseif ($ownerMembership->role !== 'owner') {
+                    $ownerMembership->role = 'owner';
+                    $ownerMembership->joined_at = $ownerMembership->joined_at ?: now();
+                    $ownerMembership->save();
+                }
+            }
+
+            DB::table('workspaces')
+                ->where('owner_id', $previousUserId)
+                ->update(['owner_id' => $nextUserId, 'updated_at' => now()]);
+
+            if (Schema::hasTable('billing_accounts')) {
+                DB::table('billing_accounts')
+                    ->where('owner_user_id', $previousUserId)
+                    ->update(['owner_user_id' => $nextUserId, 'updated_at' => now()]);
+            }
+        });
+
+        Cache::forget(sprintf('workspace-context:user-memberships:%s', $previousUserId));
+        Cache::forget(sprintf('workspace-context:user-memberships:%s', $nextUserId));
+
+        foreach (array_unique($affectedWorkspaceIds) as $workspaceId) {
+            Cache::forget(sprintf('workspace-context:membership:%s:%s', $workspaceId, $previousUserId));
+            Cache::forget(sprintf('workspace-context:membership:%s:%s', $workspaceId, $nextUserId));
+        }
+    }
+
+    private function workspaceRoleRank(string $role): int
+    {
+        return match ($role) {
+            'owner' => 3,
+            'admin' => 2,
+            default => 1,
+        };
     }
 
     private function acceptPendingWorkspaceInvitations(User $user): void

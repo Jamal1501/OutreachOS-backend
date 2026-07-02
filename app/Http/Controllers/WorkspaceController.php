@@ -28,6 +28,8 @@ class WorkspaceController extends Controller
             ?: $request->query('workspaceId')
         ));
 
+        $this->ensureOwnerMemberships($supabaseUserId);
+
         $memberships = WorkspaceMember::query()
             ->where('user_id', $supabaseUserId)
             ->orderBy('joined_at')
@@ -1099,6 +1101,33 @@ class WorkspaceController extends Controller
             ] : null,
             'members' => $members->map(fn (WorkspaceMember $member) => $member->toArray())->values()->all(),
         ];
+    }
+
+    private function ensureOwnerMemberships(string $supabaseUserId): void
+    {
+        if ($supabaseUserId === '') {
+            return;
+        }
+
+        $ownedWorkspaceIds = Workspace::query()
+            ->where('owner_id', $supabaseUserId)
+            ->pluck('id')
+            ->map(fn ($id) => (string) $id)
+            ->all();
+
+        foreach ($ownedWorkspaceIds as $workspaceId) {
+            WorkspaceMember::query()->firstOrCreate(
+                [
+                    'workspace_id' => $workspaceId,
+                    'user_id' => $supabaseUserId,
+                ],
+                [
+                    'id' => (string) Str::uuid(),
+                    'role' => 'owner',
+                    'joined_at' => now(),
+                ],
+            );
+        }
     }
 
     private function ensureBillingAccountForOwner(string $ownerUserId, string $workspaceName, string $workspaceId): object
