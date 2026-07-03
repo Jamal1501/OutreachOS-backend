@@ -31,8 +31,8 @@ class WorkspaceBillingService
 
     private const DEFAULT_PLAN_PRICES_CENTS = [
         'free' => 0,
-        'pro' => 4900,
-        'enterprise' => 14900,
+        'pro' => 11900,
+        'enterprise' => 29900,
     ];
 
     private const DEFAULT_CREDIT_PACKAGES = [

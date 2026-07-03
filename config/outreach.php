@@ -27,8 +27,8 @@ return [
         'default_discovery_credit_cost' => env('OUTREACH_DEFAULT_DISCOVERY_CREDIT_COST', 25),
         'stripe_webhook_tolerance' => env('OUTREACH_STRIPE_WEBHOOK_TOLERANCE', 300),
         'plan_prices' => [
-            'pro' => env('OUTREACH_PLAN_PRO_PRICE_CENTS', 4900),
-            'enterprise' => env('OUTREACH_PLAN_ENTERPRISE_PRICE_CENTS', 14900),
+            'pro' => env('OUTREACH_PLAN_PRO_PRICE_CENTS', 11900),
+            'enterprise' => env('OUTREACH_PLAN_ENTERPRISE_PRICE_CENTS', 29900),
         ],
         'customer_credit_value_usd' => [
             // Customer-facing ROI estimates use credit value, not internal provider COGS.
