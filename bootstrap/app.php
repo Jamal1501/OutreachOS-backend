@@ -5,6 +5,7 @@ use App\Http\Middleware\RequireAppKey;
 use App\Http\Middleware\RequireWorkspaceRole;
 use App\Http\Middleware\ResolveWorkspaceContext;
 use App\Http\Middleware\SecurityHeaders;
+use App\Services\ObservabilityService;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -30,5 +31,12 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        //
+        $exceptions->report(function (Throwable $exception) {
+            app(ObservabilityService::class)->reportException($exception, [
+                'path' => request()?->path(),
+                'method' => request()?->method(),
+                'workspace_id' => request()?->attributes->get('workspace_id'),
+                'user_id' => request()?->attributes->get('supabase_user_id'),
+            ]);
+        });
     })->create();

@@ -3,16 +3,21 @@
 namespace App\Http\Controllers;
 
 use App\Services\StripeBillingService;
+use App\Services\ObservabilityService;
 use App\Services\WorkspaceBillingService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class BillingController extends Controller
 {
     public function __construct(
         private WorkspaceBillingService $billing,
         private StripeBillingService $stripeBilling,
+        private ObservabilityService $observability,
     ) {
     }
 
@@ -88,10 +93,29 @@ class BillingController extends Controller
 
     public function stripeWebhook(Request $request)
     {
-        $result = $this->stripeBilling->handleWebhook(
-            $request->getContent(),
-            $request->header('Stripe-Signature'),
-        );
+        try {
+            $result = $this->stripeBilling->handleWebhook(
+                $request->getContent(),
+                $request->header('Stripe-Signature'),
+            );
+        } catch (Throwable $exception) {
+            $event = json_decode($request->getContent(), true);
+            $eventId = is_array($event) ? trim((string) ($event['id'] ?? '')) : '';
+            $alreadyTracked = $eventId !== ''
+                && Schema::hasTable('stripe_webhook_events')
+                && DB::table('stripe_webhook_events')->where('stripe_event_id', $eventId)->exists();
+
+            if (!$alreadyTracked) {
+                $this->observability->reportWebhookFailure(
+                    'stripe',
+                    $eventId,
+                    is_array($event) ? (string) ($event['type'] ?? '') : '',
+                    $exception,
+                );
+            }
+
+            throw $exception;
+        }
 
         return response()->json($result);
     }

@@ -17,6 +17,35 @@ class SecurityHeaders
         $response->headers->set('Referrer-Policy', 'strict-origin-when-cross-origin');
         $response->headers->set('X-Permitted-Cross-Domain-Policies', 'none');
 
+        if ((bool) config('security.csp.enabled', true)) {
+            $headerName = (bool) config('security.csp.report_only', true)
+                ? 'Content-Security-Policy-Report-Only'
+                : 'Content-Security-Policy';
+
+            $response->headers->set($headerName, $this->contentSecurityPolicy());
+        }
+
         return $response;
+    }
+
+    private function contentSecurityPolicy(): string
+    {
+        $connectSrc = implode(' ', (array) config('security.csp.connect_src', ["'self'"]));
+        $imgSrc = implode(' ', (array) config('security.csp.img_src', ["'self'", 'data:', 'blob:', 'https:']));
+        $reportUri = trim((string) config('security.csp.report_uri', '/api/csp-report'));
+
+        return implode('; ', array_filter([
+            "default-src 'self'",
+            "script-src 'self'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src {$imgSrc}",
+            "font-src 'self' data:",
+            "connect-src {$connectSrc}",
+            "frame-ancestors 'none'",
+            "object-src 'none'",
+            "base-uri 'self'",
+            "form-action 'self' https://checkout.stripe.com",
+            $reportUri !== '' ? "report-uri {$reportUri}" : null,
+        ]));
     }
 }

@@ -13,7 +13,10 @@ use RuntimeException;
 
 class StripeBillingService
 {
-    public function __construct(private WorkspaceBillingService $billing)
+    public function __construct(
+        private WorkspaceBillingService $billing,
+        private ObservabilityService $observability,
+    )
     {
     }
 
@@ -76,6 +79,13 @@ public function createSubscriptionCheckoutSession(
     }
 
     $response = $this->request('POST', '/checkout/sessions', $payload);
+    $this->observability->reportBillingEvent($workspaceId, 'subscription_checkout_created', [
+        'stripe_checkout_session_id' => (string) ($response['id'] ?? ''),
+        'plan_id' => $config['id'],
+        'trial_days' => $trialDays,
+        'price_cents' => $config['price_cents'],
+        'currency' => $config['currency'],
+    ], $billingAccountId, (string) ($response['id'] ?? ''));
 
     return [
         'id'  => (string) ($response['id'] ?? ''),
@@ -146,6 +156,14 @@ public function createSubscriptionCheckoutSession(
                 ],
             ]],
         ]);
+        $this->observability->reportBillingEvent($workspaceId, 'topup_checkout_created', [
+            'stripe_checkout_session_id' => (string) ($response['id'] ?? ''),
+            'credit_package_id' => $package['id'],
+            'expected_amount_cents' => $package['price_cents'],
+            'currency' => $package['currency'],
+            'scrape_credits' => $package['scrape_credits'],
+            'ai_credits' => $package['ai_credits'],
+        ], $billingAccountId, (string) ($response['id'] ?? ''));
 
         return [
             'id' => (string) ($response['id'] ?? ''),
@@ -187,9 +205,19 @@ public function createSubscriptionCheckoutSession(
                 case 'invoice.payment_failed':
                     $subscriptionId = trim((string) ($object['subscription'] ?? ''));
                     if ($subscriptionId !== '') {
+                        $subscription = WorkspaceSubscription::query()
+                            ->where('stripe_subscription_id', $subscriptionId)
+                            ->first();
                         WorkspaceSubscription::query()
                             ->where('stripe_subscription_id', $subscriptionId)
                             ->update(['status' => 'past_due']);
+                        if ($subscription) {
+                            $this->observability->reportBillingEvent((string) $subscription->workspace_id, 'invoice_payment_failed', [
+                                'stripe_subscription_id' => $subscriptionId,
+                                'stripe_invoice_id' => (string) ($object['id'] ?? ''),
+                                'stripe_customer_id' => (string) ($object['customer'] ?? ''),
+                            ], (string) ($subscription->billing_account_id ?? ''), $subscriptionId);
+                        }
                     }
                     break;
                 case 'invoice.payment_succeeded':
@@ -208,6 +236,9 @@ public function createSubscriptionCheckoutSession(
             if ($eventId !== '') {
                 $this->markWebhookEventFailed($eventId, $e->getMessage());
             }
+            $this->observability->reportWebhookFailure('stripe', $eventId, $type, $e, [
+                'object_id' => (string) ($object['id'] ?? ''),
+            ]);
 
             throw $e;
         }
@@ -284,6 +315,14 @@ public function createSubscriptionCheckoutSession(
                 'topup_price_multiplier' => $package['topup_price_multiplier'] ?? 1,
             ],
         );
+        $this->observability->reportBillingEvent($workspaceId, 'topup_fulfilled', [
+            'credit_package_id' => $packageId,
+            'stripe_payment_intent_id' => $paymentIntentId,
+            'stripe_checkout_session_id' => (string) ($session['id'] ?? ''),
+            'amount_paid_usd' => round(((int) ($session['amount_total'] ?? 0)) / 100, 2),
+            'scrape_credits' => (int) $package['scrape_credits'],
+            'ai_credits' => (int) $package['ai_credits'],
+        ], $billingAccountId, $paymentIntentId);
     }
 
     private function syncSubscriptionFromStripeObject(array $subscription): void
@@ -349,6 +388,15 @@ $record->save();
                 $this->billing->grantPlanCycleCredits($workspaceId, $planId, $periodStart, $previousPlan !== $planId);
             }
         });
+
+        $this->observability->reportBillingEvent($workspaceId, 'subscription_synced', [
+            'plan_id' => $planId,
+            'status' => $status,
+            'stripe_subscription_id' => $subscriptionId,
+            'stripe_customer_id' => $customerId,
+            'current_period_start' => $periodStart?->toIso8601String(),
+            'current_period_end' => $periodEnd?->toIso8601String(),
+        ], $billingAccountId, $subscriptionId);
     }
 
     private function ensureStripeCustomer(string $workspaceId): string

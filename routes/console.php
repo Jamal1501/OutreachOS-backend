@@ -9,3 +9,7 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote');
 
 Schedule::command('billing:reconcile-workspaces')->hourly();
+Schedule::command(sprintf(
+    'queue:monitor database:default --max=%d',
+    (int) config('observability.health.max_pending_jobs', 500)
+))->everyFiveMinutes();

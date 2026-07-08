@@ -4,10 +4,14 @@ namespace App\Providers;
 
 use App\Contracts\DiscoveryProvider;
 use App\Contracts\EnrichmentProvider;
+use App\Services\ObservabilityService;
 use App\Services\Providers\ApifyDiscoveryProvider;
 use App\Services\Providers\ApifyEnrichmentProvider;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
+use Illuminate\Queue\Events\QueueBusy;
+use Illuminate\Queue\Events\JobFailed;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
@@ -43,6 +47,18 @@ class AppServiceProvider extends ServiceProvider
 
         RateLimiter::for('avatar', function (Request $request) {
             return Limit::perMinute(60)->by($request->ip());
+        });
+
+        Queue::failing(function (JobFailed $event): void {
+            app(ObservabilityService::class)->reportQueueFailure($event);
+        });
+
+        $this->app['events']->listen(QueueBusy::class, function (QueueBusy $event): void {
+            app(ObservabilityService::class)->sendAlert('queue.busy', 'Queue depth threshold exceeded', [
+                'connection' => $event->connection,
+                'queue' => $event->queue,
+                'size' => $event->size,
+            ], 'warning');
         });
     }
 

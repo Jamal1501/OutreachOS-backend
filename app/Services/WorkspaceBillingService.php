@@ -65,6 +65,7 @@ class WorkspaceBillingService
 
     public function __construct(
         private ScraperRegistryService $scrapers,
+        private ObservabilityService $observability,
     ) {
     }
 
@@ -571,6 +572,14 @@ class WorkspaceBillingService
 
             DB::table('billing_accounts')->where('id', $billingAccountId)->update(['plan_id' => $normalizedPlanId, 'updated_at' => now()]);
             DB::table('workspaces')->where('billing_account_id', $billingAccountId)->update(['plan_id' => $normalizedPlanId, 'updated_at' => now()]);
+
+            $this->observability->reportBillingEvent($canonicalWorkspaceId, 'plan_cycle_credits_granted', [
+                'plan_id' => $normalizedPlanId,
+                'period_key' => $periodKey,
+                'reset_base_balances' => $resetBaseBalances,
+                'monthly_scrape_credits' => (int) Arr::get($plan, 'monthly_scrape_credits', 0),
+                'monthly_ai_credits' => (int) Arr::get($plan, 'monthly_ai_credits', 0),
+            ], $billingAccountId, (string) $subscription->id);
         });
     }
 
@@ -622,6 +631,15 @@ class WorkspaceBillingService
                     'canonical_workspace_id' => $canonicalWorkspaceId,
                 ]),
             ]);
+
+            $this->observability->reportBillingEvent($workspaceId, 'credits_purchased', [
+                'credit_package_id' => Arr::get($purchaseData, 'credit_package_id'),
+                'stripe_payment_intent_id' => Arr::get($purchaseData, 'stripe_payment_intent_id'),
+                'scrape_credits_added' => max(0, $scrapeCredits),
+                'ai_credits_added' => max(0, $aiCredits),
+                'amount_paid_usd' => (float) Arr::get($purchaseData, 'amount_paid_usd', 0),
+                'canonical_workspace_id' => $canonicalWorkspaceId,
+            ], $billingAccountId, (string) Arr::get($purchaseData, 'stripe_payment_intent_id', ''));
         });
     }
 
@@ -890,6 +908,16 @@ class WorkspaceBillingService
                     ],
                 ]),
             ]);
+
+            $this->observability->reportBillingEvent($workspaceId, 'credits_reserved', [
+                'usage_event_id' => (string) $event->id,
+                'credit_bucket' => $bucket,
+                'credit_cost' => $creditCost,
+                'units' => $units,
+                'provider' => $provider,
+                'source' => $source,
+                'remaining_balance' => (int) $wallet->{$baseField} + (int) $wallet->{$bonusField},
+            ], $billingAccountId, (string) $event->id);
 
             return [
                 'usage_event_id' => $event->id,
