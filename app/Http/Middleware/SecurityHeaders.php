@@ -32,14 +32,17 @@ class SecurityHeaders
     {
         $connectSrc = implode(' ', (array) config('security.csp.connect_src', ["'self'"]));
         $imgSrc = implode(' ', (array) config('security.csp.img_src', ["'self'", 'data:', 'blob:', 'https:']));
+        $styleSrc = implode(' ', (array) config('security.csp.style_src', ["'self'", "'unsafe-inline'"]));
+        $fontSrc = implode(' ', (array) config('security.csp.font_src', ["'self'", 'data:']));
         $reportUri = trim((string) config('security.csp.report_uri', '/api/csp-report'));
 
         return implode('; ', array_filter([
             "default-src 'self'",
             "script-src 'self'",
-            "style-src 'self' 'unsafe-inline'",
+            "style-src {$styleSrc}",
+            "style-src-elem {$styleSrc}",
             "img-src {$imgSrc}",
-            "font-src 'self' data:",
+            "font-src {$fontSrc}",
             "connect-src {$connectSrc}",
             "frame-ancestors 'none'",
             "object-src 'none'",

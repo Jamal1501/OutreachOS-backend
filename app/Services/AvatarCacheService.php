@@ -31,9 +31,7 @@ class AvatarCacheService
 
         $fetchedAvatar = $this->fetchAvatar($url, $host, $cacheKey);
         if ($fetchedAvatar === null) {
-            return response()->json([
-                'message' => 'Avatar fetch failed',
-            ], 502);
+            return $this->fallbackAvatarResponse('fetch_failed', 502);
         }
 
         $this->writeCachedAvatar($avatarPath, $metaPath, $fetchedAvatar['body'], $fetchedAvatar['contentType']);
@@ -99,9 +97,7 @@ class AvatarCacheService
 
         if (!filter_var($url, FILTER_VALIDATE_URL)) {
             return [
-                'response' => response()->json([
-                    'message' => 'Invalid avatar URL',
-                ], 422),
+                'response' => $this->fallbackAvatarResponse('invalid_url', 422),
             ];
         }
 
@@ -111,9 +107,7 @@ class AvatarCacheService
 
         if ($scheme !== 'https' || $host === '') {
             return [
-                'response' => response()->json([
-                    'message' => 'Invalid avatar host',
-                ], 422),
+                'response' => $this->fallbackAvatarResponse('invalid_host', 422),
             ];
         }
 
@@ -137,9 +131,7 @@ class AvatarCacheService
         }
 
         return [
-            'response' => response()->json([
-                'message' => 'Avatar host not allowed',
-            ], 403),
+            'response' => $this->fallbackAvatarResponse('host_not_allowed', 403),
         ];
     }
 
@@ -245,6 +237,24 @@ class AvatarCacheService
             ->header('Cross-Origin-Resource-Policy', 'cross-origin')
             ->header('X-Content-Type-Options', 'nosniff')
             ->header('X-Avatar-Cache', $cacheStatus);
+    }
+
+    private function fallbackAvatarResponse(string $reason, int $status = 502)
+    {
+        $svg = <<<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" role="img" aria-label="Avatar unavailable">
+  <rect width="96" height="96" rx="48" fill="#e5e7eb"/>
+  <circle cx="48" cy="36" r="16" fill="#9ca3af"/>
+  <path d="M22 82c4-18 16-28 26-28s22 10 26 28" fill="#9ca3af"/>
+</svg>
+SVG;
+
+        return response($svg, $status)
+            ->header('Content-Type', 'image/svg+xml; charset=UTF-8')
+            ->header('Cache-Control', 'public, max-age=300')
+            ->header('Cross-Origin-Resource-Policy', 'cross-origin')
+            ->header('X-Content-Type-Options', 'nosniff')
+            ->header('X-Avatar-Error', $reason);
     }
 
     private function cacheKey(string $url): string
