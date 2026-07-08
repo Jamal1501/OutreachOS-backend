@@ -239,6 +239,109 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
         $billing->reserveAi($workspace->id, 'test_ai_operation');
     }
 
+    public function test_stripe_subscription_deleted_without_metadata_cancels_existing_subscription(): void
+    {
+        [, $workspace] = $this->createWorkspaceForRole('owner');
+        $billing = app(WorkspaceBillingService::class);
+        [$subscription] = $billing->ensureWorkspaceBilling($workspace->id);
+        config(['services.stripe.webhook_secret' => 'whsec_test_secret']);
+
+        DB::table('workspace_subscriptions')->where('id', $subscription->id)->update([
+            'plan_id' => 'pro',
+            'status' => 'active',
+            'stripe_customer_id' => 'cus_cancel_without_metadata',
+            'stripe_subscription_id' => 'sub_cancel_without_metadata',
+        ]);
+        DB::table('billing_accounts')->where('id', $subscription->billing_account_id)->update(['plan_id' => 'pro']);
+        DB::table('workspaces')->where('billing_account_id', $subscription->billing_account_id)->update(['plan_id' => 'pro']);
+
+        $payload = json_encode([
+            'id' => 'evt_subscription_deleted_without_metadata',
+            'type' => 'customer.subscription.deleted',
+            'data' => [
+                'object' => [
+                    'id' => 'sub_cancel_without_metadata',
+                    'status' => 'canceled',
+                    'customer' => 'cus_cancel_without_metadata',
+                    'metadata' => [],
+                ],
+            ],
+        ], JSON_UNESCAPED_SLASHES);
+
+        $headers = [
+            'HTTP_STRIPE_SIGNATURE' => $this->stripeSignature($payload, 'whsec_test_secret'),
+            'HTTP_ACCEPT' => 'application/json',
+            'CONTENT_TYPE' => 'application/json',
+        ];
+
+        $this->call('POST', '/api/billing/webhooks/stripe', [], [], [], $headers, $payload)
+            ->assertOk()
+            ->assertJsonPath('received', true)
+            ->assertJsonPath('type', 'customer.subscription.deleted');
+
+        $this->assertDatabaseHas('workspace_subscriptions', [
+            'id' => $subscription->id,
+            'stripe_subscription_id' => 'sub_cancel_without_metadata',
+            'status' => 'canceled',
+        ]);
+        $this->assertSame(1, DB::table('stripe_webhook_events')->where('stripe_event_id', 'evt_subscription_deleted_without_metadata')->where('status', 'processed')->count());
+    }
+
+    public function test_expired_free_trial_zeroes_included_credits(): void
+    {
+        [, $workspace] = $this->createWorkspaceForRole('owner');
+        $billing = app(WorkspaceBillingService::class);
+        [$subscription, $wallet] = $billing->ensureWorkspaceBilling($workspace->id);
+
+        DB::table('workspace_subscriptions')->where('id', $subscription->id)->update([
+            'plan_id' => 'free',
+            'status' => 'trialing',
+            'trial_ends_at' => now()->subDay(),
+        ]);
+        DB::table('workspace_credit_wallets')->where('id', $wallet->id)->update([
+            'scrape_credits_balance' => 50,
+            'ai_credits_balance' => 10,
+            'bonus_scrape_credits' => 5,
+            'bonus_ai_credits' => 2,
+        ]);
+
+        $summary = $billing->summary($workspace->id);
+
+        $this->assertSame('trial_expired', DB::table('workspace_subscriptions')->where('id', $subscription->id)->value('status'));
+        $this->assertSame(0, (int) DB::table('workspace_credit_wallets')->where('id', $wallet->id)->value('scrape_credits_balance'));
+        $this->assertSame(0, (int) DB::table('workspace_credit_wallets')->where('id', $wallet->id)->value('ai_credits_balance'));
+        $this->assertSame(5, (int) ($summary['wallet']['bonusScrapeCredits'] ?? 0));
+        $this->assertSame(2, (int) ($summary['wallet']['bonusAiCredits'] ?? 0));
+    }
+
+    public function test_pipeline_estimate_flags_insufficient_scrape_credits(): void
+    {
+        [$user, $workspace] = $this->createWorkspaceForRole('owner');
+        $billing = app(WorkspaceBillingService::class);
+        [, $wallet] = $billing->ensureWorkspaceBilling($workspace->id);
+
+        DB::table('workspace_credit_wallets')->where('id', $wallet->id)->update([
+            'scrape_credits_balance' => 0,
+            'bonus_scrape_credits' => 0,
+        ]);
+        $this->fakeSupabaseUser($user);
+
+        $response = $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/pipeline/estimate', [
+                'platform' => 'instagram',
+                'hashtags' => ['skincare'],
+                'discoveryLimit' => 50,
+                'enrichmentLimit' => 20,
+            ])
+            ->assertOk()
+            ->assertJsonPath('data.billing.availableScrapeCredits', 0)
+            ->assertJsonPath('data.billing.canRun', false)
+            ->assertJsonPath('data.billing.requiresTopup', true);
+
+        $this->assertGreaterThan(0, (int) $response->json('data.billing.shortfallScrapeCredits'));
+    }
+
     public function test_stripe_topup_webhook_rejects_underpaid_session(): void
     {
         [, $workspace] = $this->createWorkspaceForRole('owner');

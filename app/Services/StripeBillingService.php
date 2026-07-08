@@ -53,6 +53,7 @@ public function createSubscriptionCheckoutSession(
         'subscription_data' => [
             'metadata' => [
                 'workspace_id' => $workspaceId,
+                'billing_account_id' => $billingAccountId,
                 'plan_id'      => $config['id'],
             ],
         ],
@@ -95,9 +96,7 @@ public function createSubscriptionCheckoutSession(
 
     private function workspaceEligibleForPaidTrial(string $workspaceId, string $planId): bool
 {
-    $subscription = WorkspaceSubscription::query()
-        ->where('workspace_id', $workspaceId)
-        ->first();
+    [$subscription] = $this->billing->ensureWorkspaceBilling($workspaceId);
 
     $meta   = (array) ($subscription?->metadata ?? []);
     $usedKey = 'paid_plan_trial_used_' . strtolower($planId);
@@ -334,8 +333,32 @@ public function createSubscriptionCheckoutSession(
         $subscriptionId = trim((string) ($subscription['id'] ?? ''));
         $customerId = trim((string) ($subscription['customer'] ?? ''));
 
-        if ($workspaceId === '' || $planId === '' || $subscriptionId === '') {
+        if ($subscriptionId === '') {
             return;
+        }
+
+        $existing = WorkspaceSubscription::query()
+            ->where('stripe_subscription_id', $subscriptionId)
+            ->first();
+
+        if (!$existing && $customerId !== '') {
+            $existing = WorkspaceSubscription::query()
+                ->where('stripe_customer_id', $customerId)
+                ->first();
+        }
+
+        if ($workspaceId === '' && $existing) {
+            $workspaceId = (string) $existing->workspace_id;
+        }
+        if ($billingAccountId === '' && $existing) {
+            $billingAccountId = (string) ($existing->billing_account_id ?: '');
+        }
+        if ($planId === '' && $existing) {
+            $planId = (string) ($existing->plan_id ?: '');
+        }
+
+        if ($workspaceId === '' || $planId === '') {
+            throw new RuntimeException('Stripe subscription webhook could not be matched to a workspace.');
         }
 
         $status = $this->normalizeSubscriptionStatus((string) ($subscription['status'] ?? 'active'));
@@ -388,6 +411,14 @@ $record->save();
                 $this->billing->grantPlanCycleCredits($workspaceId, $planId, $periodStart, $previousPlan !== $planId);
             }
         });
+
+        if ($status === 'canceled') {
+            $this->observability->reportBillingEvent($workspaceId, 'subscription_canceled', [
+                'plan_id' => $planId,
+                'stripe_subscription_id' => $subscriptionId,
+                'stripe_customer_id' => $customerId,
+            ], $billingAccountId, $subscriptionId);
+        }
 
         $this->observability->reportBillingEvent($workspaceId, 'subscription_synced', [
             'plan_id' => $planId,

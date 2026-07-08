@@ -113,32 +113,20 @@ class PipelineController extends Controller
         ]);
 
         $workspaceId = (string) $request->attributes->get('workspace_id');
-        $planId = $this->billing->currentPlanId($workspaceId);
-        $summary = $this->billing->summary($workspaceId);
         $seedCount = max(1, count((array) ($validated['hashtags'] ?? [])) ?: (int) ($validated['seedCount'] ?? 1));
 
-        $estimate = $this->pipeline->estimate(
-            $planId,
-            (string) $validated['platform'],
-            (int) ($validated['discoveryLimit'] ?? 50),
-            (int) ($validated['enrichmentLimit'] ?? 20),
-            $seedCount,
-            $validated['discoveryModuleKey'] ?? null,
-            $validated['enrichmentModuleKey'] ?? null,
-        );
-
-        $available = (int) ($summary['wallet']['totalScrapeCreditsAvailable'] ?? 0);
+        $preflight = $this->creditPreflight($workspaceId, [
+            'platform' => (string) $validated['platform'],
+            'discoveryLimit' => (int) ($validated['discoveryLimit'] ?? 50),
+            'enrichmentLimit' => (int) ($validated['enrichmentLimit'] ?? 20),
+            'seedCount' => $seedCount,
+            'discoveryModuleKey' => $validated['discoveryModuleKey'] ?? null,
+            'enrichmentModuleKey' => $validated['enrichmentModuleKey'] ?? null,
+        ]);
 
         return response()->json([
             'message' => 'Pipeline estimate calculated',
-            'data' => [
-                'planId' => $planId,
-                'estimate' => $estimate,
-                'billing' => [
-                    'availableScrapeCredits' => $available,
-                    'remainingScrapeCreditsAfterRun' => max(0, $available - (int) ($estimate['totals']['scrapeCredits'] ?? 0)),
-                ],
-            ],
+            'data' => $preflight,
         ]);
     }
 
@@ -321,6 +309,20 @@ class PipelineController extends Controller
         $workspaceId = (string) $request->attributes->get('workspace_id');
         $payload['workspaceId'] = $workspaceId;
         $payload['planId'] = $this->billing->currentPlanId($workspaceId);
+
+        $preflight = $this->creditPreflight($workspaceId, $payload);
+        if (!($preflight['billing']['canRun'] ?? false)) {
+            $message = 'Not enough scrape credits available for this discovery run.';
+
+            return response()->json(array_merge([
+                'error' => $message,
+                'code' => 'insufficient_credits',
+                'message' => $message,
+                'estimate' => $preflight['estimate'],
+                'billing' => $preflight['billing'],
+            ], $extraResponse), 402);
+        }
+
         if ($request->boolean('wait')) {
             $state = $this->pipeline->createJob($payload);
             try {
@@ -346,6 +348,41 @@ class PipelineController extends Controller
             'status' => 'running',
             'currentStep' => 'discovery_scrape',
         ], $extraResponse), 202);
+    }
+
+    private function creditPreflight(string $workspaceId, array $payload): array
+    {
+        $planId = (string) ($payload['planId'] ?? $this->billing->currentPlanId($workspaceId));
+        $summary = $this->billing->summary($workspaceId);
+        $hashtagCount = count((array) ($payload['hashtags'] ?? []));
+        $seedCount = max(1, (int) ($payload['seedCount'] ?? ($hashtagCount ?: 1)));
+
+        $estimate = $this->pipeline->estimate(
+            $planId,
+            (string) ($payload['platform'] ?? 'instagram'),
+            (int) ($payload['discoveryLimit'] ?? 50),
+            (int) ($payload['enrichmentLimit'] ?? 20),
+            $seedCount,
+            $payload['discoveryModuleKey'] ?? null,
+            $payload['enrichmentModuleKey'] ?? null,
+        );
+
+        $required = max(0, (int) ($estimate['totals']['scrapeCredits'] ?? 0));
+        $available = max(0, (int) ($summary['wallet']['totalScrapeCreditsAvailable'] ?? 0));
+        $shortfall = max(0, $required - $available);
+
+        return [
+            'planId' => $planId,
+            'estimate' => $estimate,
+            'billing' => [
+                'availableScrapeCredits' => $available,
+                'requiredScrapeCredits' => $required,
+                'remainingScrapeCreditsAfterRun' => max(0, $available - $required),
+                'shortfallScrapeCredits' => $shortfall,
+                'canRun' => $shortfall === 0,
+                'requiresTopup' => $shortfall > 0,
+            ],
+        ];
     }
 
     private function resolveSheetId(Request $request, ?string $sheetId): string
