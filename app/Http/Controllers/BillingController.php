@@ -41,6 +41,101 @@ class BillingController extends Controller
         ]);
     }
 
+    public function qaChecklist(Request $request)
+    {
+        $workspaceId = (string) $request->attributes->get('workspace_id');
+        $summary = $this->billing->summary($workspaceId);
+        $billingAccountId = (string) data_get($summary, 'billingAccount.id', '');
+        $workspaceIds = $billingAccountId !== '' && Schema::hasTable('workspaces') && Schema::hasColumn('workspaces', 'billing_account_id')
+            ? DB::table('workspaces')->where('billing_account_id', $billingAccountId)->pluck('id')->map(fn ($id) => (string) $id)->all()
+            : [$workspaceId];
+
+        $subscription = Schema::hasTable('workspace_subscriptions')
+            ? DB::table('workspace_subscriptions')
+                ->when($billingAccountId !== '' && Schema::hasColumn('workspace_subscriptions', 'billing_account_id'), fn ($query) => $query->where('billing_account_id', $billingAccountId), fn ($query) => $query->where('workspace_id', $workspaceId))
+                ->orderByDesc('updated_at')
+                ->first()
+            : null;
+
+        $wallet = Schema::hasTable('workspace_credit_wallets')
+            ? DB::table('workspace_credit_wallets')
+                ->when($billingAccountId !== '' && Schema::hasColumn('workspace_credit_wallets', 'billing_account_id'), fn ($query) => $query->where('billing_account_id', $billingAccountId), fn ($query) => $query->where('workspace_id', $workspaceId))
+                ->first()
+            : null;
+
+        $recentUsage = Schema::hasTable('workspace_usage_events')
+            ? DB::table('workspace_usage_events')
+                ->when($billingAccountId !== '' && Schema::hasColumn('workspace_usage_events', 'billing_account_id'), fn ($query) => $query->where('billing_account_id', $billingAccountId), fn ($query) => $query->whereIn('workspace_id', $workspaceIds))
+                ->select(['id', 'workspace_id', 'type', 'credit_bucket', 'credit_cost', 'provider', 'source', 'status', 'created_at', 'consumed_at', 'refunded_at'])
+                ->orderByDesc('created_at')
+                ->limit(10)
+                ->get()
+            : collect();
+
+        $recentPurchases = Schema::hasTable('credit_purchases')
+            ? DB::table('credit_purchases')
+                ->when($billingAccountId !== '' && Schema::hasColumn('credit_purchases', 'billing_account_id'), fn ($query) => $query->where('billing_account_id', $billingAccountId), fn ($query) => $query->whereIn('workspace_id', $workspaceIds))
+                ->select(['id', 'workspace_id', 'credit_package_id', 'stripe_payment_intent_id', 'scrape_credits_added', 'ai_credits_added', 'amount_paid_usd', 'created_at'])
+                ->orderByDesc('created_at')
+                ->limit(10)
+                ->get()
+            : collect();
+
+        $recentAuditEvents = Schema::hasTable('workspace_audit_events')
+            ? DB::table('workspace_audit_events')
+                ->whereIn('workspace_id', $workspaceIds)
+                ->where(function ($query) {
+                    $query->where('event_type', 'like', 'billing_%')
+                        ->orWhere('event_type', 'like', '%checkout%')
+                        ->orWhere('event_type', 'like', '%topup%')
+                        ->orWhere('event_type', 'like', '%subscription%')
+                        ->orWhere('event_type', 'like', '%credits%');
+                })
+                ->select(['id', 'workspace_id', 'event_type', 'subject_type', 'subject_id', 'metadata', 'created_at'])
+                ->orderByDesc('created_at')
+                ->limit(20)
+                ->get()
+            : collect();
+
+        $stripeWebhookEvents = Schema::hasTable('stripe_webhook_events')
+            ? DB::table('stripe_webhook_events')
+                ->select(['stripe_event_id', 'type', 'status', 'processed_at', 'last_error', 'created_at', 'updated_at'])
+                ->orderByDesc('created_at')
+                ->limit(20)
+                ->get()
+            : collect();
+
+        $failedWebhookCount = $stripeWebhookEvents->where('status', 'failed')->count();
+        $reservedUsageCount = $recentUsage->where('status', 'reserved')->count();
+        $subscriptionStatus = (string) ($subscription->status ?? data_get($summary, 'subscription.status', ''));
+        $blockedStatuses = ['past_due', 'unpaid', 'canceled', 'incomplete', 'incomplete_expired'];
+
+        return response()->json([
+            'message' => 'Billing QA checklist fetched',
+            'data' => [
+                'workspaceId' => $workspaceId,
+                'billingAccountId' => $billingAccountId,
+                'checkedAt' => now()->toIso8601String(),
+                'checks' => [
+                    ['key' => 'subscription_present', 'ok' => $subscription !== null, 'detail' => $subscription ? 'Subscription row exists.' : 'No subscription row found.'],
+                    ['key' => 'wallet_present', 'ok' => $wallet !== null, 'detail' => $wallet ? 'Credit wallet row exists.' : 'No credit wallet row found.'],
+                    ['key' => 'subscription_can_spend', 'ok' => !in_array($subscriptionStatus, $blockedStatuses, true), 'detail' => $subscriptionStatus ?: 'unknown'],
+                    ['key' => 'stripe_customer_linked', 'ok' => trim((string) ($subscription->stripe_customer_id ?? '')) !== '' || data_get($summary, 'currentPlanId') === 'free', 'detail' => trim((string) ($subscription->stripe_customer_id ?? '')) !== '' ? 'Stripe customer linked.' : 'Free plan may not have a Stripe customer yet.'],
+                    ['key' => 'stripe_subscription_linked', 'ok' => trim((string) ($subscription->stripe_subscription_id ?? '')) !== '' || data_get($summary, 'currentPlanId') === 'free', 'detail' => trim((string) ($subscription->stripe_subscription_id ?? '')) !== '' ? 'Stripe subscription linked.' : 'Free plan may not have a Stripe subscription.'],
+                    ['key' => 'wallet_non_negative', 'ok' => $wallet !== null && min((int) ($wallet->scrape_credits_balance ?? 0), (int) ($wallet->ai_credits_balance ?? 0), (int) ($wallet->bonus_scrape_credits ?? 0), (int) ($wallet->bonus_ai_credits ?? 0)) >= 0, 'detail' => 'Wallet balances are unsigned in schema, but this verifies the current snapshot.'],
+                    ['key' => 'no_failed_stripe_webhooks_recent', 'ok' => $failedWebhookCount === 0, 'detail' => $failedWebhookCount . ' failed Stripe webhook events in the latest 20.'],
+                    ['key' => 'no_stale_reserved_usage_recent', 'ok' => $reservedUsageCount === 0, 'detail' => $reservedUsageCount . ' reserved usage events in the latest 10.'],
+                    ['key' => 'billing_audit_visible', 'ok' => $recentAuditEvents->isNotEmpty(), 'detail' => $recentAuditEvents->count() . ' recent billing audit events found.'],
+                ],
+                'summary' => $summary,
+                'recentUsageEvents' => $recentUsage,
+                'recentCreditPurchases' => $recentPurchases,
+                'recentBillingAuditEvents' => $recentAuditEvents,
+                'recentStripeWebhookEvents' => $stripeWebhookEvents,
+            ],
+        ]);
+    }
+
     public function checkoutSubscription(Request $request)
     {
         $workspaceId = (string) $request->attributes->get('workspace_id');

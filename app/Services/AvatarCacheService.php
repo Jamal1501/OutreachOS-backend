@@ -10,6 +10,7 @@ use Illuminate\Support\Str;
 class AvatarCacheService
 {
     private const MAX_AVATAR_BYTES = 2097152;
+    private const FAILURE_CACHE_SECONDS = 21600;
 
     public function responseForUrl(string $url)
     {
@@ -29,9 +30,15 @@ class AvatarCacheService
             return $this->avatarResponse($cachedAvatar['body'], $cachedAvatar['contentType'], 604800, 'hit');
         }
 
+        $cachedFailure = $this->readCachedAvatarFailure($metaPath);
+        if ($cachedFailure !== null) {
+            return $this->fallbackAvatarResponse($cachedFailure, 200, 'failure-hit');
+        }
+
         $fetchedAvatar = $this->fetchAvatar($url, $host, $cacheKey);
         if ($fetchedAvatar === null) {
-            return $this->fallbackAvatarResponse('fetch_failed', 502);
+            $this->writeCachedAvatarFailure($metaPath, 'fetch_failed');
+            return $this->fallbackAvatarResponse('fetch_failed', 200, 'failure-miss');
         }
 
         $this->writeCachedAvatar($avatarPath, $metaPath, $fetchedAvatar['body'], $fetchedAvatar['contentType']);
@@ -81,8 +88,13 @@ class AvatarCacheService
             return true;
         }
 
+        if ($this->readCachedAvatarFailure($metaPath) !== null) {
+            return false;
+        }
+
         $fetchedAvatar = $this->fetchAvatar($url, $host, $cacheKey, 5);
         if ($fetchedAvatar === null) {
+            $this->writeCachedAvatarFailure($metaPath, 'fetch_failed');
             return false;
         }
 
@@ -160,7 +172,7 @@ class AvatarCacheService
         }
 
         if (!$upstream->ok()) {
-            Log::warning('avatar proxy upstream not ok', [
+            Log::debug('avatar proxy upstream not ok', [
                 'host' => $host,
                 'url_hash' => $cacheKey,
                 'status' => $upstream->status(),
@@ -213,6 +225,26 @@ class AvatarCacheService
         ];
     }
 
+    private function readCachedAvatarFailure(string $metaPath): ?string
+    {
+        $disk = $this->disk();
+        if (!$disk->exists($metaPath)) {
+            return null;
+        }
+
+        $meta = json_decode((string) $disk->get($metaPath), true);
+        if (!is_array($meta) || !($meta['failed'] ?? false)) {
+            return null;
+        }
+
+        $failedAt = strtotime((string) ($meta['failedAt'] ?? ''));
+        if (!$failedAt || $failedAt < time() - self::FAILURE_CACHE_SECONDS) {
+            return null;
+        }
+
+        return (string) ($meta['reason'] ?? 'fetch_failed');
+    }
+
     private function writeCachedAvatar(string $avatarPath, string $metaPath, string $body, string $contentType): void
     {
         try {
@@ -229,6 +261,21 @@ class AvatarCacheService
         }
     }
 
+    private function writeCachedAvatarFailure(string $metaPath, string $reason): void
+    {
+        try {
+            $this->disk()->put($metaPath, json_encode([
+                'failed' => true,
+                'reason' => $reason,
+                'failedAt' => now()->toIso8601String(),
+            ], JSON_THROW_ON_ERROR));
+        } catch (\Throwable $e) {
+            Log::debug('avatar proxy failure cache write failed', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
     private function avatarResponse(string $body, string $contentType, int $maxAgeSeconds, string $cacheStatus)
     {
         return response($body, 200)
@@ -239,7 +286,7 @@ class AvatarCacheService
             ->header('X-Avatar-Cache', $cacheStatus);
     }
 
-    private function fallbackAvatarResponse(string $reason, int $status = 502)
+    private function fallbackAvatarResponse(string $reason, int $status = 200, string $cacheStatus = 'fallback')
     {
         $svg = <<<'SVG'
 <svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" role="img" aria-label="Avatar unavailable">
@@ -254,6 +301,7 @@ SVG;
             ->header('Cache-Control', 'public, max-age=300')
             ->header('Cross-Origin-Resource-Policy', 'cross-origin')
             ->header('X-Content-Type-Options', 'nosniff')
+            ->header('X-Avatar-Cache', $cacheStatus)
             ->header('X-Avatar-Error', $reason);
     }
 
