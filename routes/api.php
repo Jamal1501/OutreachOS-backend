@@ -53,6 +53,7 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::post('/workspaces/current/transfer-owner', [WorkspaceController::class, 'transferOwnership'])->middleware('workspace.role:owner');
     Route::post('/workspaces/{workspaceId}/archive', [WorkspaceController::class, 'archiveWorkspace'])->middleware('workspace.role:owner');
     Route::post('/workspaces/{workspaceId}/restore', [WorkspaceController::class, 'restoreWorkspace'])->middleware('workspace.role:owner');
+    Route::delete('/workspaces/{workspaceId}', [WorkspaceController::class, 'deleteWorkspace'])->middleware('workspace.role:owner');
     Route::get('/workspaces/audit', [WorkspaceController::class, 'auditEvents'])->middleware('workspace.role:owner,admin');
 
     Route::get('/apify/modules', [ApifyController::class, 'modules']);

@@ -62,6 +62,13 @@ class ResolveWorkspaceContext
             ], 404);
         }
 
+        $settings = (array) ($workspace->settings ?? []);
+        if (!empty($settings['deletedAt'])) {
+            return response()->json([
+                'error' => 'Workspace not found.',
+            ], 404);
+        }
+
         $membership = null;
         if ($supabaseUserId !== '') {
             $membership = Cache::remember(
@@ -84,7 +91,6 @@ class ResolveWorkspaceContext
             ], 401);
         }
 
-        $settings = (array) ($workspace->settings ?? []);
         $workbookId = trim((string) ($settings['workspaceDataKey'] ?? $settings['workbookId'] ?? ''));
 
         if ($workbookId === '') {

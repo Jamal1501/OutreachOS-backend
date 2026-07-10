@@ -31,7 +31,12 @@ class WorkspaceController extends Controller
         $memberships = WorkspaceMember::query()
             ->where('user_id', $supabaseUserId)
             ->orderBy('joined_at')
-            ->get();
+            ->get()
+            ->filter(function (WorkspaceMember $membership) {
+                $candidate = Workspace::query()->find($membership->workspace_id);
+                return $candidate && !$this->workspaceIsDeleted($candidate);
+            })
+            ->values();
 
         if ($memberships->isEmpty()) {
             return response()->json([
@@ -512,6 +517,92 @@ class WorkspaceController extends Controller
         return $this->setWorkspaceArchived($request, $workspaceId, false);
     }
 
+    public function deleteWorkspace(Request $request, string $workspaceId)
+    {
+        /** @var Workspace|null $workspace */
+        $workspace = $request->attributes->get('workspace');
+        /** @var WorkspaceMember|null $currentMembership */
+        $currentMembership = $request->attributes->get('workspace_membership');
+
+        if (!$workspace || !$currentMembership) {
+            return response()->json(['error' => 'Missing workspace context.'], 400);
+        }
+
+        $targetWorkspaceId = trim($workspaceId);
+        $allowedWorkspaceIds = $this->accountWorkspaceIds($workspace, true);
+        if (!in_array($targetWorkspaceId, $allowedWorkspaceIds, true)) {
+            return response()->json(['error' => 'Workspace not available for this account.'], 404);
+        }
+
+        $targetWorkspace = Workspace::query()->find($targetWorkspaceId);
+        if (!$targetWorkspace) {
+            return response()->json(['error' => 'Workspace not found.'], 404);
+        }
+
+        $settings = (array) ($targetWorkspace->settings ?? []);
+        if (!isset($settings['deletedAt'])) {
+            $settings['deletedAt'] = now()->toIso8601String();
+            $settings['deletedBy'] = $currentMembership->user_id;
+            $settings['archivedAt'] = $settings['archivedAt'] ?? $settings['deletedAt'];
+            $settings['archivedBy'] = $settings['archivedBy'] ?? $currentMembership->user_id;
+        }
+
+        $targetWorkspace->settings = $settings;
+        $targetWorkspace->save();
+
+        if (Schema::hasTable('workspace_invitations')) {
+            DB::table('workspace_invitations')
+                ->where('workspace_id', $targetWorkspace->id)
+                ->whereNull('accepted_at')
+                ->delete();
+        }
+
+        $affectedUserIds = WorkspaceMember::query()
+            ->where('workspace_id', $targetWorkspace->id)
+            ->pluck('user_id')
+            ->map(fn ($id) => (string) $id)
+            ->all();
+
+        Cache::forget(sprintf('workspace-context:workspace:%s', $targetWorkspace->id));
+        foreach ($affectedUserIds as $userId) {
+            Cache::forget(sprintf('workspace-context:user-memberships:%s', $userId));
+            Cache::forget(sprintf('workspace-context:membership:%s:%s', $targetWorkspace->id, $userId));
+        }
+
+        $this->logWorkspaceAudit($targetWorkspace->id, $currentMembership->user_id, 'workspace_deleted', 'workspace', $targetWorkspace->id, [
+            'name' => $targetWorkspace->name,
+            'soft_deleted' => true,
+        ]);
+
+        $fallbackWorkspaceIds = $workspace->billing_account_id
+            ? DB::table('workspaces')
+                ->where('billing_account_id', $workspace->billing_account_id)
+                ->get(['id', 'settings'])
+                ->filter(function ($row) {
+                    $settings = is_string($row->settings ?? null) ? (json_decode($row->settings, true) ?: []) : ((array) ($row->settings ?? []));
+                    return empty($settings['deletedAt']);
+                })
+                ->map(fn ($row) => (string) $row->id)
+                ->all()
+            : [];
+
+        $fallbackWorkspace = Workspace::query()
+            ->whereIn('id', $fallbackWorkspaceIds ?: ['00000000-0000-0000-0000-000000000000'])
+            ->orderBy('created_at')
+            ->first();
+        $fallbackMembership = $fallbackWorkspace
+            ? WorkspaceMember::query()
+                ->where('workspace_id', $fallbackWorkspace->id)
+                ->where('user_id', $currentMembership->user_id)
+                ->first()
+            : null;
+
+        return response()->json([
+            'message' => 'Workspace deleted',
+            'data' => $this->workspacePayload($fallbackWorkspace, $fallbackMembership),
+        ]);
+    }
+
     public function auditEvents(Request $request)
     {
         /** @var Workspace|null $workspace */
@@ -713,19 +804,33 @@ class WorkspaceController extends Controller
         ]);
     }
 
-    private function accountWorkspaceIds(Workspace $workspace): array
+    private function accountWorkspaceIds(Workspace $workspace, bool $includeDeleted = false): array
     {
         $billingAccountId = trim((string) ($workspace->billing_account_id ?? ''));
 
         if ($billingAccountId === '') {
-            return [(string) $workspace->id];
+            return $includeDeleted || !$this->workspaceIsDeleted($workspace) ? [(string) $workspace->id] : [];
         }
 
         return DB::table('workspaces')
             ->where('billing_account_id', $billingAccountId)
-            ->pluck('id')
-            ->map(fn ($id) => (string) $id)
+            ->get(['id', 'settings'])
+            ->filter(function ($row) use ($includeDeleted) {
+                if ($includeDeleted) {
+                    return true;
+                }
+
+                $settings = is_string($row->settings ?? null) ? (json_decode($row->settings, true) ?: []) : ((array) ($row->settings ?? []));
+                return empty($settings['deletedAt']);
+            })
+            ->map(fn ($row) => (string) $row->id)
             ->all();
+    }
+
+    private function workspaceIsDeleted(Workspace $workspace): bool
+    {
+        $settings = (array) ($workspace->settings ?? []);
+        return !empty($settings['deletedAt']);
     }
 
     private function authorizedWorkspaceIdsForAccount(Workspace $workspace, array $requestedWorkspaceIds): array
@@ -985,6 +1090,7 @@ class WorkspaceController extends Controller
                     'role' => (string) $row->role,
                 ];
             })
+            ->filter(fn ($row) => empty($row['settings']['deletedAt']))
             ->values()
             ->all();
 
