@@ -179,8 +179,34 @@ class TaskQueueService
                     if ($this->buildCandidateForProfile($profile, $settings) !== null) {
                         $qualifiedBacklogCount++;
                     }
-                }
-            });
+            }
+        });
+
+        $recovery = null;
+        if ($activeOpenCount === 0 && $qualifiedBacklogCount > 0) {
+            $recovery = $this->backfillOpenTaskCapacity($sheetId, (string) $project->id, $settings);
+            $activeOpenCount = $this->activeOpenTaskQuery((string) $project->id)->count();
+            $openByProfileId = $this->activeOpenTaskQuery((string) $project->id)
+                ->whereNotNull('creator_profile_id')
+                ->pluck('creator_profile_id')
+                ->flip()
+                ->all();
+
+            $qualifiedBacklogCount = 0;
+            CreatorProfile::query()
+                ->with('creator')
+                ->where('project_id', $project->id)
+                ->chunkById(200, function ($profiles) use (&$qualifiedBacklogCount, $settings, $openByProfileId) {
+                    foreach ($profiles as $profile) {
+                        if (isset($openByProfileId[$profile->id])) {
+                            continue;
+                        }
+                        if ($this->buildCandidateForProfile($profile, $settings) !== null) {
+                            $qualifiedBacklogCount++;
+                        }
+                    }
+                });
+        }
 
         return [
             'source' => 'database',
@@ -190,6 +216,7 @@ class TaskQueueService
             'qualifiedBacklogCount' => $qualifiedBacklogCount,
             'maxNewTasksPerGeneration' => (int) ($settings['max_new_tasks_per_generation'] ?? 12),
             'timePressureMode' => $this->timePressureEnabled($settings),
+            'recovery' => $recovery,
         ];
     }
 
@@ -917,6 +944,7 @@ class TaskQueueService
 
         $profile = $task->creatorProfile;
         $relatedTaskUpdates = ['completed' => [], 'reframed' => []];
+        $cleanupTaskUpdates = ['closed' => []];
         $replacementTask = null;
         $deferredOriginalTask = null;
         if ($profile) {
@@ -932,6 +960,7 @@ class TaskQueueService
             }
 
             $relatedTaskUpdates = $this->applyRelatedWarmupTasksAfterOutreach($project->id, $sheetId, $profile, $task, $payload, $senderAccount);
+            $cleanupTaskUpdates = $this->cleanupSupersededOpenTasks($project->id, $profile, $task, $payload);
             $profile->refresh();
             $this->maybeCreateImmediateNextTask($project->id, $profile, $task, $settings);
         }
@@ -966,6 +995,7 @@ class TaskQueueService
             'deferredOriginalTask' => $deferredOriginalTask,
             'backfilledTasks' => $backfillResult,
             'relatedTaskUpdates' => $relatedTaskUpdates,
+            'cleanupTaskUpdates' => $cleanupTaskUpdates,
             'source' => 'database',
         ];
     }
@@ -1207,6 +1237,58 @@ class TaskQueueService
             'completed' => $completed,
             'reframed' => $reframed,
         ];
+    }
+
+    private function cleanupSupersededOpenTasks(string $projectId, CreatorProfile $profile, Task $completedTask, array $payload = []): array
+    {
+        $status = strtoupper((string) ($completedTask->status ?? ''));
+        if (!in_array($status, self::TERMINAL_TASK_STATUSES, true)) {
+            return ['closed' => []];
+        }
+
+        $taskType = strtoupper((string) ($payload['actionType'] ?? $completedTask->task_type ?? ''));
+        $typesToClose = match ($taskType) {
+            'DM_INVITE', 'EMAIL_SEND', 'DM_FOLLOWUP' => ['DM_INVITE', 'EMAIL_SEND'],
+            'REVIEW_CREATOR' => ['CHECK_IN'],
+            'NEGOTIATE_TERMS' => ['REVIEW_CREATOR', 'CHECK_IN', 'DM_FOLLOWUP'],
+            'CONFIRM_ACCEPTED' => ['REVIEW_CREATOR', 'NEGOTIATE_TERMS', 'CHECK_IN', 'DM_FOLLOWUP'],
+            'CONFIRM_POSTED' => ['CONFIRM_ACCEPTED', 'CHECK_IN'],
+            'ARCHIVE_CREATOR' => ['FOLLOW_REQUEST', 'COMMENT_ON_POST', 'DM_INVITE', 'EMAIL_SEND', 'DM_FOLLOWUP', 'REVIEW_CREATOR', 'NEGOTIATE_TERMS', 'CHECK_IN', 'CONFIRM_ACCEPTED', 'CONFIRM_POSTED'],
+            default => [],
+        };
+
+        if ($typesToClose === []) {
+            return ['closed' => []];
+        }
+
+        $tasks = Task::query()
+            ->where('project_id', $projectId)
+            ->where('creator_profile_id', $profile->id)
+            ->where('id', '!=', $completedTask->id)
+            ->whereIn(DB::raw('UPPER(status)'), self::OPEN_TASK_STATUSES)
+            ->whereIn('task_type', $typesToClose)
+            ->with(['creatorProfile.creator', 'messageTemplate'])
+            ->get();
+
+        $closed = [];
+        $now = now();
+        foreach ($tasks as $task) {
+            $meta = (array) ($task->metadata ?? []);
+            $task->status = 'SKIPPED';
+            $task->completed_at = $now;
+            $task->completion_outcome = 'superseded';
+            $task->skip_reason = 'superseded_by_' . strtolower($taskType);
+            $task->notes = trim(((string) ($task->notes ?? '')) . ' Closed because ' . $taskType . ' superseded this action.');
+            $task->metadata = array_merge($meta, [
+                'superseded_by_task_id' => (string) ($completedTask->external_task_key ?: $completedTask->id),
+                'superseded_by_task_type' => $taskType,
+                'cleanup_rule' => 'phase_4_superseded_open_task',
+            ]);
+            $task->save();
+            $closed[] = $this->normalizeDbTask($task);
+        }
+
+        return ['closed' => $closed];
     }
 
     private function backfillOpenTaskCapacity(string $sheetId, string $projectId, array $settings): array

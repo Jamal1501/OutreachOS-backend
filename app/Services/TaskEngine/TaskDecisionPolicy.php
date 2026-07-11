@@ -60,6 +60,29 @@ class TaskDecisionPolicy
             $score -= 10;
         }
 
+        $qualitySignals = [];
+        if ($dueAt->lessThanOrEqualTo($now)) {
+            $qualitySignals[] = 'overdue';
+        }
+        if ($valueScore >= 75) {
+            $qualitySignals[] = 'high_value';
+        }
+        if ($profile->responded_at instanceof Carbon) {
+            $qualitySignals[] = 'reply_signal';
+        }
+        if ($profile->accepted_flag) {
+            $qualitySignals[] = 'accepted_handoff';
+        }
+        if (!empty($metadata['follow_up_variant'])) {
+            $qualitySignals[] = 'follow_up_due';
+        }
+        if ($this->isSupportTaskType($taskType)) {
+            $qualitySignals[] = empty($metadata['follow_up_variant']) ? 'warmup_support' : 'soft_follow_up';
+        }
+        if ($riskFlags !== []) {
+            $qualitySignals[] = 'verify_before_action';
+        }
+
         $scoreInputs = [
             'value_score' => $valueScore,
             'priority_weight' => $this->priorityWeight($priority),
@@ -84,6 +107,7 @@ class TaskDecisionPolicy
             'decision_confidence' => (int) $decision['confidence'],
             'decision_source' => $sourceRule,
             'decision_risk_flags' => $riskFlags,
+            'task_quality_signals' => array_values(array_unique($qualitySignals)),
             'decision_score_inputs' => $scoreInputs,
         ];
     }
