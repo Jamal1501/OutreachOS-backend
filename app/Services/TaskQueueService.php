@@ -6,6 +6,8 @@ use App\Models\CreatorProfile;
 use App\Models\MessageTemplate;
 use App\Models\Task;
 use App\Models\Workspace;
+use App\Services\TaskEngine\TaskAutomationSettings;
+use App\Services\TaskEngine\TaskDecisionPolicy;
 use Carbon\Carbon;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Log;
@@ -27,6 +29,8 @@ class TaskQueueService
         private OperationalMirrorService $mirror,
         private ProjectResolverService $projects,
         private MessagePerformanceService $messagePerformance,
+        private TaskAutomationSettings $automationSettings,
+        private TaskDecisionPolicy $decisionPolicy,
     ) {
     }
 
@@ -467,6 +471,16 @@ class TaskQueueService
             ->get();
 
         if ($profiles->isEmpty() || $finalLimit <= 0) {
+            $diagnostics = [
+                'skippedReasons' => $profiles->isEmpty()
+                    ? ['no_profiles_found' => 1]
+                    : ['capacity_full' => $profiles->count()],
+                'sampledSkippedProfiles' => [],
+                'summary' => $profiles->isEmpty()
+                    ? 'No creator profiles matched this generation request.'
+                    : 'The active queue is already at capacity. Complete, skip, or snooze tasks before filling more slots.',
+            ];
+
             return [
                 'created' => 0,
                 'eligible' => 0,
@@ -481,6 +495,7 @@ class TaskQueueService
                     'availableSlots' => $availableSlots,
                     'forceForImportedProfiles' => $forceForImportedProfiles,
                 ],
+                'diagnostics' => $diagnostics,
             ];
         }
 
@@ -501,16 +516,34 @@ class TaskQueueService
         $eligible = 0;
         $skippedIneligible = 0;
         $skippedExisting = 0;
+        $skipReasonCounts = [];
+        $skipSamples = [];
+        $recordSkip = function (string $reason, CreatorProfile $profile) use (&$skipReasonCounts, &$skipSamples): void {
+            $skipReasonCounts[$reason] = ($skipReasonCounts[$reason] ?? 0) + 1;
+
+            if (count($skipSamples) >= 8) {
+                return;
+            }
+
+            $skipSamples[] = [
+                'creatorProfileId' => (string) $profile->id,
+                'handle' => (string) ($profile->handle ?: ''),
+                'platform' => strtolower((string) ($profile->platform ?: 'instagram')),
+                'reason' => $reason,
+            ];
+        };
 
         foreach ($profiles as $profile) {
             if (isset($openByProfileId[$profile->id])) {
                 $skippedExisting++;
+                $recordSkip('existing_open_task', $profile);
                 continue;
             }
 
             $candidate = $this->buildCandidateForProfile($profile, $settings);
             if (!$candidate) {
                 $skippedIneligible++;
+                $recordSkip($this->explainProfileTaskIneligibility($profile, $settings), $profile);
                 continue;
             }
 
@@ -551,6 +584,8 @@ class TaskQueueService
             $created++;
         }
 
+        arsort($skipReasonCounts);
+
         if ($logEvents !== []) {
             $this->outreachLog->appendEvents($sheetId, $logEvents);
         }
@@ -569,6 +604,11 @@ class TaskQueueService
                 'availableSlots' => $availableSlots,
                 'limitRequested' => $limitRequested,
                 'limitApplied' => $finalLimit,
+            ],
+            'diagnostics' => [
+                'skippedReasons' => $skipReasonCounts,
+                'sampledSkippedProfiles' => $skipSamples,
+                'summary' => $this->taskGenerationSummary($created, $eligible, $skippedExisting, $skippedIneligible, $skipReasonCounts),
             ],
             'timePressureMode' => $this->timePressureEnabled($settings),
         ];
@@ -1401,6 +1441,81 @@ class TaskQueueService
         );
     }
 
+    private function explainProfileTaskIneligibility(CreatorProfile $profile, array $settings): string
+    {
+        $statusValues = array_values(array_filter(array_unique([
+            strtoupper(trim((string) ($profile->status ?: ''))),
+            strtoupper(trim((string) ($profile->lifecycle_state ?: ''))),
+        ])));
+
+        if (array_intersect($statusValues, self::TERMINAL_PROFILE_STATES) !== []) {
+            return 'terminal_profile_state';
+        }
+
+        $state = $this->profileAutomationState($profile);
+
+        if ($profile->task_suppressed_until instanceof Carbon && $profile->task_suppressed_until->isFuture()) {
+            return 'task_suppressed_until_future';
+        }
+
+        if ($profile->waiting_until instanceof Carbon && $profile->waiting_until->isFuture()) {
+            return 'waiting_until_future';
+        }
+
+        if (!empty($state['external_conversation_active'])) {
+            $due = $this->coerceCarbon($profile->next_action_at ?: ($state['external_check_in_at'] ?? null));
+            if ($due && $due->isFuture()) {
+                return 'external_check_in_not_due';
+            }
+        }
+
+        if ($profile->accepted_flag || in_array('ACCEPTED', $statusValues, true)) {
+            $due = $this->coerceCarbon($profile->next_action_at ?: $profile->waiting_until);
+            if ($due && $due->isFuture()) {
+                return 'accepted_follow_through_not_due';
+            }
+        }
+
+        if (in_array('NEGOTIATING', $statusValues, true)) {
+            $due = $this->coerceCarbon($profile->next_action_at ?: $profile->waiting_until);
+            if ($due && $due->isFuture()) {
+                return 'negotiation_check_in_not_due';
+            }
+        }
+
+        if ($profile->follow_up_due_at instanceof Carbon && $profile->follow_up_due_at->isFuture()) {
+            return 'follow_up_not_due';
+        }
+
+        if ($profile->dm_sent_at !== null && $profile->responded_at === null) {
+            return 'awaiting_reply_window';
+        }
+
+        if ($this->determineInitialTaskTypeFromProfile($profile, $settings) === null) {
+            return 'no_supported_initial_action';
+        }
+
+        return 'no_action_rule_matched';
+    }
+
+    private function taskGenerationSummary(int $created, int $eligible, int $skippedExisting, int $skippedIneligible, array $skipReasonCounts): string
+    {
+        if ($created > 0) {
+            return "Created {$created} task" . ($created === 1 ? '' : 's') . " from {$eligible} eligible creator" . ($eligible === 1 ? '' : 's') . '.';
+        }
+
+        if ($skippedExisting > 0 && $skippedExisting >= $skippedIneligible) {
+            return 'No new tasks were needed because matching creators already have open tasks.';
+        }
+
+        $topReason = array_key_first($skipReasonCounts);
+        if ($topReason) {
+            return 'No new tasks were created. Top blocker: ' . str_replace('_', ' ', $topReason) . '.';
+        }
+
+        return 'No new tasks were created from this generation run.';
+    }
+
     private function determineFollowUpTaskTypeFromProfile(CreatorProfile $profile, array $settings = [], array $state = []): string
     {
         $platform = $this->normalizeExecutionChannel((string) ($profile->platform ?: ''), 'instagram');
@@ -1917,145 +2032,7 @@ class TaskQueueService
         string $actionableChannel,
         array $metadata = []
     ): array {
-        $now = now();
-        $valueScore = max(0, min(100, (int) ($profile->value_score ?? 0)));
-        $followers = (int) ($profile->followers_count ?? 0);
-        $engagement = (float) ($profile->engagement_rate_pct ?? 0);
-        $priority = strtoupper($priority);
-        $sourceRule = (string) ($metadata['source_rule'] ?? 'task_engine');
-        $daysSinceOutreach = $profile->last_outreach_at instanceof Carbon
-            ? max(0, $profile->last_outreach_at->diffInDays($now))
-            : null;
-
-        $score = $valueScore
-            + $this->priorityWeight($priority)
-            + ($dueAt->lessThanOrEqualTo($now) ? 18 : 0)
-            + ($followers >= 50000 ? 8 : ($followers >= 10000 ? 4 : 0))
-            + ($engagement >= 4.0 ? 6 : ($engagement >= 2.0 ? 3 : 0));
-
-        if ($profile->responded_at instanceof Carbon) {
-            $score += 24;
-        }
-        if ($profile->accepted_flag) {
-            $score += 18;
-        }
-        if (!empty($metadata['follow_up_variant'])) {
-            $score += 14;
-        }
-        if ($this->isSupportTaskType($taskType)) {
-            $score -= empty($metadata['follow_up_variant']) ? 26 : 14;
-        }
-
-        $decision = match ($taskType) {
-            'REVIEW_CREATOR' => [
-                'reason' => 'The creator has replied, so this needs a human decision before momentum cools.',
-                'why' => 'A reply is the strongest buying signal in the queue.',
-                'success' => 'Log the reply outcome and move the creator to the correct next stage.',
-                'fallback' => 'If the reply is unclear, keep the creator in review and add a short note.',
-                'confidence' => 92,
-            ],
-            'NEGOTIATE_TERMS' => [
-                'reason' => 'This creator is already in negotiation, so the next useful move is to clarify terms.',
-                'why' => 'Active deal conversations lose value when ownership or next steps are unclear.',
-                'success' => 'Terms, timing, budget, or the next approval step is logged.',
-                'fallback' => 'If there is no real negotiation signal, mark the creator lost or move them back to review.',
-                'confidence' => 88,
-            ],
-            'CONFIRM_POSTED' => [
-                'reason' => 'This creator appears accepted, so delivery needs follow-through.',
-                'why' => 'Accepted creators only create value once the promised content is verified.',
-                'success' => 'The post status is confirmed and the creator is moved forward or followed up.',
-                'fallback' => 'If nothing is live yet, set the next check-in date.',
-                'confidence' => 86,
-            ],
-            'CHECK_IN' => [
-                'reason' => $sourceRule === 'follow_up_exhausted'
-                    ? 'Several attempts have not produced a reply, so this needs a keep-or-clean-up decision.'
-                    : 'There is an active or stale conversation state that needs confirmation.',
-                'why' => $sourceRule === 'follow_up_exhausted'
-                    ? 'Repeated no-reply creators should not keep consuming daily attention.'
-                    : 'The system needs one clean status update to avoid stale pipeline data.',
-                'success' => 'The current relationship status is logged.',
-                'fallback' => 'If there is still no signal, archive or snooze the creator with a reason.',
-                'confidence' => $sourceRule === 'follow_up_exhausted' ? 84 : 78,
-            ],
-            'DM_FOLLOWUP' => [
-                'reason' => $daysSinceOutreach !== null
-                    ? "First outreach was sent {$daysSinceOutreach} days ago and no reply is logged."
-                    : 'A follow-up is due and no reply is logged.',
-                'why' => 'Follow-ups work best when they are timely, specific, and capped.',
-                'success' => 'A follow-up is sent or a softer touchpoint is logged.',
-                'fallback' => 'If this is the final attempt, move the creator to check-in instead of sending another message.',
-                'confidence' => 82,
-            ],
-            'EMAIL_SEND' => [
-                'reason' => 'A usable email exists, so this creator can be reached through a cleaner outreach channel.',
-                'why' => 'Email avoids some platform friction and is easier to track as a business touchpoint.',
-                'success' => 'The email outreach is sent and logged.',
-                'fallback' => 'If the email is invalid, switch to DM or mark contact data as incomplete.',
-                'confidence' => 80,
-            ],
-            'DM_INVITE' => [
-                'reason' => 'This creator is ready for first outreach and no sent message is logged yet.',
-                'why' => 'The fastest path to validation is a clear first message while the creator is still fresh.',
-                'success' => 'The first outreach is sent and a follow-up date is created.',
-                'fallback' => 'If the profile is not a fit, archive it with the reason.',
-                'confidence' => 76,
-            ],
-            'COMMENT_ON_POST' => [
-                'reason' => 'A warm public interaction is safer than pushing another direct message right now.',
-                'why' => 'Lightweight warm touches can revive attention without feeling repetitive.',
-                'success' => 'A relevant interaction is completed and logged.',
-                'fallback' => 'If there is no suitable recent post, choose a follow or check-in instead.',
-                'confidence' => 74,
-            ],
-            'FOLLOW_REQUEST' => [
-                'reason' => 'This is a support warm-up action for a high-value creator, not the main outreach step.',
-                'why' => 'A small visible signal can make the first message feel less cold without consuming the whole queue.',
-                'success' => 'The follow status is logged and the next real touchpoint stays clear.',
-                'fallback' => 'If following is not possible, open the profile and choose another warm-up action.',
-                'confidence' => 72,
-            ],
-            'ARCHIVE_CREATOR' => [
-                'reason' => 'This creator is unlikely to produce value unless new information appears.',
-                'why' => 'Removing low-signal creators keeps the active queue focused.',
-                'success' => 'The creator is archived with a clear reason.',
-                'fallback' => 'If there is a recent positive signal, snooze instead of archiving.',
-                'confidence' => 76,
-            ],
-            default => [
-                'reason' => 'This is the next workflow step based on the creator state.',
-                'why' => 'Keeping one clear next action prevents stale CRM rows.',
-                'success' => 'The action is completed and the relationship state is updated.',
-                'fallback' => 'If the action does not fit, skip it and choose the correct replacement.',
-                'confidence' => 68,
-            ],
-        };
-
-        $riskFlags = [];
-        if ($actionableChannel === 'email' && !$this->profileHasUsableEmail($profile)) {
-            $riskFlags[] = 'missing_email';
-            $score -= 18;
-        }
-        if ($profile->duplicate_flag) {
-            $riskFlags[] = 'duplicate_risk';
-            $score -= 12;
-        }
-        if ($profile->last_outreach_at instanceof Carbon && $profile->last_outreach_at->greaterThan($now->copy()->subDay())) {
-            $riskFlags[] = 'recent_outreach';
-            $score -= 10;
-        }
-
-        return [
-            'decision_score' => max(0, min(150, (int) round($score))),
-            'decision_reason' => $decision['reason'],
-            'why_now' => $decision['why'],
-            'success_condition' => $decision['success'],
-            'fallback_action' => $decision['fallback'],
-            'decision_confidence' => (int) $decision['confidence'],
-            'decision_source' => $sourceRule,
-            'decision_risk_flags' => $riskFlags,
-        ];
+        return $this->decisionPolicy->buildMetadata($profile, $taskType, $priority, $dueAt, $actionableChannel, $metadata);
     }
 
     private function findNewestOpenTaskForProfile(string $projectId, string $profileId, string $excludeTaskId): ?array
@@ -2074,86 +2051,22 @@ class TaskQueueService
 
     private function resolveTaskSettings(?Workspace $workspace): array
     {
-        $defaults = $this->defaultTaskSettings();
-        $settings = (array) ($workspace?->settings ?? []);
-        $taskSettings = (array) ($settings['taskAutomation'] ?? []);
-
-        return $this->sanitizeTaskSettings(array_replace_recursive($defaults, $taskSettings));
+        return $this->automationSettings->resolve((array) ($workspace?->settings ?? []));
     }
 
     private function defaultTaskSettings(): array
     {
-        return [
-            'version' => 1,
-            'settings_edit_scope' => 'admins',
-            'daily_outreach_capacity' => 12,
-            'max_active_tasks' => 18,
-            'time_pressure_active_task_limit' => 32,
-            'max_new_tasks_per_generation' => 12,
-            'follow_up_delay_days' => 5,
-            'aggressive_follow_up_delay_days' => 2,
-            'reply_check_in_delay_days' => 2,
-            'external_check_in_days' => 3,
-            'negotiation_check_in_delay_days' => 3,
-            'accepted_follow_up_delay_days' => 7,
-            'max_follow_up_attempts' => 2,
-            'high_value_warmup_enabled' => true,
-            'high_value_threshold' => 75,
-            'medium_value_threshold' => 50,
-            'warmup_gap_hours' => 12,
-            'time_pressure_mode' => false,
-            'archive_snooze_days' => 30,
-            'revival_review_enabled' => true,
-            'revival_review_interval_days' => 90,
-        ];
+        return $this->automationSettings->defaults();
     }
 
     private function sanitizeTaskSettings(array $settings): array
     {
-        $defaults = $this->defaultTaskSettings();
-        $merged = array_replace_recursive($defaults, $settings);
-
-        $ints = [
-            'version',
-            'daily_outreach_capacity',
-            'max_active_tasks',
-            'time_pressure_active_task_limit',
-            'max_new_tasks_per_generation',
-            'follow_up_delay_days',
-            'aggressive_follow_up_delay_days',
-            'reply_check_in_delay_days',
-            'external_check_in_days',
-            'negotiation_check_in_delay_days',
-            'accepted_follow_up_delay_days',
-            'max_follow_up_attempts',
-            'high_value_threshold',
-            'medium_value_threshold',
-            'warmup_gap_hours',
-            'archive_snooze_days',
-            'revival_review_interval_days',
-        ];
-        foreach ($ints as $key) {
-            $merged[$key] = max(0, (int) ($merged[$key] ?? $defaults[$key]));
-        }
-
-        $merged['high_value_warmup_enabled'] = (bool) ($merged['high_value_warmup_enabled'] ?? $defaults['high_value_warmup_enabled']);
-        $merged['time_pressure_mode'] = (bool) ($merged['time_pressure_mode'] ?? $defaults['time_pressure_mode']);
-        $merged['revival_review_enabled'] = (bool) ($merged['revival_review_enabled'] ?? $defaults['revival_review_enabled']);
-        $merged['settings_edit_scope'] = in_array(($merged['settings_edit_scope'] ?? 'admins'), ['admins', 'all_seats'], true)
-            ? $merged['settings_edit_scope']
-            : 'admins';
-
-        return $merged;
+        return $this->automationSettings->sanitize($settings);
     }
 
     private function canEditTaskSettings(array $settings, ?string $role): bool
     {
-        $role = strtolower(trim((string) $role));
-        if ($role === 'owner' || $role === 'admin') {
-            return true;
-        }
-
-        return ($settings['settings_edit_scope'] ?? 'admins') === 'all_seats' && $role === 'member';
+        return $this->automationSettings->canEdit($settings, $role);
     }
 
     private function resolveWorkspaceForSheet(string $sheetId, $project = null): ?Workspace
@@ -2190,7 +2103,7 @@ class TaskQueueService
 
     private function timePressureEnabled(array $settings): bool
     {
-        return (bool) ($settings['time_pressure_mode'] ?? false);
+        return $this->automationSettings->timePressureEnabled($settings);
     }
 
     private function markExternalConversationActive(CreatorProfile $profile, array &$state, array $settings, string $externalChannel, string $conversationUrl): void
