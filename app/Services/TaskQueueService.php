@@ -158,14 +158,9 @@ class TaskQueueService
 
         $settings = $this->resolveTaskSettings($this->resolveWorkspaceForSheet($sheetId, $project));
         $maxActiveTasks = (int) ($settings[$this->timePressureEnabled($settings) ? 'time_pressure_active_task_limit' : 'max_active_tasks'] ?? 18);
-        $activeOpenCount = Task::query()
-            ->where('project_id', $project->id)
-            ->whereIn('status', self::OPEN_TASK_STATUSES)
-            ->count();
+        $activeOpenCount = $this->activeOpenTaskQuery((string) $project->id)->count();
 
-        $openByProfileId = Task::query()
-            ->where('project_id', $project->id)
-            ->whereIn('status', self::OPEN_TASK_STATUSES)
+        $openByProfileId = $this->activeOpenTaskQuery((string) $project->id)
             ->whereNotNull('creator_profile_id')
             ->pluck('creator_profile_id')
             ->flip()
@@ -437,10 +432,7 @@ class TaskQueueService
         $maxActiveTasks = (int) ($settings[$this->timePressureEnabled($settings) ? 'time_pressure_active_task_limit' : 'max_active_tasks'] ?? 18);
         $maxNewTasksPerGeneration = (int) ($settings['max_new_tasks_per_generation'] ?? 12);
 
-        $activeOpenCount = Task::query()
-            ->where('project_id', $project->id)
-            ->whereIn('status', self::OPEN_TASK_STATUSES)
-            ->count();
+        $activeOpenCount = $this->activeOpenTaskQuery((string) $project->id)->count();
 
         $availableSlots = max(0, $maxActiveTasks - $activeOpenCount);
         $finalLimit = $forceForImportedProfiles
@@ -499,9 +491,7 @@ class TaskQueueService
             ];
         }
 
-        $openByProfileId = Task::query()
-            ->where('project_id', $project->id)
-            ->whereIn('status', self::OPEN_TASK_STATUSES)
+        $openByProfileId = $this->activeOpenTaskQuery((string) $project->id)
             ->whereNotNull('creator_profile_id')
             ->pluck('creator_profile_id')
             ->flip()
@@ -630,6 +620,18 @@ class TaskQueueService
             ->get();
 
         return $tasks->map(fn (Task $task) => $this->normalizeDbTask($task))->values()->all();
+    }
+
+    private function activeOpenTaskQuery(string $projectId)
+    {
+        return Task::query()
+            ->where('project_id', $projectId)
+            ->whereIn('status', self::OPEN_TASK_STATUSES)
+            ->where(function ($query) {
+                $query
+                    ->whereNull('snoozed_until')
+                    ->orWhere('snoozed_until', '<=', now());
+            });
     }
 
     private function normalizeCreatorHandle(string $handle): string
@@ -1209,10 +1211,7 @@ class TaskQueueService
     private function backfillOpenTaskCapacity(string $sheetId, string $projectId, array $settings): array
     {
         $maxActiveTasks = (int) ($settings[$this->timePressureEnabled($settings) ? 'time_pressure_active_task_limit' : 'max_active_tasks'] ?? 18);
-        $activeOpenCount = Task::query()
-            ->where('project_id', $projectId)
-            ->whereIn('status', self::OPEN_TASK_STATUSES)
-            ->count();
+        $activeOpenCount = $this->activeOpenTaskQuery($projectId)->count();
 
         $availableSlots = max(0, $maxActiveTasks - $activeOpenCount);
         if ($availableSlots <= 0) {
