@@ -10,6 +10,7 @@ use App\Services\TaskEngine\TaskAutomationSettings;
 use App\Services\TaskEngine\TaskDecisionPolicy;
 use Carbon\Carbon;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -18,7 +19,7 @@ use Illuminate\Validation\ValidationException;
 class TaskQueueService
 {
     private const TERMINAL_TASK_STATUSES = ['COMPLETED', 'DONE', 'SKIPPED', 'ARCHIVED'];
-    private const OPEN_TASK_STATUSES = ['PENDING', 'IN_PROGRESS', 'SNOOZED'];
+    private const OPEN_TASK_STATUSES = ['PENDING', 'IN_PROGRESS', 'SNOOZED', 'OPEN', 'QUEUED'];
     private const TERMINAL_PROFILE_STATES = ['ARCHIVED', 'WON', 'LOST', 'DECLINED', 'POSTED'];
     private const REQUIRES_CONNECTION = ['instagram'];
 
@@ -626,7 +627,7 @@ class TaskQueueService
     {
         return Task::query()
             ->where('project_id', $projectId)
-            ->whereIn('status', self::OPEN_TASK_STATUSES)
+            ->whereIn(DB::raw('UPPER(status)'), self::OPEN_TASK_STATUSES)
             ->where(function ($query) {
                 $query
                     ->whereNull('snoozed_until')
@@ -688,7 +689,7 @@ class TaskQueueService
 
         $query = Task::query()
             ->where('project_id', $projectId)
-            ->whereIn('status', self::OPEN_TASK_STATUSES)
+            ->whereIn(DB::raw('UPPER(status)'), self::OPEN_TASK_STATUSES)
             ->where(function ($q) use ($profile, $handle, $platform) {
                 if ($profile) {
                     $q->where('creator_profile_id', $profile->id);
@@ -983,7 +984,7 @@ class TaskQueueService
             ->where('project_id', $projectId)
             ->where('creator_profile_id', $profile->id)
             ->where('task_type', $replacementTaskType)
-            ->whereIn('status', self::OPEN_TASK_STATUSES)
+            ->whereIn(DB::raw('UPPER(status)'), self::OPEN_TASK_STATUSES)
             ->with(['creatorProfile.creator', 'messageTemplate'])
             ->orderByRaw("case priority when 'URGENT' then 0 when 'HIGH' then 1 when 'MEDIUM' then 2 else 3 end")
             ->orderBy('due_at')
@@ -1047,7 +1048,7 @@ class TaskQueueService
             ->where('project_id', $projectId)
             ->where('creator_profile_id', $profile->id)
             ->where('task_type', $originalTaskType)
-            ->whereIn('status', self::OPEN_TASK_STATUSES)
+            ->whereIn(DB::raw('UPPER(status)'), self::OPEN_TASK_STATUSES)
             ->exists();
 
         if ($exists) {
@@ -1108,7 +1109,7 @@ class TaskQueueService
         $relatedTasks = Task::query()
             ->where('project_id', $projectId)
             ->where('creator_profile_id', $profile->id)
-            ->whereIn('status', self::OPEN_TASK_STATUSES)
+            ->whereIn(DB::raw('UPPER(status)'), self::OPEN_TASK_STATUSES)
             ->whereIn('task_type', ['FOLLOW_REQUEST', 'COMMENT_ON_POST'])
             ->where('id', '!=', $completedTask->id)
             ->with(['creatorProfile.creator', 'messageTemplate'])
@@ -1928,7 +1929,7 @@ class TaskQueueService
             ->where('project_id', $projectId)
             ->where('creator_profile_id', $profile->id)
             ->where('task_type', $nextTaskType)
-            ->whereIn('status', self::OPEN_TASK_STATUSES)
+            ->whereIn(DB::raw('UPPER(status)'), self::OPEN_TASK_STATUSES)
             ->exists();
 
         if ($exists) {
@@ -2040,7 +2041,7 @@ class TaskQueueService
             ->where('project_id', $projectId)
             ->where('creator_profile_id', $profileId)
             ->where('id', '!=', $excludeTaskId)
-            ->whereIn('status', self::OPEN_TASK_STATUSES)
+            ->whereIn(DB::raw('UPPER(status)'), self::OPEN_TASK_STATUSES)
             ->latest('created_at')
             ->with('creatorProfile')
             ->first();
