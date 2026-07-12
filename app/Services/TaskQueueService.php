@@ -869,6 +869,10 @@ class TaskQueueService
         $externalChannel = trim((string) ($payload['externalChannel'] ?? $payload['responseChannel'] ?? ''));
         $conversationUrl = trim((string) ($payload['conversationUrl'] ?? ''));
         $senderAccount = trim((string) ($payload['sender_account'] ?? ''));
+        $completedAdHocActions = array_values(array_unique(array_map(
+            fn ($value) => strtoupper(trim((string) $value)),
+            (array) ($payload['completedAdHocActions'] ?? [])
+        )));
         $replacementTaskType = strtoupper(trim((string) ($payload['replacementTaskType'] ?? '')));
         $openReplacement = (bool) ($payload['openReplacement'] ?? false);
         $keepOriginalAsLaterTask = (bool) ($payload['keepOriginalAsLaterTask'] ?? true);
@@ -924,6 +928,9 @@ class TaskQueueService
         }
         if ($conversationUrl !== '') {
             $meta['conversation_url'] = $conversationUrl;
+        }
+        if ($completedAdHocActions !== []) {
+            $meta['completed_ad_hoc_actions'] = $completedAdHocActions;
         }
 
         $task->status = $status;
@@ -982,9 +989,18 @@ class TaskQueueService
             'Sender_Account' => $senderAccount,
             'Status' => $status,
             'URL' => (string) ($task->conversation_url ?: $task->open_url ?: ''),
-            'Notes' => implode(' | ', array_values(array_filter([$notes, $outcome, $skipReason, $skipReasonDetail]))),
+            'Notes' => implode(' | ', array_values(array_filter([
+                $notes,
+                $outcome,
+                $skipReason,
+                $skipReasonDetail,
+                $completedAdHocActions !== [] ? 'Also completed: ' . implode(', ', $completedAdHocActions) : '',
+            ]))),
             'Message_Text' => (string) ($task->message_draft ?: ''),
         ]);
+
+        $refreshedQueueHealth = $this->queueHealth($sheetId);
+        $refreshedTasks = $this->listTasks($sheetId);
 
         return [
             'taskId' => (string) ($task->external_task_key ?: $task->id),
@@ -996,6 +1012,8 @@ class TaskQueueService
             'backfilledTasks' => $backfillResult,
             'relatedTaskUpdates' => $relatedTaskUpdates,
             'cleanupTaskUpdates' => $cleanupTaskUpdates,
+            'tasks' => $refreshedTasks,
+            'queueHealth' => $refreshedQueueHealth,
             'source' => 'database',
         ];
     }
@@ -1705,6 +1723,24 @@ class TaskQueueService
         $state['last_task_status'] = $status;
         $state['last_task_outcome'] = $outcome !== '' ? $outcome : $skipReason;
         $state['last_task_completed_at'] = $now->toIso8601String();
+        $adHocActions = array_values(array_unique(array_map(
+            fn ($value) => strtoupper(trim((string) $value)),
+            (array) ($payload['completedAdHocActions'] ?? [])
+        )));
+
+        if (in_array('FOLLOW_REQUEST', $adHocActions, true)) {
+            $state['warmup_follow_request_sent'] = true;
+            $state['warmup_follow_request_completed'] = true;
+            $state['follow_status'] = $state['follow_status'] ?? 'requested';
+            $state['follow_request_sent_at'] = $state['follow_request_sent_at'] ?? $now->toIso8601String();
+            $state['follow_last_logged_at'] = $now->toIso8601String();
+        }
+
+        if (in_array('COMMENT_ON_POST', $adHocActions, true)) {
+            $profile->comment_attempted_at = $profile->comment_attempted_at ?: $now;
+            $state['warmup_comment_completed'] = true;
+            $state['comment_last_logged_at'] = $now->toIso8601String();
+        }
 
         if ($status === 'SKIPPED') {
             $profile->last_task_outcome = $skipReason !== '' ? $skipReason : 'skipped';
