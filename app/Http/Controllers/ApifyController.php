@@ -644,8 +644,8 @@ public function mergeEnrichedToCreators(Request $request)
     ]);
 
     $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
-    $tasks = $this->taskQueue->listTasks($sheetId);
     $queueHealth = $this->taskQueue->queueHealth($sheetId);
+    $tasks = $this->taskQueue->listTasks($sheetId);
 
     return response()->json([
         'message' => 'Tasks fetched',
