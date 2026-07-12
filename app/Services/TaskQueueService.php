@@ -749,7 +749,12 @@ class TaskQueueService
             })
             ->values();
 
-        if (in_array($requestedTaskType, ['DM_INVITE', 'EMAIL_SEND', 'DM_FOLLOWUP', 'COMMENT_ON_POST'], true)) {
+        if (in_array($requestedTaskType, ['DM_INVITE', 'EMAIL_SEND', 'DM_FOLLOWUP'], true)) {
+            return $sorted->first(fn (Task $task) => $task->task_type === $requestedTaskType)
+                ?: $sorted->first(fn (Task $task) => in_array((string) $task->task_type, ['DM_INVITE', 'EMAIL_SEND', 'DM_FOLLOWUP'], true));
+        }
+
+        if ($requestedTaskType === 'COMMENT_ON_POST') {
             return $sorted->first(fn (Task $task) => $task->task_type === $requestedTaskType);
         }
 
@@ -909,6 +914,8 @@ class TaskQueueService
             }
         }
 
+        $hasExplicitSentMessage = array_key_exists('message_draft', $payload) && trim((string) $payload['message_draft']) !== '';
+
         if (array_key_exists('message_draft', $payload) && $payload['message_draft'] !== null) {
             $task->message_draft = (string) $payload['message_draft'];
         }
@@ -996,7 +1003,8 @@ class TaskQueueService
                 $skipReasonDetail,
                 $completedAdHocActions !== [] ? 'Also completed: ' . implode(', ', $completedAdHocActions) : '',
             ]))),
-            'Message_Text' => (string) ($task->message_draft ?: ''),
+            'Message_Text' => $hasExplicitSentMessage ? (string) ($task->message_draft ?: '') : '',
+            'Use_Task_Draft_As_Message' => $hasExplicitSentMessage,
         ]);
 
         $refreshedQueueHealth = $this->queueHealth($sheetId);

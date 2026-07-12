@@ -73,9 +73,10 @@ class OutreachLogService
                 $task = $this->findTask($project->id, $payload);
                 $profile = $this->findCreatorProfile($project->id, $record['Platform'], $record['Handle'], $payload, $task);
                 $template = $this->findMessageTemplate($project->id, (string) $record['Template_ID']);
+                $useTaskDraftAsMessage = filter_var($payload['Use_Task_Draft_As_Message'] ?? false, FILTER_VALIDATE_BOOLEAN);
                 $messageText = $record['Message_Text'] !== ''
                     ? $record['Message_Text']
-                    : trim((string) ($task?->message_draft ?: ''));
+                    : ($useTaskDraftAsMessage ? trim((string) ($task?->message_draft ?: '')) : '');
 
                 $event = OutreachEvent::updateOrCreate(
                     [

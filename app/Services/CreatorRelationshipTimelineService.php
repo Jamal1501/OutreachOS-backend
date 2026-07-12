@@ -199,17 +199,6 @@ class CreatorRelationshipTimelineService
                 }
             }
 
-            if (empty($metadata['message_text'])) {
-                $messageText = trim((string) ($event->task?->message_draft ?: ''));
-                if ($messageText !== '') {
-                    $metadata['message_text'] = $messageText;
-                    $metadata['message_direction'] = $this->conversationDirection($this->normalizeEventType((string) $event->event_type)) ?: 'outbound';
-                    $event->metadata = $metadata;
-                    $snapshotted++;
-                    $dirty = true;
-                }
-            }
-
             if ($dirty) {
                 $event->save();
             }
@@ -282,10 +271,6 @@ class CreatorRelationshipTimelineService
         $metadataText = trim((string) ($metadata['message_text'] ?? ''));
         if ($metadataText !== '') {
             return $metadataText;
-        }
-
-        if ($direction === 'outbound') {
-            return trim((string) ($event->task?->message_draft ?: ''));
         }
 
         $notes = trim((string) ($event->notes ?: ''));
