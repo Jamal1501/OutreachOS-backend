@@ -1200,8 +1200,8 @@ class WorkspaceBillingService
     {
         return match ($planId) {
             'free' => ['small test batch', 'pay-as-you-go top-ups', 'single workspace'],
-            'pro' => ['up to 5,000 discovered profiles', 'up to 1,250 review-ready profiles', '250 AI drafts or follow-ups', 'team workspace'],
-            'enterprise' => ['up to 10,000 discovered profiles', 'up to 2,500 review-ready profiles', '800 AI drafts or follow-ups', 'priority support'],
+            'pro' => ['$119 monthly usage included', 'usually covers up to 5,000 discovered profiles', 'up to 1,250 review-ready profiles', '250 AI drafts or follow-ups', 'team workspace'],
+            'enterprise' => ['$299 monthly usage included', 'usually covers up to 10,000 discovered profiles', 'up to 2,500 review-ready profiles', '800 AI drafts or follow-ups', 'priority support'],
             default => $features,
         };
     }
