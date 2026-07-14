@@ -99,6 +99,7 @@ public function getJobState(string $jobId): ?array
             'criteria' => $result['criteria'] ?? Arr::get($run->request_payload, 'criteria'),
             'filterSummary' => $result['filterSummary'] ?? null,
             'brief' => $result['brief'] ?? Arr::get($run->request_payload, 'brief'),
+            'usageSummary' => $result['usageSummary'] ?? null,
             'resultsPreviewReady' => (bool) ($result['resultsPreviewReady'] ?? false),
             'createdAt' => optional($run->created_at)?->toDateTimeString(),
             'updatedAt' => optional($run->updated_at)?->toDateTimeString(),
@@ -164,6 +165,7 @@ public function getJobState(string $jobId): ?array
                 'runId' => $discovery->runId,
                 'datasetId' => $discovery->datasetId,
                 'itemCount' => $discovery->itemCount(),
+                'billing' => $this->providerBillingSummary($discovery),
             ];
             $this->completeStep($jobId, 'discovery_scrape', end($stepResults));
             $this->persistDiscoveryProviderResult($jobId, $projectId, $platform, $hashtags, $discoveryLimit, $enrichmentLimit, $dedupeAgainstCRM, $discovery);
@@ -226,6 +228,7 @@ public function getJobState(string $jobId): ?array
             ]);
 
             if (count($profiles) === 0) {
+                $usageSummary = $this->buildUsageSummary($stepResults, 0, 0);
                 $final = [
                     'message' => 'Pipeline complete',
                     'status' => 'completed',
@@ -236,6 +239,7 @@ public function getJobState(string $jobId): ?array
                     'criteria' => $criteria !== [] ? $criteria : null,
                     'filterSummary' => null,
                     'brief' => $brief !== '' ? $brief : null,
+                    'usageSummary' => $usageSummary,
                 ];
 
                 $this->updateJob($jobId, [
@@ -246,6 +250,7 @@ public function getJobState(string $jobId): ?array
                     'totalCreators' => 0,
                     'failedStep' => null,
                     'filterSummary' => null,
+                    'usageSummary' => $usageSummary,
                     'result' => $final,
                 ]);
 
@@ -271,6 +276,7 @@ public function getJobState(string $jobId): ?array
                 'runId' => $enrichment->runId,
                 'datasetId' => $enrichment->datasetId,
                 'itemCount' => $enrichment->itemCount(),
+                'billing' => $this->providerBillingSummary($enrichment),
             ];
             $this->completeStep($jobId, 'enrichment_scrape', end($stepResults));
             $this->finishEnrichmentJob($enrichmentJobId, $enrichment);
@@ -305,6 +311,7 @@ public function getJobState(string $jobId): ?array
             ];
             $this->completeStep($jobId, 'import_profiles', end($stepResults));
             $this->avatarCache->warmManyAfterResponse(array_column($creators, 'avatarUrl'), 25);
+            $usageSummary = $this->buildUsageSummary($stepResults, count($creators), $filterSummary['inputCount'] ?? count($profiles));
 
             $final = [
                 'message' => 'Pipeline complete',
@@ -316,6 +323,7 @@ public function getJobState(string $jobId): ?array
                 'criteria' => $criteria !== [] ? $criteria : null,
                 'filterSummary' => $filterSummary,
                 'brief' => $brief !== '' ? $brief : null,
+                'usageSummary' => $usageSummary,
             ];
 
             $this->updateJob($jobId, [
@@ -326,6 +334,7 @@ public function getJobState(string $jobId): ?array
                 'totalCreators' => count($creators),
                 'failedStep' => null,
                 'filterSummary' => $filterSummary,
+                'usageSummary' => $usageSummary,
                 'result' => $final,
             ]);
 
@@ -343,12 +352,15 @@ public function getJobState(string $jobId): ?array
                 $this->failEnrichmentJob((string) $state['enrichmentJobId'], $exception->getMessage());
             }
 
+            $usageSummary = $this->buildUsageSummary($stepResults, 0, 0);
+
             $this->updateJob($jobId, [
                 'status' => 'failed',
                 'failedStep' => $failedStep,
                 'error' => $exception->getMessage(),
                 'steps' => $stepResults,
                 'currentStep' => $failedStep,
+                'usageSummary' => $usageSummary,
                 'result' => [
                     'message' => 'Pipeline failed',
                     'status' => 'failed',
@@ -359,6 +371,7 @@ public function getJobState(string $jobId): ?array
                     'criteria' => $criteria !== [] ? $criteria : null,
                     'filterSummary' => null,
                     'brief' => $brief !== '' ? $brief : null,
+                    'usageSummary' => $usageSummary,
                 ],
             ]);
 
@@ -380,6 +393,67 @@ public function getJobState(string $jobId): ?array
             'completedSteps' => $completed,
             'steps' => $steps,
         ]);
+    }
+
+    private function providerBillingSummary(object $result): array
+    {
+        $billing = is_array($result->billing ?? null) ? $result->billing : [];
+
+        return [
+            'usageEventId' => $billing['usageEventId'] ?? null,
+            'creditBucket' => $billing['creditBucket'] ?? null,
+            'creditCost' => is_numeric($billing['creditCost'] ?? null) ? (int) $billing['creditCost'] : null,
+            'units' => is_numeric($billing['units'] ?? null) ? (int) $billing['units'] : null,
+            'providerCostUsd' => is_numeric($billing['providerCostUsd'] ?? null) ? round((float) $billing['providerCostUsd'], 6) : null,
+            'providerCostSource' => $billing['providerCostSource'] ?? null,
+            'remainingBalanceAfterReservation' => is_numeric($billing['remainingBalanceAfterReservation'] ?? null)
+                ? (int) $billing['remainingBalanceAfterReservation']
+                : null,
+        ];
+    }
+
+    private function buildUsageSummary(array $steps, int $qualifiedCreators, int $candidateCreators): array
+    {
+        $scrapeCredits = 0;
+        $aiCredits = 0;
+        $providerCostUsd = 0.0;
+        $providerCostKnown = false;
+        $usageEventIds = [];
+
+        foreach ($steps as $step) {
+            $billing = is_array($step['billing'] ?? null) ? $step['billing'] : [];
+            $creditCost = is_numeric($billing['creditCost'] ?? null) ? (int) $billing['creditCost'] : 0;
+            $bucket = (string) ($billing['creditBucket'] ?? 'scrape');
+
+            if ($bucket === 'ai') {
+                $aiCredits += $creditCost;
+            } else {
+                $scrapeCredits += $creditCost;
+            }
+
+            if (!empty($billing['usageEventId'])) {
+                $usageEventIds[] = (string) $billing['usageEventId'];
+            }
+
+            if (is_numeric($billing['providerCostUsd'] ?? null)) {
+                $providerCostUsd += (float) $billing['providerCostUsd'];
+                $providerCostKnown = true;
+            }
+        }
+
+        $totalCredits = $scrapeCredits + $aiCredits;
+
+        return [
+            'scrapeCredits' => $scrapeCredits,
+            'aiCredits' => $aiCredits,
+            'totalCredits' => $totalCredits,
+            'providerCostUsdInternal' => $providerCostKnown ? round($providerCostUsd, 6) : null,
+            'qualifiedCreators' => max(0, $qualifiedCreators),
+            'candidateCreators' => max(0, $candidateCreators),
+            'creditsPerQualifiedCreator' => $qualifiedCreators > 0 ? round($totalCredits / $qualifiedCreators, 2) : null,
+            'providerCostPerQualifiedCreatorUsdInternal' => ($providerCostKnown && $qualifiedCreators > 0) ? round($providerCostUsd / $qualifiedCreators, 6) : null,
+            'usageEventIds' => array_values(array_unique($usageEventIds)),
+        ];
     }
 
     private function updateJob(string $jobId, array $changes): void
@@ -445,6 +519,7 @@ public function getJobState(string $jobId): ?array
         'criteria' => $state['criteria'] ?? Arr::get($state, 'request.criteria'),
         'filterSummary' => $state['filterSummary'] ?? null,
         'brief' => $state['brief'] ?? Arr::get($state, 'request.brief'),
+        'usageSummary' => $state['usageSummary'] ?? null,
         'resultsPreviewReady' => (bool) ($state['resultsPreviewReady'] ?? false),
     ],
     is_array($state['result'] ?? null) ? $state['result'] : []

@@ -165,6 +165,7 @@ class PipelineController extends Controller
             'criteria' => $state['criteria'] ?? null,
             'filterSummary' => $state['filterSummary'] ?? null,
             'brief' => $state['brief'] ?? null,
+            'usageSummary' => $state['usageSummary'] ?? null,
         ]);
     }
 

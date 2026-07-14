@@ -32,6 +32,7 @@ class ApifyRunExecutor
         }
 
         $usageReservationId = null;
+        $usageReservation = null;
         $moduleKey = isset($context['moduleKey']) ? trim((string) $context['moduleKey']) : null;
         $workspaceId = isset($context['workspaceId']) ? trim((string) $context['workspaceId']) : null;
         $maxTotalChargeUsd = isset($context['maxTotalChargeUsd']) && is_numeric($context['maxTotalChargeUsd'])
@@ -54,6 +55,7 @@ class ApifyRunExecutor
                     input: $input,
                     maxChargeUsd: $maxTotalChargeUsd,
                 );
+                $usageReservation = $reservation;
                 $usageReservationId = $reservation['usage_event_id'] ?? null;
             }
 
@@ -144,6 +146,15 @@ class ApifyRunExecutor
                 responsePayload: [
                     'start' => $startData,
                     'run' => $runData,
+                ],
+                billing: [
+                    'usageEventId' => $usageReservationId,
+                    'creditBucket' => $usageReservation['credit_bucket'] ?? null,
+                    'creditCost' => $usageReservation['credit_cost'] ?? null,
+                    'units' => $usageReservation['units'] ?? null,
+                    'providerCostUsd' => $actualProviderCostUsd,
+                    'providerCostSource' => $actualProviderCostUsd !== null ? 'apify_run_usage' : 'apify_run_cost_unavailable',
+                    'remainingBalanceAfterReservation' => $usageReservation['remaining_balance'] ?? null,
                 ],
             );
         } catch (InsufficientCreditsException $exception) {

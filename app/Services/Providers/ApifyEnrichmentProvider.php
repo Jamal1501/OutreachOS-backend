@@ -64,6 +64,7 @@ class ApifyEnrichmentProvider implements EnrichmentProvider
             items: count($result->items) > $limit ? array_slice($result->items, 0, $limit) : $result->items,
             requestPayload: $result->requestPayload,
             responsePayload: $result->responsePayload,
+            billing: $result->billing,
         );
     }
 }

@@ -1199,9 +1199,9 @@ class WorkspaceBillingService
     private function publicPlanFeatures(string $planId, array $features): array
     {
         return match ($planId) {
-            'free' => ['welcome credits', 'pay-as-you-go top-ups', 'single workspace'],
-            'pro' => ['team workspace', 'monthly reset credits', 'standard enrichment', 'basic analytics'],
-            'enterprise' => ['team workspace', 'monthly reset credits', 'advanced analytics', 'priority support', 'discounted top-ups'],
+            'free' => ['small test batch', 'pay-as-you-go top-ups', 'single workspace'],
+            'pro' => ['up to 5,000 discovered profiles', 'up to 1,250 review-ready profiles', '250 AI drafts or follow-ups', 'team workspace'],
+            'enterprise' => ['up to 10,000 discovered profiles', 'up to 2,500 review-ready profiles', '800 AI drafts or follow-ups', 'priority support'],
             default => $features,
         };
     }

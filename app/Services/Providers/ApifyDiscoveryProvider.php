@@ -44,6 +44,7 @@ class ApifyDiscoveryProvider implements DiscoveryProvider
             items: $trimmedItems,
             requestPayload: $result->requestPayload,
             responsePayload: $result->responsePayload,
+            billing: $result->billing,
         );
     }
 }
