@@ -23,10 +23,14 @@ return new class extends Migration
             ],
         ];
 
+        $hasUpdatedAt = Schema::hasColumn('plans', 'updated_at');
+
         foreach ($plans as $planId => $values) {
-            DB::table('plans')->where('id', $planId)->update(array_merge($values, [
-                'updated_at' => now(),
-            ]));
+            if ($hasUpdatedAt) {
+                $values['updated_at'] = now();
+            }
+
+            DB::table('plans')->where('id', $planId)->update($values);
         }
 
         if (!Schema::hasTable('workspace_credit_wallets') || !Schema::hasTable('workspace_subscriptions')) {
@@ -67,16 +71,24 @@ return new class extends Migration
             return;
         }
 
-        DB::table('plans')->where('id', 'pro')->update([
+        $hasUpdatedAt = Schema::hasColumn('plans', 'updated_at');
+
+        $proValues = [
             'monthly_scrape_credits' => 3500,
             'monthly_ai_credits' => 250,
-            'updated_at' => now(),
-        ]);
+        ];
 
-        DB::table('plans')->where('id', 'enterprise')->update([
+        $enterpriseValues = [
             'monthly_scrape_credits' => 12000,
             'monthly_ai_credits' => 1200,
-            'updated_at' => now(),
-        ]);
+        ];
+
+        if ($hasUpdatedAt) {
+            $proValues['updated_at'] = now();
+            $enterpriseValues['updated_at'] = now();
+        }
+
+        DB::table('plans')->where('id', 'pro')->update($proValues);
+        DB::table('plans')->where('id', 'enterprise')->update($enterpriseValues);
     }
 };
