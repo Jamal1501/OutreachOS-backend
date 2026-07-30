@@ -28,7 +28,7 @@ class PipelineController extends Controller
             'hashtags' => ['required', 'array', 'min:1', 'max:20'],
             'hashtags.*' => ['string', 'max:80'],
             'discoveryLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
-            'enrichmentLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
+            'enrichmentLimit' => ['nullable', 'integer', 'min:1', 'max:5000'],
             'dedupeAgainstCRM' => ['nullable', 'boolean'],
             'rankingMetric' => ['nullable', 'string', Rule::in(['none', 'views_desc', 'views_asc', 'likes_desc', 'likes_asc', 'comments_desc', 'comments_asc', 'shares_desc', 'shares_asc'])],
             'wait' => ['nullable', 'boolean'],
@@ -65,7 +65,7 @@ class PipelineController extends Controller
             'brief' => ['required', 'string', 'min:8', 'max:5000'],
             'projectContext' => ['nullable', 'string', 'max:5000'],
             'discoveryLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
-            'enrichmentLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
+            'enrichmentLimit' => ['nullable', 'integer', 'min:1', 'max:5000'],
             'dedupeAgainstCRM' => ['nullable', 'boolean'],
             'rankingMetric' => ['nullable', 'string', Rule::in(['none', 'views_desc', 'views_asc', 'likes_desc', 'likes_asc', 'comments_desc', 'comments_asc', 'shares_desc', 'shares_asc'])],
             'wait' => ['nullable', 'boolean'],
@@ -104,7 +104,7 @@ class PipelineController extends Controller
         $validated = $request->validate([
             'platform' => ['required', 'string', Rule::in(['instagram', 'tiktok'])],
             'discoveryLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
-            'enrichmentLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
+            'enrichmentLimit' => ['nullable', 'integer', 'min:1', 'max:5000'],
             'hashtags' => ['nullable', 'array', 'max:20'],
             'hashtags.*' => ['string', 'max:80'],
             'seedCount' => ['nullable', 'integer', 'min:1', 'max:50'],
@@ -193,6 +193,9 @@ class PipelineController extends Controller
         $importedPosts = $this->numericProgressValue($stepPayloads['import_posts']['importedRows'] ?? null);
         $uniqueProfiles = $this->numericProgressValue($stepPayloads['extract_urls']['uniqueProfiles'] ?? null);
         $enrichedProfiles = $this->numericProgressValue($stepPayloads['enrichment_scrape']['itemCount'] ?? null);
+        $enrichmentProgress = is_array($state['enrichmentProgress'] ?? null) ? $state['enrichmentProgress'] : [];
+        $batchedEnrichedProfiles = $this->numericProgressValue($enrichmentProgress['completedProfiles'] ?? null);
+        $batchedTotalProfiles = $this->numericProgressValue($enrichmentProgress['totalProfiles'] ?? null);
         $readyCreators = $status === 'completed'
             ? (int) ($state['totalCreators'] ?? count($creators))
             : null;
@@ -231,8 +234,11 @@ class PipelineController extends Controller
                 'status' => $this->progressStageStatus('enrichment_scrape', $currentStep, $completedSteps, $status),
                 'detail' => $enrichedProfiles !== null
                     ? $enrichedProfiles . ' profiles enriched'
-                    : 'Enriching up to ' . min($enrichmentLimit, max($uniqueProfiles ?? $enrichmentLimit, 1)) . ' selected profiles',
-                'count' => $enrichedProfiles,
+                    : ($batchedEnrichedProfiles !== null && $batchedTotalProfiles !== null
+                        ? $batchedEnrichedProfiles . ' of ' . $batchedTotalProfiles . ' profiles enriched'
+                        : 'Enriching up to ' . min($enrichmentLimit, max($uniqueProfiles ?? $enrichmentLimit, 1)) . ' selected profiles'
+                    ),
+                'count' => $enrichedProfiles ?? $batchedEnrichedProfiles,
             ],
             [
                 'key' => 'import_profiles',

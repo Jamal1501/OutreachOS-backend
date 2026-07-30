@@ -44,7 +44,8 @@ return [
 
     'apify' => [
         'token' => env('APIFY_API_TOKEN'),
-        'default_max_total_charge_usd' => env('APIFY_DEFAULT_MAX_TOTAL_CHARGE_USD'),
+        'default_max_total_charge_usd' => env('APIFY_DEFAULT_MAX_TOTAL_CHARGE_USD', 5.00),
+        'max_charge_hard_ceiling_usd' => env('APIFY_MAX_CHARGE_HARD_CEILING_USD', 10.00),
         'actors' => [
             'instagram_discovery' => env('APIFY_ACTOR_INSTAGRAM_DISCOVERY'),
             'tiktok_discovery' => env('APIFY_ACTOR_TIKTOK_DISCOVERY'),

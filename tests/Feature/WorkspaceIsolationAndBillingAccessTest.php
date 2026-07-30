@@ -287,7 +287,7 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
         $this->assertSame(1, DB::table('stripe_webhook_events')->where('stripe_event_id', 'evt_subscription_deleted_without_metadata')->where('status', 'processed')->count());
     }
 
-    public function test_expired_free_trial_zeroes_included_credits(): void
+    public function test_legacy_trial_becomes_non_expiring_evaluation_without_refilling_credits(): void
     {
         [, $workspace] = $this->createWorkspaceForRole('owner');
         $billing = app(WorkspaceBillingService::class);
@@ -307,11 +307,16 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
 
         $summary = $billing->summary($workspace->id);
 
-        $this->assertSame('trial_expired', DB::table('workspace_subscriptions')->where('id', $subscription->id)->value('status'));
-        $this->assertSame(0, (int) DB::table('workspace_credit_wallets')->where('id', $wallet->id)->value('scrape_credits_balance'));
-        $this->assertSame(0, (int) DB::table('workspace_credit_wallets')->where('id', $wallet->id)->value('ai_credits_balance'));
+        $this->assertSame('active', DB::table('workspace_subscriptions')->where('id', $subscription->id)->value('status'));
+        $this->assertNull(DB::table('workspace_subscriptions')->where('id', $subscription->id)->value('trial_ends_at'));
+        $this->assertSame(50, (int) DB::table('workspace_credit_wallets')->where('id', $wallet->id)->value('scrape_credits_balance'));
+        $this->assertSame(10, (int) DB::table('workspace_credit_wallets')->where('id', $wallet->id)->value('ai_credits_balance'));
         $this->assertSame(5, (int) ($summary['wallet']['bonusScrapeCredits'] ?? 0));
         $this->assertSame(2, (int) ($summary['wallet']['bonusAiCredits'] ?? 0));
+        $this->assertSame((string) $workspace->owner_id, $summary['billingAccount']['ownerUserId']);
+        $this->assertSame((string) $workspace->id, $summary['billingAccount']['primaryWorkspaceId']);
+        $this->assertSame('free', $summary['billingAccount']['planId']);
+        $this->assertSame('shared_account', $summary['billingAccount']['billingScope']);
     }
 
     public function test_pipeline_estimate_flags_insufficient_scrape_credits(): void

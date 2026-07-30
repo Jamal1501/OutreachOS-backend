@@ -35,9 +35,12 @@ class ApifyRunExecutor
         $usageReservation = null;
         $moduleKey = isset($context['moduleKey']) ? trim((string) $context['moduleKey']) : null;
         $workspaceId = isset($context['workspaceId']) ? trim((string) $context['workspaceId']) : null;
-        $maxTotalChargeUsd = isset($context['maxTotalChargeUsd']) && is_numeric($context['maxTotalChargeUsd'])
-            ? (float) $context['maxTotalChargeUsd']
-            : (config('services.apify.default_max_total_charge_usd') !== null ? (float) config('services.apify.default_max_total_charge_usd') : null);
+        $billingManagedExternally = trim((string) ($context['externalUsageReservationId'] ?? '')) !== '';
+        if ($workspaceId && $moduleKey) {
+            $module = $this->scrapers->resolveExecution($moduleKey, $actorKey, $actorId, $this->billing->currentPlanId($workspaceId));
+            $this->scrapers->assertWithinExecutionLimit($module, $input);
+        }
+        $maxTotalChargeUsd = $this->scrapers->providerChargeLimitUsd($moduleKey, $actorKey, $actorId, $input);
 
         $query = array_filter([
             'maxTotalChargeUsd' => $maxTotalChargeUsd,
@@ -46,7 +49,7 @@ class ApifyRunExecutor
         ], fn ($value) => $value !== null && $value !== '');
 
         try {
-            if ($workspaceId && $moduleKey) {
+            if ($workspaceId && $moduleKey && !$billingManagedExternally) {
                 $reservation = $this->billing->reserveApify(
                     workspaceId: $workspaceId,
                     moduleKey: $moduleKey,

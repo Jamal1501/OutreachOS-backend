@@ -31,33 +31,33 @@ class WorkspaceBillingService
 
     private const DEFAULT_PLAN_PRICES_CENTS = [
         'free' => 0,
-        'pro' => 11900,
-        'enterprise' => 29900,
+        'pro' => 14900,
+        'enterprise' => 39900,
     ];
 
     private const DEFAULT_CREDIT_PACKAGES = [
         [
             'id' => '11111111-1111-4111-8111-111111111111',
-            'name' => 'Starter Top-up',
+            'name' => 'Extra Workflow Pack',
             'scrape_credits' => 500,
             'ai_credits' => 50,
-            'price_usd' => 19.00,
-            'allowed_plan_ids' => ['free', 'pro', 'enterprise'],
+            'price_usd' => 15.00,
+            'allowed_plan_ids' => ['pro', 'enterprise'],
         ],
         [
             'id' => '22222222-2222-4222-8222-222222222222',
-            'name' => 'Growth Top-up',
+            'name' => 'Growth Workflow Pack',
             'scrape_credits' => 2000,
             'ai_credits' => 250,
-            'price_usd' => 69.00,
-            'allowed_plan_ids' => ['free', 'pro', 'enterprise'],
+            'price_usd' => 49.00,
+            'allowed_plan_ids' => ['pro', 'enterprise'],
         ],
         [
             'id' => '33333333-3333-4333-8333-333333333333',
-            'name' => 'Scale Top-up',
+            'name' => 'Scale Workflow Pack',
             'scrape_credits' => 6000,
             'ai_credits' => 800,
-            'price_usd' => 179.00,
+            'price_usd' => 119.00,
             'allowed_plan_ids' => ['pro', 'enterprise'],
         ],
     ];
@@ -90,11 +90,6 @@ class WorkspaceBillingService
                 'billingScope' => 'shared_account',
             ],
             'currentPlanId' => $currentPlanId,
-            'billingAccount' => [
-                'id' => (string) $billingAccount->id,
-                'name' => (string) $billingAccount->name,
-                'billingScope' => 'shared_account',
-            ],
             'planState' => $this->planState($workspaceId, $subscription, $currentPlanId),
             'subscription' => [
                 'planId' => $currentPlanId,
@@ -118,7 +113,6 @@ class WorkspaceBillingService
                 'consumedAiCredits' => (int) ($usage['consumedAiCredits'] ?? 0),
                 'estimatedCreditSpendUsd' => (float) ($usage['estimatedCreditSpendUsd'] ?? 0),
                 'estimatedOutreachInvestmentUsd' => (float) ($usage['estimatedOutreachInvestmentUsd'] ?? 0),
-                'providerCostUsdInternal' => (float) ($usage['providerCostUsdInternal'] ?? 0),
                 'customerCreditValue' => $usage['customerCreditValue'] ?? $this->customerCreditValueForPlan($currentPlanId),
                 'scope' => 'billing_account',
             ],
@@ -144,9 +138,9 @@ class WorkspaceBillingService
 
         $allowedCatalogPlanIds = ['free', 'pro', 'enterprise'];
         $planDisplayNames = [
-            'free' => 'Free',
+            'free' => 'Evaluation',
             'pro' => 'Pro',
-            'enterprise' => 'Enterprise',
+            'enterprise' => 'Agency',
         ];
 
         $plans = DB::table('plans')
@@ -224,7 +218,7 @@ class WorkspaceBillingService
                     'currentPlanMultiplier' => $multiplier,
                     'freeMultiplier' => 1.25,
                     'proMultiplier' => 1.0,
-                    'enterpriseMultiplier' => 0.8,
+                    'enterpriseMultiplier' => 1.0,
                 ],
             ],
         ];
@@ -392,10 +386,10 @@ class WorkspaceBillingService
                     'workspace_id' => $canonicalWorkspaceId,
                     'billing_account_id' => $billingAccountId,
                     'plan_id' => $accountPlanId,
-                    'status' => $accountPlanId === 'free' ? 'trialing' : 'active',
+                    'status' => 'active',
                     'current_period_start' => $now,
                     'current_period_end' => $now->addMonth(),
-                    'trial_ends_at' => $accountPlanId === 'free' ? $now->addDays((int) config('outreach.billing.trial_days', 14)) : null,
+                    'trial_ends_at' => null,
                     'metadata' => $accountPlanId === 'free'
                         ? ['bootstrap' => true, 'billing_scope' => 'shared_account']
                         : ['bootstrap' => true, 'billing_scope' => 'shared_account', 'last_refill_period_key' => $now->toIso8601String()],
@@ -697,7 +691,6 @@ class WorkspaceBillingService
         return [
             'consumedScrapeCredits' => $scrapeCredits,
             'consumedAiCredits' => $aiCredits,
-            'providerCostUsdInternal' => round((float) ($usage->provider_cost_usd_internal ?? 0), 4),
             'estimatedCreditSpendUsd' => $estimatedCreditSpendUsd,
             'estimatedOutreachInvestmentUsd' => $estimatedCreditSpendUsd,
             'customerCreditValue' => $customerCreditValue,
@@ -739,7 +732,6 @@ class WorkspaceBillingService
                 'consumedScrapeCredits' => $scrape,
                 'consumedAiCredits' => $ai,
                 'estimatedCreditSpendUsd' => $this->estimateCustomerCreditSpendUsd($scrape, $ai, $customerCreditValue),
-                'providerCostUsdInternal' => round((float) ($row->provider_cost_usd_internal ?? 0), 4),
             ];
         })->values()->all();
     }
@@ -749,8 +741,8 @@ class WorkspaceBillingService
         $planId = $this->normalizePlanId($planId);
         $plan = $this->resolvePlan($planId);
         $multiplier = max(0.1, (float) Arr::get($plan, 'topup_price_multiplier', match ($planId) {
-            'free' => 1.25,
-            'enterprise' => 0.8,
+            'free' => 1.0,
+            'enterprise' => 1.0,
             default => 1.0,
         }));
 
@@ -811,7 +803,7 @@ class WorkspaceBillingService
     {
         $planId = $this->normalizePlanId($planId);
         if ($planId === 'free') {
-            throw new RuntimeException('Free plan does not require checkout.');
+            throw new RuntimeException('Evaluation access does not require checkout.');
         }
 
         $plan = $this->resolvePlan($planId);
@@ -1003,23 +995,13 @@ class WorkspaceBillingService
         $walletChanged = false;
 
         if ($planId === 'free') {
-            if (!$subscription->trial_ends_at) {
-                $subscription->trial_ends_at = $now->addDays((int) config('outreach.billing.trial_days', 14));
+            if ($subscription->trial_ends_at !== null) {
+                $subscription->trial_ends_at = null;
                 $subscriptionChanged = true;
             }
-            if ($subscription->status === '' || $subscription->status === 'active') {
-                $subscription->status = 'trialing';
+            if (in_array($subscription->status, ['', 'trialing', 'trial_expired'], true)) {
+                $subscription->status = 'active';
                 $subscriptionChanged = true;
-            }
-
-            $trialEndsAt = $subscription->trial_ends_at ? CarbonImmutable::instance($subscription->trial_ends_at) : null;
-            if ($trialEndsAt && $now->greaterThanOrEqualTo($trialEndsAt) && $subscription->status !== 'trial_expired') {
-                $subscription->status = 'trial_expired';
-                $wallet->scrape_credits_balance = 0;
-                $wallet->ai_credits_balance = 0;
-                $metadata['trial_expired_at'] = $now->toIso8601String();
-                $subscriptionChanged = true;
-                $walletChanged = true;
             }
         } else {
             if (!$subscription->current_period_start) {
@@ -1199,9 +1181,9 @@ class WorkspaceBillingService
     private function publicPlanFeatures(string $planId, array $features): array
     {
         return match ($planId) {
-            'free' => ['small test batch', 'pay-as-you-go top-ups', 'single workspace'],
-            'pro' => ['$119 monthly usage included', 'usually covers up to 5,000 discovered profiles', 'up to 1,250 review-ready profiles', '250 AI drafts or follow-ups', 'team workspace'],
-            'enterprise' => ['$299 monthly usage included', 'usually covers up to 10,000 discovered profiles', 'up to 2,500 review-ready profiles', '800 AI drafts or follow-ups', 'priority support'],
+            'free' => ['one-time workflow evaluation', '100 discovery results', '20 profile enrichments', '5 AI drafts'],
+            'pro' => ['monthly discovery and enrichment capacity', 'up to 5,000 discovery results', 'up to 1,250 review-ready profiles', '250 AI drafts or follow-ups', 'team workspace'],
+            'enterprise' => ['shared capacity across client workspaces', 'up to 10,000 discovery results', 'up to 2,500 review-ready profiles', '800 AI drafts or follow-ups', 'priority support'],
             default => $features,
         };
     }
@@ -1294,9 +1276,9 @@ class WorkspaceBillingService
             'id' => $planId,
             'monthly_scrape_credits' => 0,
             'monthly_ai_credits' => 0,
-            'trial_scrape_credits' => 200,
-            'trial_ai_credits' => 20,
-            'topup_price_multiplier' => $planId === 'free' ? 1.25 : 1.0,
+            'trial_scrape_credits' => 25,
+            'trial_ai_credits' => 5,
+            'topup_price_multiplier' => 1.0,
         ];
     }
 

@@ -64,7 +64,7 @@ class ScraperRegistryService
         $enrichmentModule = $this->resolvePipelineModule($planId, $platform, 'enrichment', $enrichmentModuleKey);
 
         $effectiveDiscoveryLimit = $this->normalizeDiscoveryLimitForSeeds($discoveryLimit, $seedCount, $discoveryModule);
-        $effectiveEnrichmentLimit = $this->clampBatchSize($enrichmentLimit, $enrichmentModule);
+        $effectiveEnrichmentLimit = max(1, $enrichmentLimit);
 
 $discoveryEstimatePerSeed = $this->estimateCredits($discoveryModule['key'], null, null, [
     'resultsLimit' => $effectiveDiscoveryLimit,
@@ -194,6 +194,13 @@ return [
             return null;
         }
 
+        $configuredDefaultKey = trim((string) config("scrapers.defaults.{$platform}.{$stage}", ''));
+        foreach ($modules as $module) {
+            if ($configuredDefaultKey !== '' && $module['key'] === $configuredDefaultKey) {
+                return $module;
+            }
+        }
+
         usort($modules, fn (array $a, array $b) => $this->depthRank($b['depth']) <=> $this->depthRank($a['depth']));
 
         return $modules[0] ?? null;
@@ -299,6 +306,43 @@ return [
             'module_key' => $module['key'],
             'module' => $module,
         ];
+    }
+
+    public function providerChargeLimitUsd(?string $moduleKey, ?string $actorKey, ?string $actorId, array $input): float
+    {
+        $estimate = $this->estimateCredits($moduleKey, $actorKey, $actorId, $input);
+        $units = max(1, (int) ($estimate['units'] ?? 1));
+        $costClass = (string) ($estimate['cost_class'] ?? 'discovery_basic');
+
+        $calculated = match ($costClass) {
+            'profile_standard' => 0.25 + ($units * 0.03),
+            'content_deep', 'comments_deep' => 0.50 + ($units * 0.12),
+            default => 0.50 + ($units * 0.005),
+        };
+
+        $hardCeiling = max(0.50, (float) config('services.apify.max_charge_hard_ceiling_usd', 10.00));
+
+        return round(min($hardCeiling, max(0.50, $calculated)), 2);
+    }
+
+    public function assertWithinExecutionLimit(array $module, array $input): void
+    {
+        if (($module['stage'] ?? null) !== 'enrichment') {
+            return;
+        }
+
+        $estimate = $this->estimateCredits(
+            (string) ($module['key'] ?? ''),
+            (string) ($module['actorKey'] ?? ''),
+            (string) ($module['actorId'] ?? ''),
+            $input,
+        );
+        $targetCount = max(1, (int) ($estimate['units'] ?? 1));
+        $maximum = max(1, (int) ($module['maxBatchSize'] ?? 1));
+
+        if ($targetCount > $maximum) {
+            throw new RuntimeException("Enrichment batch exceeds the server limit of {$maximum} profiles.");
+        }
     }
 
     private function normalizeModule(array $module): array

@@ -32,9 +32,6 @@ public function createSubscriptionCheckoutSession(
     $customerId = $this->ensureStripeCustomer($workspaceId);
 
     $trialDays = 0;
-    if ($this->workspaceEligibleForPaidTrial($workspaceId, $config['id'])) {
-        $trialDays = in_array($config['id'], ['pro', 'enterprise'], true) ? 7 : 0;
-    }
 
     $payload = [
         'customer'               => $customerId,
@@ -64,9 +61,9 @@ public function createSubscriptionCheckoutSession(
                 'unit_amount' => $config['price_cents'],
                 'recurring'  => ['interval' => 'month'],
                 'product_data' => [
-                    'name'        => 'Social CORE ' . $config['name'],
+                    'name'        => 'Social CORE ' . ($config['id'] === 'enterprise' ? 'Agency' : $config['name']),
                     'description' => sprintf(
-                        '%d scrape credits and %d AI credits per month.',
+                        'Monthly discovery, enrichment and outreach capacity (%d workflow credits and %d AI drafts).',
                         $config['monthly_scrape_credits'],
                         $config['monthly_ai_credits'],
                     ),
@@ -74,10 +71,6 @@ public function createSubscriptionCheckoutSession(
             ],
         ]],
     ];
-
-    if ($trialDays > 0) {
-        $payload['subscription_data']['trial_period_days'] = $trialDays;
-    }
 
     $response = $this->request('POST', '/checkout/sessions', $payload);
     $this->observability->reportBillingEvent($workspaceId, 'subscription_checkout_created', [

@@ -78,7 +78,7 @@ return [
             'cost_class' => 'profile_standard',
             'actor_key' => 'instagram_profile',
             'target_sheet' => 'Instagram_Profile_Enriched',
-            'allowed_plans' => ['pro', 'enterprise'],
+            'allowed_plans' => ['free', 'pro', 'enterprise'],
             'default_batch_size' => 15,
             'max_batch_size' => 100,
             'fields' => [
@@ -101,7 +101,7 @@ return [
             'fields' => [
                 'recentPostImages', 'captions', 'hashtags', 'mentions', 'sponsoredHints', 'commentsSample', 'avgLikes', 'avgComments', 'postingFrequency',
             ],
-            'notes' => 'Enterprise-only deep pass for content patterns and fit signals.',
+            'notes' => 'Agency-only deep pass for content patterns and fit signals.',
         ],
         'tiktok.discovery.basic' => [
             'key' => 'tiktok.discovery.basic',
@@ -129,7 +129,7 @@ return [
             'cost_class' => 'profile_standard',
             'actor_key' => 'tiktok_profile',
             'target_sheet' => 'TikTok_Profile_Enriched',
-            'allowed_plans' => ['pro', 'enterprise'],
+            'allowed_plans' => ['free', 'pro', 'enterprise'],
             'default_batch_size' => 10,
             'max_batch_size' => 100,
             'fields' => [
@@ -152,7 +152,7 @@ return [
             'fields' => [
                 'commentsSample', 'commentLikes', 'replyCount', 'audienceQualityHints', 'sentimentHints',
             ],
-            'notes' => 'Enterprise-only audience quality pass using public TikTok comments.',
+            'notes' => 'Agency-only audience quality pass using public TikTok comments.',
         ],
     ],
 ];

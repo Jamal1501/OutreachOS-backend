@@ -65,6 +65,7 @@ class PipelineDiscoveryService
             'brief' => $payload['brief'] ?? null,
             'filterSummary' => null,
             'resultsPreviewReady' => false,
+            'enrichmentProgress' => null,
             'projectId' => $this->pipelineSyncEnabled() ? $this->projects->resolveByWorkbookId((string) $payload['sheetId'])->id : null,
             'createdAt' => now()->toDateTimeString(),
             'updatedAt' => now()->toDateTimeString(),
@@ -100,6 +101,7 @@ public function getJobState(string $jobId): ?array
             'filterSummary' => $result['filterSummary'] ?? null,
             'brief' => $result['brief'] ?? Arr::get($run->request_payload, 'brief'),
             'usageSummary' => $result['usageSummary'] ?? null,
+            'enrichmentProgress' => $result['enrichmentProgress'] ?? null,
             'resultsPreviewReady' => (bool) ($result['resultsPreviewReady'] ?? false),
             'createdAt' => optional($run->created_at)?->toDateTimeString(),
             'updatedAt' => optional($run->updated_at)?->toDateTimeString(),
@@ -267,6 +269,16 @@ public function getJobState(string $jobId): ?array
                 'workspaceId' => $payload['workspaceId'] ?? null,
                 'planId' => $payload['planId'] ?? 'free',
                 'moduleKey' => $payload['enrichmentModuleKey'] ?? null,
+                'onBatchProgress' => function (int $completedProfiles, int $totalProfiles, int $completedBatches, int $totalBatches) use ($jobId) {
+                    $this->updateJob($jobId, [
+                        'enrichmentProgress' => [
+                            'completedProfiles' => $completedProfiles,
+                            'totalProfiles' => $totalProfiles,
+                            'completedBatches' => $completedBatches,
+                            'totalBatches' => $totalBatches,
+                        ],
+                    ]);
+                },
             ]);
             $enrichmentItems = $enrichment->items;
             $stepResults[] = [
@@ -447,11 +459,9 @@ public function getJobState(string $jobId): ?array
             'scrapeCredits' => $scrapeCredits,
             'aiCredits' => $aiCredits,
             'totalCredits' => $totalCredits,
-            'providerCostUsdInternal' => $providerCostKnown ? round($providerCostUsd, 6) : null,
             'qualifiedCreators' => max(0, $qualifiedCreators),
             'candidateCreators' => max(0, $candidateCreators),
             'creditsPerQualifiedCreator' => $qualifiedCreators > 0 ? round($totalCredits / $qualifiedCreators, 2) : null,
-            'providerCostPerQualifiedCreatorUsdInternal' => ($providerCostKnown && $qualifiedCreators > 0) ? round($providerCostUsd / $qualifiedCreators, 6) : null,
             'usageEventIds' => array_values(array_unique($usageEventIds)),
         ];
     }
@@ -882,7 +892,7 @@ private function selectProfilesFromRankedPosts(
             return $base;
         }
 
-        return min(max($base * 2, $base + 20), 120);
+        return min(max($base * 2, $base + 20), 5000);
     }
 
     private function passesDiscoveryThresholds(array $item, array $criteria): bool

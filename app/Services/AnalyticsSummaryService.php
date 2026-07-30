@@ -248,7 +248,7 @@ class AnalyticsSummaryService
                 'creatorsContacted' => 'Unique creators with at least one confirmed outbound send event in the selected range.',
                 'repliesReceived' => 'Confirmed reply events in the selected range.',
                 'lifecycleCounts' => 'Current creator workflow stages, not historical totals.',
-                'estimatedOutreachInvestment' => 'Customer-facing estimate from credits used plus manual campaign spend. Internal provider COGS stays hidden.',
+                'estimatedOutreachInvestment' => 'Estimated from workflow capacity used plus manually tracked campaign spend.',
             ],
             'metrics' => [
                 'creatorsDiscovered' => 0,

@@ -54,7 +54,6 @@ public function runActor(Request $request)
             'moduleKey' => ['nullable', 'string', 'max:120'],
             'actorKey' => ['nullable', 'string', 'max:120', Rule::in($configuredActorKeys)],
             'actorId' => ['nullable', 'string', 'max:255'],
-            'maxTotalChargeUsd' => ['nullable', 'numeric', 'min:0', 'max:25'],
             'memoryMbytes' => ['nullable', 'integer', 'min:128', 'max:4096'],
             'timeoutSecs' => ['nullable', 'integer', 'min:1', 'max:600'],
             'input' => ['nullable', 'array', 'max:100'],
@@ -73,9 +72,11 @@ public function runActor(Request $request)
         $input = $validated['input'] ?? Arr::except($request->all(), [
             'moduleKey', 'actorKey', 'actorId', 'maxTotalChargeUsd', 'memoryMbytes', 'timeoutSecs'
         ]);
+        $this->scrapers->assertWithinExecutionLimit($module, $input);
+        $maxTotalChargeUsd = $this->scrapers->providerChargeLimitUsd($moduleKey, $actorKey, $actorId, $input);
 
         $query = array_filter([
-            'maxTotalChargeUsd' => $validated['maxTotalChargeUsd'] ?? config('services.apify.default_max_total_charge_usd'),
+            'maxTotalChargeUsd' => $maxTotalChargeUsd,
             'memoryMbytes' => $validated['memoryMbytes'] ?? null,
             'timeoutSecs' => $validated['timeoutSecs'] ?? null,
         ], fn ($value) => $value !== null && $value !== '');
@@ -86,7 +87,7 @@ public function runActor(Request $request)
             actorKey: $actorKey,
             actorId: $actorId,
             input: $input,
-            maxChargeUsd: isset($query['maxTotalChargeUsd']) ? (float) $query['maxTotalChargeUsd'] : null,
+            maxChargeUsd: $maxTotalChargeUsd,
         );
         $usageReservationId = $usageReservation['usage_event_id'] ?? null;
 
@@ -129,7 +130,7 @@ public function runActor(Request $request)
                 'actor_id' => $actorId,
                 'actor_key' => $actorKey,
                 'status' => 'failed_to_start',
-                'max_total_charge_usd' => $validated['maxTotalChargeUsd'] ?? config('services.apify.default_max_total_charge_usd'),
+                'max_total_charge_usd' => $maxTotalChargeUsd,
                 'request_payload' => $input,
                 'response_payload' => $response->json() ?? ['body' => $response->body()],
                 'error_message' => 'Apify run failed',
@@ -168,7 +169,7 @@ public function runActor(Request $request)
             'run_id' => $runId,
             'dataset_id' => $datasetId,
             'status' => data_get($responsePayload, 'data.status'),
-            'max_total_charge_usd' => $validated['maxTotalChargeUsd'] ?? config('services.apify.default_max_total_charge_usd'),
+            'max_total_charge_usd' => $maxTotalChargeUsd,
             'request_payload' => $input,
             'response_payload' => $responsePayload,
         ]);

@@ -21,14 +21,15 @@ return [
 
     'billing' => [
         'currency' => env('OUTREACH_BILLING_CURRENCY', 'usd'),
-        'trial_days' => env('OUTREACH_TRIAL_DAYS', 14),
+        // Evaluation access is a one-time account allowance, not a timed trial.
+        'trial_days' => 0,
         'enrichment_credit_cost' => env('OUTREACH_ENRICHMENT_CREDIT_COST', 5),
         'ai_request_credit_cost' => env('OUTREACH_AI_REQUEST_CREDIT_COST', 1),
         'default_discovery_credit_cost' => env('OUTREACH_DEFAULT_DISCOVERY_CREDIT_COST', 25),
         'stripe_webhook_tolerance' => env('OUTREACH_STRIPE_WEBHOOK_TOLERANCE', 300),
         'plan_prices' => [
-            'pro' => env('OUTREACH_PLAN_PRO_PRICE_CENTS', 11900),
-            'enterprise' => env('OUTREACH_PLAN_ENTERPRISE_PRICE_CENTS', 29900),
+            'pro' => env('OUTREACH_PLAN_PRO_PRICE_CENTS', 14900),
+            'enterprise' => env('OUTREACH_PLAN_ENTERPRISE_PRICE_CENTS', 39900),
         ],
         'customer_credit_value_usd' => [
             // Customer-facing ROI estimates use credit value, not internal provider COGS.
@@ -39,26 +40,26 @@ return [
         'credit_packages' => [
             [
                 'id' => '11111111-1111-4111-8111-111111111111',
-                'name' => 'Starter Top-up',
+                'name' => 'Extra Workflow Pack',
                 'scrape_credits' => 500,
                 'ai_credits' => 50,
-                'price_usd' => 19.00,
-                'allowed_plan_ids' => ['free', 'pro', 'enterprise'],
+                'price_usd' => 15.00,
+                'allowed_plan_ids' => ['pro', 'enterprise'],
             ],
             [
                 'id' => '22222222-2222-4222-8222-222222222222',
-                'name' => 'Growth Top-up',
+                'name' => 'Growth Workflow Pack',
                 'scrape_credits' => 2000,
                 'ai_credits' => 250,
-                'price_usd' => 69.00,
-                'allowed_plan_ids' => ['free', 'pro', 'enterprise'],
+                'price_usd' => 49.00,
+                'allowed_plan_ids' => ['pro', 'enterprise'],
             ],
             [
                 'id' => '33333333-3333-4333-8333-333333333333',
-                'name' => 'Scale Top-up',
+                'name' => 'Scale Workflow Pack',
                 'scrape_credits' => 6000,
                 'ai_credits' => 800,
-                'price_usd' => 179.00,
+                'price_usd' => 119.00,
                 'allowed_plan_ids' => ['pro', 'enterprise'],
             ],
         ],
