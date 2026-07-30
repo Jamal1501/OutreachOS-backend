@@ -9,23 +9,23 @@ return new class extends Migration
     public function up(): void
     {
         if (Schema::hasTable('plans')) {
-            DB::table('plans')->where('id', 'free')->update([
+            DB::table('plans')->where('id', 'free')->update($this->existingColumns('plans', [
                 'name' => 'Evaluation',
                 'trial_scrape_credits' => 25,
                 'trial_ai_credits' => 5,
                 'topup_price_multiplier' => 1.0,
                 'updated_at' => now(),
-            ]);
-            DB::table('plans')->where('id', 'pro')->update([
+            ]));
+            DB::table('plans')->where('id', 'pro')->update($this->existingColumns('plans', [
                 'name' => 'Pro',
                 'topup_price_multiplier' => 1.0,
                 'updated_at' => now(),
-            ]);
-            DB::table('plans')->where('id', 'enterprise')->update([
+            ]));
+            DB::table('plans')->where('id', 'enterprise')->update($this->existingColumns('plans', [
                 'name' => 'Agency',
                 'topup_price_multiplier' => 1.0,
                 'updated_at' => now(),
-            ]);
+            ]));
         }
 
         if (Schema::hasTable('credit_packages')) {
@@ -36,12 +36,12 @@ return new class extends Migration
             ];
 
             foreach ($packages as $id => $package) {
-                DB::table('credit_packages')->where('id', $id)->update([
+                DB::table('credit_packages')->where('id', $id)->update($this->existingColumns('credit_packages', [
                     'name' => $package['name'],
                     'price_usd' => $package['price'],
                     'allowed_plan_ids' => json_encode($package['plans']),
                     'updated_at' => now(),
-                ]);
+                ]));
             }
         }
 
@@ -49,28 +49,43 @@ return new class extends Migration
             DB::table('workspace_subscriptions')
                 ->where('plan_id', 'free')
                 ->whereIn('status', ['trialing', 'trial_expired'])
-                ->update([
+                ->update($this->existingColumns('workspace_subscriptions', [
                     'status' => 'active',
                     'trial_ends_at' => null,
                     'updated_at' => now(),
-                ]);
+                ]));
         }
 
         if (Schema::hasTable('workspace_credit_wallets') && Schema::hasTable('billing_accounts')) {
             DB::table('workspace_credit_wallets')
                 ->whereIn('billing_account_id', DB::table('billing_accounts')->where('plan_id', 'free')->select('id'))
                 ->where('scrape_credits_balance', '>', 25)
-                ->update(['scrape_credits_balance' => 25, 'updated_at' => now()]);
+                ->update($this->existingColumns('workspace_credit_wallets', [
+                    'scrape_credits_balance' => 25,
+                    'updated_at' => now(),
+                ]));
 
             DB::table('workspace_credit_wallets')
                 ->whereIn('billing_account_id', DB::table('billing_accounts')->where('plan_id', 'free')->select('id'))
                 ->where('ai_credits_balance', '>', 5)
-                ->update(['ai_credits_balance' => 5, 'updated_at' => now()]);
+                ->update($this->existingColumns('workspace_credit_wallets', [
+                    'ai_credits_balance' => 5,
+                    'updated_at' => now(),
+                ]));
         }
     }
 
     public function down(): void
     {
         // Pilot pricing and already-consumed evaluation allowances are intentionally not restored.
+    }
+
+    private function existingColumns(string $table, array $values): array
+    {
+        return array_filter(
+            $values,
+            fn (mixed $value, string $column) => Schema::hasColumn($table, $column),
+            ARRAY_FILTER_USE_BOTH,
+        );
     }
 };
