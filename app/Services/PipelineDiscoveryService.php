@@ -50,7 +50,10 @@ class PipelineDiscoveryService
 
     public function createJob(array $payload): array
     {
-        $jobId = (string) Str::uuid();
+        $requestedJobId = trim((string) ($payload['clientJobId'] ?? ''));
+        $jobId = $requestedJobId !== '' && Str::isUuid($requestedJobId)
+            ? $requestedJobId
+            : (string) Str::uuid();
         $state = [
             'jobId' => $jobId,
             'status' => 'running',

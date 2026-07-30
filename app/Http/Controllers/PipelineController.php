@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Jobs\RunPipelineJob;
+use App\Models\DiscoveryRun;
 use App\Services\AiDiscoveryBriefService;
 use App\Services\PipelineDiscoveryService;
 use App\Services\WorkspaceBillingService;
@@ -36,6 +37,7 @@ class PipelineController extends Controller
             'criteria' => ['nullable', 'array', 'max:100'],
             'discoveryModuleKey' => ['nullable', 'string', 'max:120'],
             'enrichmentModuleKey' => ['nullable', 'string', 'max:120'],
+            'clientJobId' => ['nullable', 'uuid'],
         ]);
 
         $criteria = $this->normalizeDiscoveryCriteria((array) ($validated['criteria'] ?? []));
@@ -52,6 +54,7 @@ class PipelineController extends Controller
             'criteria' => $criteria !== [] ? $criteria : null,
             'discoveryModuleKey' => $validated['discoveryModuleKey'] ?? null,
             'enrichmentModuleKey' => $validated['enrichmentModuleKey'] ?? null,
+            'clientJobId' => $validated['clientJobId'] ?? null,
         ];
 
         return $this->startPipeline($request, $payload);
@@ -71,6 +74,7 @@ class PipelineController extends Controller
             'wait' => ['nullable', 'boolean'],
             'discoveryModuleKey' => ['nullable', 'string', 'max:120'],
             'enrichmentModuleKey' => ['nullable', 'string', 'max:120'],
+            'clientJobId' => ['nullable', 'uuid'],
         ]);
 
         $criteria = $this->normalizeDiscoveryCriteria($this->briefs->parse((string) $validated['brief'], [
@@ -90,6 +94,7 @@ class PipelineController extends Controller
             'criteria' => $criteria,
             'discoveryModuleKey' => $validated['discoveryModuleKey'] ?? null,
             'enrichmentModuleKey' => $validated['enrichmentModuleKey'] ?? null,
+            'clientJobId' => $validated['clientJobId'] ?? null,
         ];
 
         return $this->startPipeline($request, $payload, [
@@ -172,17 +177,26 @@ class PipelineController extends Controller
     public function cancel(Request $request)
     {
         $validated = $request->validate([
-            'jobId' => ['required', 'string'],
+            'jobId' => ['nullable', 'uuid'],
         ]);
 
-        $state = $this->pipeline->getJobState($validated['jobId']);
         $workspaceId = (string) $request->attributes->get('workspace_id');
+        $jobId = trim((string) ($validated['jobId'] ?? ''));
+        if ($jobId === '') {
+            $jobId = (string) (DiscoveryRun::query()
+                ->whereIn('status', ['running', 'cancel_requested'])
+                ->whereHas('project', fn ($query) => $query->where('workspace_id', $workspaceId))
+                ->latest('created_at')
+                ->value('id') ?? '');
+        }
+
+        $state = $jobId !== '' ? $this->pipeline->getJobState($jobId) : null;
         $jobWorkspaceId = (string) data_get($state, 'request.workspaceId', '');
         if (!$state || ($jobWorkspaceId !== '' && $workspaceId !== '' && $jobWorkspaceId !== $workspaceId)) {
             return response()->json(['error' => 'Pipeline job not found'], 404);
         }
 
-        $state = $this->pipeline->requestCancellation($validated['jobId']);
+        $state = $this->pipeline->requestCancellation($jobId);
 
         return response()->json([
             'jobId' => $state['jobId'],
