@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Mail\WorkspaceInvitationMail;
 use App\Models\Workspace;
 use App\Models\WorkspaceMember;
+use App\Services\DataLifecycleService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -16,6 +17,10 @@ use Illuminate\Validation\Rule;
 
 class WorkspaceController extends Controller
 {
+    public function __construct(private DataLifecycleService $dataLifecycle)
+    {
+    }
+
     public function bootstrap(Request $request)
     {
         $supabaseUserId = trim((string) $request->attributes->get('supabase_user_id'));
@@ -514,7 +519,18 @@ class WorkspaceController extends Controller
 
     public function restoreWorkspace(Request $request, string $workspaceId)
     {
-        return $this->setWorkspaceArchived($request, $workspaceId, false);
+        $actorUserId = (string) $request->attributes->get('supabase_user_id');
+        $workspace = Workspace::query()->find($workspaceId);
+        if (!$workspace || (string) $workspace->owner_id !== $actorUserId) {
+            return response()->json(['error' => 'Workspace not found.'], 404);
+        }
+        $settings = (array) ($workspace->settings ?? []);
+        unset($settings['deletedAt'], $settings['deletedBy'], $settings['archivedAt'], $settings['archivedBy']);
+        $workspace->settings = $settings;
+        $workspace->save();
+        $this->dataLifecycle->cancelWorkspaceDeletion($workspaceId);
+
+        return response()->json(['message' => 'Workspace deletion canceled.']);
     }
 
     public function deleteWorkspace(Request $request, string $workspaceId)
@@ -549,6 +565,7 @@ class WorkspaceController extends Controller
 
         $targetWorkspace->settings = $settings;
         $targetWorkspace->save();
+        $deletion = $this->dataLifecycle->scheduleWorkspaceDeletion($targetWorkspace->id, (string) $currentMembership->user_id);
 
         if (Schema::hasTable('workspace_invitations')) {
             DB::table('workspace_invitations')
@@ -598,9 +615,42 @@ class WorkspaceController extends Controller
             : null;
 
         return response()->json([
-            'message' => 'Workspace deleted',
+            'message' => 'Workspace scheduled for permanent deletion',
+            'deletion' => $deletion,
             'data' => $this->workspacePayload($fallbackWorkspace, $fallbackMembership),
         ]);
+    }
+
+    public function exportWorkspace(Request $request, string $workspaceId)
+    {
+        $workspace = $request->attributes->get('workspace');
+        if (!$workspace || !in_array($workspaceId, $this->accountWorkspaceIds($workspace, true), true)) {
+            return response()->json(['error' => 'Workspace not found.'], 404);
+        }
+
+        return response()->json($this->dataLifecycle->exportWorkspace($workspaceId))
+            ->header('Content-Disposition', 'attachment; filename="socialcore-workspace-export-' . $workspaceId . '.json"');
+    }
+
+    public function deleteAccount(Request $request)
+    {
+        $userId = (string) $request->attributes->get('supabase_user_id');
+        if ($userId === '') {
+            return response()->json(['error' => 'Authentication required.'], 401);
+        }
+
+        return response()->json([
+            'message' => 'Account scheduled for permanent deletion',
+            'deletion' => $this->dataLifecycle->scheduleAccountDeletion($userId),
+        ], 202);
+    }
+
+    public function restoreAccount(Request $request)
+    {
+        $userId = (string) $request->attributes->get('supabase_user_id');
+        $this->dataLifecycle->cancelAccountDeletion($userId);
+
+        return response()->json(['message' => 'Account deletion canceled.']);
     }
 
     public function auditEvents(Request $request)

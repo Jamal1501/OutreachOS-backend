@@ -1,6 +1,14 @@
 <?php
 
 return [
+    'launch' => [
+        'invite_only' => env('ACCESS_INVITE_ONLY', false),
+        'require_verified_email' => env('ACCESS_REQUIRE_VERIFIED_EMAIL', true),
+        'allowed_emails' => array_values(array_filter(array_map('trim', explode(',', (string) env('ACCESS_ALLOWED_EMAILS', ''))))),
+        'allowed_domains' => array_values(array_filter(array_map('trim', explode(',', (string) env('ACCESS_ALLOWED_DOMAINS', ''))))),
+        'enable_raw_scraper' => env('FEATURE_RAW_SCRAPER', false),
+        'enable_tiktok' => env('FEATURE_TIKTOK', true),
+    ],
     'providers' => [
         'discovery' => env('OUTREACH_DISCOVERY_PROVIDER', 'apify'),
         'enrichment' => env('OUTREACH_ENRICHMENT_PROVIDER', 'apify'),

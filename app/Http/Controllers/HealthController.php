@@ -25,6 +25,7 @@ class HealthController extends Controller
             'database' => $this->databaseCheck(),
             'cache' => $this->cacheCheck(),
             'queue' => $this->queueCheck(),
+            'processes' => $this->processHeartbeatCheck(),
             'stripeWebhooks' => $this->stripeWebhookCheck(),
         ];
 
@@ -46,7 +47,8 @@ class HealthController extends Controller
 
             return ['status' => 'ok'];
         } catch (Throwable $exception) {
-            return ['status' => 'fail', 'message' => $exception->getMessage()];
+            report($exception);
+            return ['status' => 'fail', 'message' => 'Database check failed'];
         }
     }
 
@@ -60,7 +62,8 @@ class HealthController extends Controller
 
             return ['status' => $ok ? 'ok' : 'fail'];
         } catch (Throwable $exception) {
-            return ['status' => 'fail', 'message' => $exception->getMessage()];
+            report($exception);
+            return ['status' => 'fail', 'message' => 'Cache check failed'];
         }
     }
 
@@ -111,6 +114,26 @@ class HealthController extends Controller
             'status' => $failedWebhooks > $threshold ? 'degraded' : 'ok',
             'failedWebhooks' => $failedWebhooks,
             'failedWindowMinutes' => $windowMinutes,
+        ];
+    }
+
+    private function processHeartbeatCheck(): array
+    {
+        if (!Schema::hasTable('operational_heartbeats')) {
+            return ['status' => 'degraded', 'message' => 'Process heartbeat storage is not initialized'];
+        }
+
+        $heartbeats = DB::table('operational_heartbeats')
+            ->whereIn('name', ['scheduler', 'queue-worker'])
+            ->pluck('last_seen_at', 'name');
+        $stale = collect(['scheduler', 'queue-worker'])->filter(function (string $name) use ($heartbeats) {
+            $lastSeen = $heartbeats->get($name);
+            return !$lastSeen || now()->diffInMinutes($lastSeen) > 3;
+        })->values()->all();
+
+        return [
+            'status' => $stale === [] ? 'ok' : 'degraded',
+            'staleProcesses' => $stale,
         ];
     }
 }

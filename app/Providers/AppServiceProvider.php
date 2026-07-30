@@ -11,6 +11,9 @@ use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Queue\Events\QueueBusy;
 use Illuminate\Queue\Events\JobFailed;
+use Illuminate\Queue\Events\Looping;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
@@ -59,6 +62,18 @@ class AppServiceProvider extends ServiceProvider
                 'queue' => $event->queue,
                 'size' => $event->size,
             ], 'warning');
+        });
+
+        $this->app['events']->listen(Looping::class, function (): void {
+            static $lastHeartbeatAt = 0;
+            if (time() - $lastHeartbeatAt < 30 || !Schema::hasTable('operational_heartbeats')) {
+                return;
+            }
+            $lastHeartbeatAt = time();
+            DB::table('operational_heartbeats')->updateOrInsert(
+                ['name' => 'queue-worker'],
+                ['last_seen_at' => now(), 'metadata' => json_encode(['source' => 'queue-loop']), 'created_at' => now(), 'updated_at' => now()],
+            );
         });
     }
 

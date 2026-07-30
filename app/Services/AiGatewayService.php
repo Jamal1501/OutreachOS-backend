@@ -102,11 +102,33 @@ class AiGatewayService
         $usage = (array) ($payload['usage'] ?? []);
         $estimatedCost = $this->estimateOpenAiCostUsd($model, (int) ($usage['prompt_tokens'] ?? 0), (int) ($usage['completion_tokens'] ?? 0));
 
+        $arguments = Arr::get($payload, 'choices.0.message.tool_calls.0.function.arguments');
+
+        if (!is_string($arguments) || trim($arguments) === '') {
+            if ($usageReservationId) {
+                $this->billing->refundReservation($usageReservationId, 'AI response missing structured output', [
+                    'openai_id' => $payload['id'] ?? null,
+                ]);
+            }
+            throw new RuntimeException('AI did not return a structured payload.');
+        }
+
+        $decoded = json_decode($arguments, true);
+        if (!is_array($decoded)) {
+            if ($usageReservationId) {
+                $this->billing->refundReservation($usageReservationId, 'AI response contained invalid structured output', [
+                    'openai_id' => $payload['id'] ?? null,
+                ]);
+            }
+            throw new RuntimeException('AI returned invalid structured JSON.');
+        }
+
         if ($usageReservationId) {
             $this->billing->consumeReservation($usageReservationId, providerCostUsd: $estimatedCost, metadata: [
                 'openai_id' => $payload['id'] ?? null,
                 'usage' => $usage,
                 'provider_cost_source' => 'openai_token_estimate',
+                'structured_output_validated' => true,
             ], referenceId: (string) ($payload['id'] ?? ''));
         }
 
@@ -123,16 +145,6 @@ class AiGatewayService
                 'usage' => $usage,
             ],
         ]);
-        $arguments = Arr::get($payload, 'choices.0.message.tool_calls.0.function.arguments');
-
-        if (!is_string($arguments) || trim($arguments) === '') {
-            throw new RuntimeException('AI did not return a structured payload.');
-        }
-
-        $decoded = json_decode($arguments, true);
-        if (!is_array($decoded)) {
-            throw new RuntimeException('AI returned invalid structured JSON.');
-        }
 
         return $decoded;
     }

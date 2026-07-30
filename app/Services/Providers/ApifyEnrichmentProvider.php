@@ -91,8 +91,9 @@ class ApifyEnrichmentProvider implements EnrichmentProvider
             }
         } catch (PipelineCancelledException $exception) {
             if ($reservationId !== '') {
-                $this->billing->consumeReservation(
+                $this->billing->settleReservationUnits(
                     $reservationId,
+                    billableUnits: $completedProfiles,
                     providerCostUsd: $providerCostKnown ? $providerCostUsd : null,
                     metadata: [
                         'cancelled_by_user' => true,
@@ -105,10 +106,17 @@ class ApifyEnrichmentProvider implements EnrichmentProvider
             throw $exception;
         } catch (Throwable $exception) {
             if ($reservationId !== '') {
-                $this->billing->refundReservation($reservationId, 'Batched enrichment failed', [
-                    'completed_batches' => count($runs),
-                    'message' => $exception->getMessage(),
-                ]);
+                $this->billing->settleReservationUnits(
+                    $reservationId,
+                    billableUnits: $completedProfiles,
+                    providerCostUsd: $providerCostKnown ? $providerCostUsd : null,
+                    metadata: [
+                        'batched_enrichment_failed' => true,
+                        'completed_batches' => count($runs),
+                        'runs' => $runs,
+                    ],
+                    referenceId: (string) ($runs[0]['runId'] ?? ''),
+                );
             }
             throw $exception;
         }

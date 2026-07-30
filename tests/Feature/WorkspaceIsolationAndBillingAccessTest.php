@@ -7,6 +7,10 @@ use App\Mail\WorkspaceInvitationMail;
 use App\Models\User;
 use App\Models\Workspace;
 use App\Models\WorkspaceMember;
+use App\Models\Project;
+use App\Models\DiscoveryRun;
+use App\Services\AiGatewayService;
+use App\Services\PipelineDiscoveryService;
 use App\Services\WorkspaceBillingService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -14,6 +18,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 use Tests\TestCase;
+use RuntimeException;
 
 class WorkspaceIsolationAndBillingAccessTest extends TestCase
 {
@@ -389,6 +394,203 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
         $this->assertSame('failed', DB::table('stripe_webhook_events')->where('stripe_event_id', 'evt_underpaid_topup')->value('status'));
     }
 
+    public function test_partial_usage_settlement_only_charges_completed_units(): void
+    {
+        [, $workspace] = $this->createWorkspaceForRole('owner');
+        $billing = app(WorkspaceBillingService::class);
+        [, $wallet] = $billing->ensureWorkspaceBilling($workspace->id);
+        DB::table('workspace_credit_wallets')->where('id', $wallet->id)->update([
+            'ai_credits_balance' => 100,
+            'bonus_ai_credits' => 0,
+            'lifetime_ai_used' => 0,
+        ]);
+
+        $reservation = $billing->reserveAi($workspace->id, 'partial-test', [
+            'units' => 10,
+            'credit_cost' => 10,
+        ]);
+        $billing->settleReservationUnits((string) $reservation['usage_event_id'], 4, 0.01);
+
+        $event = DB::table('workspace_usage_events')->where('id', $reservation['usage_event_id'])->first();
+        $freshWallet = DB::table('workspace_credit_wallets')->where('id', $wallet->id)->first();
+
+        $this->assertSame('consumed', $event->status);
+        $this->assertSame(4, (int) $event->units);
+        $this->assertSame(4, (int) $event->credit_cost);
+        $this->assertSame(96, (int) $freshWallet->ai_credits_balance);
+        $this->assertSame(4, (int) $freshWallet->lifetime_ai_used);
+    }
+
+    public function test_zero_completed_units_refunds_the_full_reservation(): void
+    {
+        [, $workspace] = $this->createWorkspaceForRole('owner');
+        $billing = app(WorkspaceBillingService::class);
+        [, $wallet] = $billing->ensureWorkspaceBilling($workspace->id);
+        DB::table('workspace_credit_wallets')->where('id', $wallet->id)->update([
+            'ai_credits_balance' => 100,
+            'bonus_ai_credits' => 0,
+        ]);
+
+        $reservation = $billing->reserveAi($workspace->id, 'zero-unit-test', [
+            'units' => 10,
+            'credit_cost' => 10,
+        ]);
+        $billing->settleReservationUnits((string) $reservation['usage_event_id'], 0);
+
+        $this->assertSame('refunded', DB::table('workspace_usage_events')->where('id', $reservation['usage_event_id'])->value('status'));
+        $this->assertSame(100, (int) DB::table('workspace_credit_wallets')->where('id', $wallet->id)->value('ai_credits_balance'));
+    }
+
+    public function test_duplicate_pipeline_delivery_can_only_claim_execution_once(): void
+    {
+        [, $workspace] = $this->createWorkspaceForRole('owner');
+        $run = $this->createDiscoveryRun($workspace);
+        $pipeline = app(PipelineDiscoveryService::class);
+
+        $this->assertTrue($pipeline->claimJobExecution($run->id, 'worker-a'));
+        $this->assertFalse($pipeline->claimJobExecution($run->id, 'worker-b'));
+
+        $payload = DiscoveryRun::query()->findOrFail($run->id)->result_payload;
+        $this->assertSame('worker-a', $payload['executionWorkerJobId']);
+        $this->assertNotEmpty($payload['executionClaimedAt']);
+    }
+
+    public function test_cancellation_is_terminal_for_the_ui_and_persists_worker_abort_signal(): void
+    {
+        [, $workspace] = $this->createWorkspaceForRole('owner');
+        $run = $this->createDiscoveryRun($workspace);
+
+        $state = app(PipelineDiscoveryService::class)->requestCancellation($run->id);
+
+        $this->assertSame('cancelled', $state['status']);
+        $this->assertTrue($state['cancellationRequested']);
+        $this->assertDatabaseHas('discovery_runs', ['id' => $run->id, 'status' => 'cancelled']);
+    }
+
+    public function test_stale_running_pipeline_is_marked_failed(): void
+    {
+        [, $workspace] = $this->createWorkspaceForRole('owner');
+        $run = $this->createDiscoveryRun($workspace);
+        DB::table('discovery_runs')->where('id', $run->id)->update(['updated_at' => now()->subMinutes(25)]);
+        $pipeline = app(PipelineDiscoveryService::class);
+
+        $state = $pipeline->reconcileStaleJob($run->id);
+
+        $this->assertSame('failed', $state['status']);
+        $this->assertStringContainsString('stopped responding', $state['error']);
+    }
+
+    public function test_malformed_ai_structured_output_refunds_reserved_credits(): void
+    {
+        [, $workspace] = $this->createWorkspaceForRole('owner');
+        $billing = app(WorkspaceBillingService::class);
+        [, $wallet] = $billing->ensureWorkspaceBilling($workspace->id);
+        DB::table('workspace_credit_wallets')->where('id', $wallet->id)->update(['ai_credits_balance' => 100]);
+        config(['services.ai.openai_key' => 'test-key', 'services.ai.openai_model' => 'test-model']);
+        request()->attributes->set('workspace_id', $workspace->id);
+        Http::fake([
+            'api.openai.com/*' => Http::response([
+                'id' => 'chatcmpl-invalid',
+                'usage' => ['prompt_tokens' => 10, 'completion_tokens' => 2, 'total_tokens' => 12],
+                'choices' => [['message' => ['tool_calls' => []]]],
+            ], 200),
+        ]);
+
+        try {
+            app(AiGatewayService::class)->structured('system', 'user', 'test_tool', 'test', ['type' => 'object']);
+            $this->fail('Expected malformed structured output to fail.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString('structured payload', $exception->getMessage());
+        }
+
+        $this->assertSame('refunded', DB::table('workspace_usage_events')->latest('created_at')->value('status'));
+        $this->assertSame(100, (int) DB::table('workspace_credit_wallets')->where('id', $wallet->id)->value('ai_credits_balance'));
+    }
+
+    public function test_public_readiness_does_not_expose_raw_database_exception_messages(): void
+    {
+        $this->getJson('/api/health/ready')
+            ->assertJsonMissing(['message' => 'SQLSTATE']);
+    }
+
+    public function test_raw_scraper_routes_are_absent_when_feature_is_disabled(): void
+    {
+        config(['outreach.launch.enable_raw_scraper' => false]);
+        $this->postJson('/api/apify/run')->assertNotFound();
+    }
+
+    public function test_tiktok_pipeline_can_be_disabled_with_a_production_feature_flag(): void
+    {
+        [$user, $workspace] = $this->createWorkspaceForRole('owner');
+        $this->fakeSupabaseUser($user);
+        config(['outreach.launch.enable_tiktok' => false]);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/pipeline/estimate', ['platform' => 'tiktok'])
+            ->assertUnprocessable();
+    }
+
+    public function test_unverified_email_is_rejected_when_verification_is_required(): void
+    {
+        [$user] = $this->createWorkspaceForRole('owner');
+        config(['outreach.launch.require_verified_email' => true]);
+        config([
+            'services.supabase.url' => 'https://supabase.example.test',
+            'services.supabase.service_role_key' => 'service-role-key',
+        ]);
+        Http::fake([
+            'supabase.example.test/auth/v1/user' => Http::response([
+                'id' => $user->supabase_user_id,
+                'email' => $user->email,
+                'user_metadata' => ['full_name' => $user->name],
+            ], 200),
+        ]);
+
+        $this->withToken('valid-token')
+            ->getJson('/api/workspaces/bootstrap')
+            ->assertForbidden()
+            ->assertJsonPath('error', 'email_verification_required');
+    }
+
+    public function test_invite_only_mode_rejects_unapproved_user(): void
+    {
+        $user = User::query()->create([
+            'supabase_user_id' => (string) Str::uuid(),
+            'name' => 'Uninvited User',
+            'email' => 'uninvited@example.test',
+            'password' => 'password',
+        ]);
+        config([
+            'outreach.launch.invite_only' => true,
+            'outreach.launch.allowed_emails' => [],
+            'outreach.launch.allowed_domains' => [],
+        ]);
+        $this->fakeSupabaseUser($user);
+
+        $this->withToken('valid-token')
+            ->getJson('/api/workspaces/bootstrap')
+            ->assertForbidden()
+            ->assertJsonPath('error', 'pilot_invitation_required');
+    }
+
+    public function test_recent_scheduler_and_worker_heartbeats_are_ready(): void
+    {
+        foreach (['scheduler', 'queue-worker'] as $name) {
+            DB::table('operational_heartbeats')->insert([
+                'name' => $name,
+                'last_seen_at' => now(),
+                'metadata' => json_encode(['test' => true]),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $this->getJson('/api/health/ready')
+            ->assertJsonPath('checks.processes.status', 'ok')
+            ->assertJsonPath('checks.processes.staleProcesses', []);
+    }
+
     private function createWorkspaceForRole(string $role, int $maxMembers = 1): array
     {
         DB::table('plans')->updateOrInsert(
@@ -428,6 +630,28 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
         ]);
 
         return [$user, $workspace];
+    }
+
+    private function createDiscoveryRun(Workspace $workspace): DiscoveryRun
+    {
+        $project = Project::query()->create([
+            'workspace_id' => $workspace->id,
+            'name' => 'Pipeline Test',
+            'workbook_id' => 'workspace:' . Str::uuid(),
+            'status' => 'active',
+        ]);
+
+        return DiscoveryRun::query()->create([
+            'id' => (string) Str::uuid(),
+            'project_id' => $project->id,
+            'platform' => 'instagram',
+            'provider' => 'apify',
+            'status' => 'running',
+            'current_step' => 'discovery_scrape',
+            'request_payload' => ['workspaceId' => $workspace->id, 'platform' => 'instagram'],
+            'result_payload' => [],
+            'started_at' => now(),
+        ]);
     }
 
     private function fakeSupabaseUser(User $user): void

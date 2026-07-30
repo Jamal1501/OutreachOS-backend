@@ -25,7 +25,7 @@ class PipelineController extends Controller
     {
         $validated = $request->validate([
             'sheetId' => ['nullable', 'string'],
-            'platform' => ['required', 'string', Rule::in(['instagram', 'tiktok'])],
+            'platform' => ['required', 'string', Rule::in($this->pilotPlatforms())],
             'hashtags' => ['required', 'array', 'min:1', 'max:20'],
             'hashtags.*' => ['string', 'max:80'],
             'discoveryLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
@@ -64,7 +64,7 @@ class PipelineController extends Controller
     {
         $validated = $request->validate([
             'sheetId' => ['nullable', 'string'],
-            'platform' => ['required', 'string', Rule::in(['instagram', 'tiktok'])],
+            'platform' => ['required', 'string', Rule::in($this->pilotPlatforms())],
             'brief' => ['required', 'string', 'min:8', 'max:5000'],
             'projectContext' => ['nullable', 'string', 'max:5000'],
             'discoveryLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
@@ -107,7 +107,7 @@ class PipelineController extends Controller
     public function estimate(Request $request)
     {
         $validated = $request->validate([
-            'platform' => ['required', 'string', Rule::in(['instagram', 'tiktok'])],
+            'platform' => ['required', 'string', Rule::in($this->pilotPlatforms())],
             'discoveryLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
             'enrichmentLimit' => ['nullable', 'integer', 'min:1', 'max:5000'],
             'hashtags' => ['nullable', 'array', 'max:20'],
@@ -445,5 +445,12 @@ class PipelineController extends Controller
         $criteria['followerMax'] = 0;
 
         return $criteria;
+    }
+
+    private function pilotPlatforms(): array
+    {
+        return config('outreach.launch.enable_tiktok', true)
+            ? ['instagram', 'tiktok']
+            : ['instagram'];
     }
 }

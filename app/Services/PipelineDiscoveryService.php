@@ -10,6 +10,7 @@ use App\Models\DiscoveryRun;
 use App\Models\EnrichmentJob;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class PipelineDiscoveryService
@@ -79,6 +80,38 @@ class PipelineDiscoveryService
         $this->syncJobToDatabase($state);
 
         return $state;
+    }
+
+    public function claimJobExecution(string $jobId, string $workerJobId): bool
+    {
+        if (!$this->pipelineSyncEnabled()) {
+            return true;
+        }
+
+        return DB::transaction(function () use ($jobId, $workerJobId) {
+            $run = DiscoveryRun::query()->whereKey($jobId)->lockForUpdate()->first();
+            if (!$run || in_array($run->status, ['completed', 'failed', 'cancelled'], true)) {
+                return false;
+            }
+
+            $result = is_array($run->result_payload) ? $run->result_payload : [];
+            if (!empty($result['executionClaimedAt'])) {
+                Log::warning('Duplicate pipeline delivery rejected', [
+                    'jobId' => $jobId,
+                    'workerJobId' => $workerJobId,
+                    'claimedBy' => $result['executionWorkerJobId'] ?? null,
+                    'claimedAt' => $result['executionClaimedAt'],
+                ]);
+                return false;
+            }
+
+            $result['executionClaimedAt'] = now()->toIso8601String();
+            $result['executionWorkerJobId'] = $workerJobId;
+            $run->result_payload = $result;
+            $run->save();
+
+            return true;
+        });
     }
 
     public function requestCancellation(string $jobId): array
@@ -184,6 +217,8 @@ public function getJobState(string $jobId): ?array
             'usageSummary' => $result['usageSummary'] ?? null,
             'enrichmentProgress' => $result['enrichmentProgress'] ?? null,
             'cancellationRequested' => (bool) ($result['cancellationRequested'] ?? false),
+            'executionClaimedAt' => $result['executionClaimedAt'] ?? null,
+            'executionWorkerJobId' => $result['executionWorkerJobId'] ?? null,
             'resultsPreviewReady' => (bool) ($result['resultsPreviewReady'] ?? false),
             'createdAt' => optional($run->created_at)?->toDateTimeString(),
             'updatedAt' => optional($run->updated_at)?->toDateTimeString(),
@@ -695,6 +730,8 @@ public function getJobState(string $jobId): ?array
         'usageSummary' => $state['usageSummary'] ?? null,
         'resultsPreviewReady' => (bool) ($state['resultsPreviewReady'] ?? false),
         'cancellationRequested' => (bool) ($state['cancellationRequested'] ?? false),
+        'executionClaimedAt' => $state['executionClaimedAt'] ?? null,
+        'executionWorkerJobId' => $state['executionWorkerJobId'] ?? null,
     ],
     is_array($state['result'] ?? null) ? $state['result'] : []
 );

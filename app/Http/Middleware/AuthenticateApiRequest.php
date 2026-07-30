@@ -37,6 +37,33 @@ class AuthenticateApiRequest
 
             $this->acceptPendingWorkspaceInvitations($user);
 
+            $accountDeletionPending = Schema::hasTable('data_deletion_requests')
+                && DB::table('data_deletion_requests')
+                    ->where('type', 'account')
+                    ->where('user_id', $user->supabase_user_id)
+                    ->where('status', 'scheduled')
+                    ->exists();
+            if ($accountDeletionPending && !$request->is('api/account/restore')) {
+                return response()->json([
+                    'error' => 'account_deletion_pending',
+                    'message' => 'This account is scheduled for deletion. Restore it before continuing.',
+                ], 403);
+            }
+
+            if (config('outreach.launch.require_verified_email', true) && !$user->email_verified_at) {
+                return response()->json([
+                    'error' => 'email_verification_required',
+                    'message' => 'Verify your email address before accessing the pilot.',
+                ], 403);
+            }
+
+            if (config('outreach.launch.invite_only', false) && !$this->launchAccessAllowed($user)) {
+                return response()->json([
+                    'error' => 'pilot_invitation_required',
+                    'message' => 'SocialCore is currently invite-only. Ask the pilot administrator for access.',
+                ], 403);
+            }
+
             return $next($request);
         }
 
@@ -52,6 +79,24 @@ class AuthenticateApiRequest
         return response()->json([
             'error' => 'Authentication required.',
         ], 401);
+    }
+
+    private function launchAccessAllowed(User $user): bool
+    {
+        if (WorkspaceMember::query()->where('user_id', $user->supabase_user_id)->exists()) {
+            return true;
+        }
+
+        $email = Str::lower(trim((string) $user->email));
+        $allowedEmails = array_map(fn ($value) => Str::lower((string) $value), (array) config('outreach.launch.allowed_emails', []));
+        if (in_array($email, $allowedEmails, true)) {
+            return true;
+        }
+
+        $domain = Str::afterLast($email, '@');
+        $allowedDomains = array_map(fn ($value) => Str::lower(ltrim((string) $value, '@')), (array) config('outreach.launch.allowed_domains', []));
+
+        return $domain !== '' && in_array($domain, $allowedDomains, true);
     }
 
     private function resolveSupabaseUser(string $bearerToken): ?array

@@ -31,6 +31,9 @@ Route::post('/billing/webhooks/stripe', [BillingController::class, 'stripeWebhoo
 Route::middleware(['api.auth', 'throttle:api'])->group(function () {
     Route::get('/workspaces/bootstrap', [WorkspaceController::class, 'bootstrap']);
     Route::post('/workspaces', [WorkspaceController::class, 'create']);
+    Route::delete('/account', [WorkspaceController::class, 'deleteAccount']);
+    Route::post('/account/restore', [WorkspaceController::class, 'restoreAccount']);
+    Route::post('/workspaces/{workspaceId}/restore', [WorkspaceController::class, 'restoreWorkspace']);
 });
 
 Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(function () {
@@ -52,17 +55,21 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::delete('/workspaces/members/{memberId}', [WorkspaceController::class, 'removeMember'])->middleware('workspace.role:owner,admin');
     Route::post('/workspaces/current/transfer-owner', [WorkspaceController::class, 'transferOwnership'])->middleware('workspace.role:owner');
     Route::post('/workspaces/{workspaceId}/archive', [WorkspaceController::class, 'archiveWorkspace'])->middleware('workspace.role:owner');
-    Route::post('/workspaces/{workspaceId}/restore', [WorkspaceController::class, 'restoreWorkspace'])->middleware('workspace.role:owner');
     Route::delete('/workspaces/{workspaceId}', [WorkspaceController::class, 'deleteWorkspace'])->middleware('workspace.role:owner');
+    Route::get('/workspaces/{workspaceId}/export', [WorkspaceController::class, 'exportWorkspace'])->middleware('workspace.role:owner');
     Route::get('/workspaces/audit', [WorkspaceController::class, 'auditEvents'])->middleware('workspace.role:owner,admin');
 
-    Route::get('/apify/modules', [ApifyController::class, 'modules']);
-    Route::middleware('throttle:expensive')->group(function () {
-        Route::post('/apify/run', [ApifyController::class, 'runActor']);
-        Route::post('/apify/import-results', [ApifyController::class, 'importDatasetToSheet']);
-    });
-    Route::get('/apify/status/{runId}', [ApifyController::class, 'getRunStatus']);
-    Route::get('/apify/results/{datasetId}', [ApifyController::class, 'getDatasetResults'])->middleware('throttle:expensive');
+    if (config('outreach.launch.enable_raw_scraper', false)) {
+        Route::middleware('workspace.role:owner,admin')->group(function () {
+            Route::get('/apify/modules', [ApifyController::class, 'modules']);
+            Route::middleware('throttle:expensive')->group(function () {
+                Route::post('/apify/run', [ApifyController::class, 'runActor']);
+                Route::post('/apify/import-results', [ApifyController::class, 'importDatasetToSheet']);
+            });
+            Route::get('/apify/status/{runId}', [ApifyController::class, 'getRunStatus']);
+            Route::get('/apify/results/{datasetId}', [ApifyController::class, 'getDatasetResults'])->middleware('throttle:expensive');
+        });
+    }
 
     Route::post('/crm/merge-enriched', [ApifyController::class, 'mergeEnrichedToCreators'])->middleware('throttle:expensive');
     Route::post('/crm/merge-selected', [SheetDataController::class, 'mergeSelectedQueueToCrm'])->middleware('throttle:expensive');

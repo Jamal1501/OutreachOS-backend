@@ -25,6 +25,10 @@ class RunPipelineJob implements ShouldQueue
 
     public function handle(PipelineDiscoveryService $pipeline): void
     {
+        if (!$pipeline->claimJobExecution($this->jobId, (string) ($this->job?->getJobId() ?: 'direct'))) {
+            return;
+        }
+
         $pipeline->runJob($this->jobId, $this->payload);
     }
 

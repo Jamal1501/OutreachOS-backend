@@ -344,6 +344,75 @@ class WorkspaceBillingService
         });
     }
 
+    public function settleReservationUnits(
+        string $usageEventId,
+        int $billableUnits,
+        ?float $providerCostUsd = null,
+        array $metadata = [],
+        ?string $referenceId = null,
+    ): void {
+        DB::transaction(function () use ($usageEventId, $billableUnits, $providerCostUsd, $metadata, $referenceId) {
+            $event = WorkspaceUsageEvent::query()->lockForUpdate()->find($usageEventId);
+            if (!$event || $event->status !== 'reserved') {
+                return;
+            }
+
+            $originalUnits = max(1, (int) $event->units);
+            $settledUnits = min($originalUnits, max(0, $billableUnits));
+            if ($settledUnits === 0) {
+                $this->refundReservation($usageEventId, 'No billable units completed', $metadata);
+                return;
+            }
+
+            $originalCredits = max(0, (int) $event->credit_cost);
+            $settledCredits = min($originalCredits, (int) ceil($originalCredits * ($settledUnits / $originalUnits)));
+            $creditsToReturn = $originalCredits - $settledCredits;
+            $eventMetadata = (array) ($event->metadata ?? []);
+            $deductions = (array) Arr::get($eventMetadata, 'deductions', []);
+            $originalBase = max(0, (int) ($deductions['base'] ?? 0));
+            $originalBonus = max(0, (int) ($deductions['bonus'] ?? 0));
+            $refundBonus = min($originalBonus, $creditsToReturn);
+            $refundBase = min($originalBase, $creditsToReturn - $refundBonus);
+
+            $wallet = WorkspaceCreditWallet::query()
+                ->when($event->billing_account_id, fn ($query) => $query->where('billing_account_id', $event->billing_account_id))
+                ->when(!$event->billing_account_id, fn ($query) => $query->where('workspace_id', $event->workspace_id))
+                ->lockForUpdate()
+                ->first();
+
+            if ($wallet) {
+                if ($event->credit_bucket === 'scrape') {
+                    $wallet->scrape_credits_balance += $refundBase;
+                    $wallet->bonus_scrape_credits += $refundBonus;
+                    $wallet->lifetime_scrape_used += $settledCredits;
+                } else {
+                    $wallet->ai_credits_balance += $refundBase;
+                    $wallet->bonus_ai_credits += $refundBonus;
+                    $wallet->lifetime_ai_used += $settledCredits;
+                }
+                $wallet->save();
+            }
+
+            $eventMetadata['deductions'] = [
+                'base' => $originalBase - $refundBase,
+                'bonus' => $originalBonus - $refundBonus,
+            ];
+            $event->units = $settledUnits;
+            $event->credit_cost = $settledCredits;
+            $event->status = 'consumed';
+            $event->provider_cost_usd = $providerCostUsd;
+            $event->reference_id = $referenceId ?: $event->reference_id;
+            $event->metadata = array_merge($eventMetadata, $metadata, [
+                'original_units' => $originalUnits,
+                'original_credit_cost' => $originalCredits,
+                'refunded_credit_cost' => $creditsToReturn,
+                'partial_settlement' => $settledUnits < $originalUnits,
+            ]);
+            $event->consumed_at = now();
+            $event->save();
+        });
+    }
+
 
     private function readWorkspaceBillingSnapshot(string $workspaceId): array
     {

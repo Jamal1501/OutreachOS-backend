@@ -1,0 +1,22 @@
+name: Backend CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, pdo_sqlite
+          coverage: none
+      - run: composer install --no-interaction --prefer-dist --optimize-autoloader
+      - run: cp .env.example .env
+      - run: php artisan key:generate
+      - run: php artisan test
+      - run: vendor/bin/pint --test
