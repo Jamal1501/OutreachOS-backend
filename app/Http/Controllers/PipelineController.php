@@ -142,7 +142,6 @@ class PipelineController extends Controller
                 'error' => 'Pipeline job not found',
             ], 404);
         }
-
         $workspaceId = (string) $request->attributes->get('workspace_id');
         $jobWorkspaceId = (string) data_get($state, 'request.workspaceId', '');
         if ($jobWorkspaceId !== '' && $workspaceId !== '' && $jobWorkspaceId !== $workspaceId) {
@@ -150,6 +149,7 @@ class PipelineController extends Controller
                 'error' => 'Pipeline job not found',
             ], 404);
         }
+        $state = $this->pipeline->reconcileStaleJob($validated['jobId'], $state) ?? $state;
 
         return response()->json([
             'jobId' => $state['jobId'],
@@ -167,6 +167,28 @@ class PipelineController extends Controller
             'brief' => $state['brief'] ?? null,
             'usageSummary' => $state['usageSummary'] ?? null,
         ]);
+    }
+
+    public function cancel(Request $request)
+    {
+        $validated = $request->validate([
+            'jobId' => ['required', 'string'],
+        ]);
+
+        $state = $this->pipeline->getJobState($validated['jobId']);
+        $workspaceId = (string) $request->attributes->get('workspace_id');
+        $jobWorkspaceId = (string) data_get($state, 'request.workspaceId', '');
+        if (!$state || ($jobWorkspaceId !== '' && $workspaceId !== '' && $jobWorkspaceId !== $workspaceId)) {
+            return response()->json(['error' => 'Pipeline job not found'], 404);
+        }
+
+        $state = $this->pipeline->requestCancellation($validated['jobId']);
+
+        return response()->json([
+            'jobId' => $state['jobId'],
+            'status' => $state['status'] ?? 'cancel_requested',
+            'message' => 'Stop requested. The active provider run is being cancelled.',
+        ], 202);
     }
 
     private function progressSnapshot(array $state): array

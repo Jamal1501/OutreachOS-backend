@@ -4,6 +4,7 @@ namespace App\Services\Providers;
 
 use App\Contracts\EnrichmentProvider;
 use App\DataTransferObjects\ProviderRunResult;
+use App\Exceptions\PipelineCancelledException;
 use App\Services\ScraperRegistryService;
 use App\Services\WorkspaceBillingService;
 use Throwable;
@@ -88,6 +89,20 @@ class ApifyEnrichmentProvider implements EnrichmentProvider
                     referenceId: (string) ($runs[0]['runId'] ?? ''),
                 );
             }
+        } catch (PipelineCancelledException $exception) {
+            if ($reservationId !== '') {
+                $this->billing->consumeReservation(
+                    $reservationId,
+                    providerCostUsd: $providerCostKnown ? $providerCostUsd : null,
+                    metadata: [
+                        'cancelled_by_user' => true,
+                        'completed_batches' => count($runs),
+                        'runs' => $runs,
+                    ],
+                    referenceId: $exception->providerRunId ?? (string) ($runs[0]['runId'] ?? ''),
+                );
+            }
+            throw $exception;
         } catch (Throwable $exception) {
             if ($reservationId !== '') {
                 $this->billing->refundReservation($reservationId, 'Batched enrichment failed', [

@@ -125,6 +125,7 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::post('/pipeline/discover', [PipelineController::class, 'discover'])->middleware('throttle:expensive');
     Route::post('/pipeline/discover-from-brief', [PipelineController::class, 'discoverFromBrief'])->middleware('throttle:expensive');
     Route::get('/pipeline/status', [PipelineController::class, 'status']);
+    Route::post('/pipeline/cancel', [PipelineController::class, 'cancel'])->middleware('throttle:expensive');
 
     Route::middleware('throttle:expensive')->group(function () {
         Route::post('/ai/parse-discovery-brief', [AiController::class, 'parseDiscoveryBrief']);

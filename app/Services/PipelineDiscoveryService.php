@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Contracts\DiscoveryProvider;
 use App\Contracts\EnrichmentProvider;
+use App\Exceptions\PipelineCancelledException;
 use App\Models\DiscoveryItem;
 use App\Models\DiscoveryRun;
 use App\Models\EnrichmentJob;
@@ -77,6 +78,82 @@ class PipelineDiscoveryService
         return $state;
     }
 
+    public function requestCancellation(string $jobId): array
+    {
+        $state = $this->getJobState($jobId);
+        if (!$state) {
+            throw new \RuntimeException('Pipeline job not found');
+        }
+
+        if (in_array((string) ($state['status'] ?? ''), ['completed', 'failed', 'cancelled'], true)) {
+            return $state;
+        }
+
+        $this->updateJob($jobId, [
+            'status' => 'cancel_requested',
+            'error' => null,
+            'cancelRequestedAt' => now()->toDateTimeString(),
+        ]);
+
+        return $this->getJobState($jobId) ?? $state;
+    }
+
+    public function markJobFailed(string $jobId, string $message): void
+    {
+        $state = $this->getJobState($jobId);
+        if (!$state || in_array((string) ($state['status'] ?? ''), ['completed', 'failed', 'cancelled'], true)) {
+            return;
+        }
+
+        if (($state['status'] ?? null) === 'cancel_requested') {
+            $this->updateJob($jobId, [
+                'status' => 'cancelled',
+                'currentStep' => null,
+                'error' => null,
+            ]);
+            return;
+        }
+
+        $this->updateJob($jobId, [
+            'status' => 'failed',
+            'failedStep' => $state['currentStep'] ?? null,
+            'error' => $message,
+        ]);
+    }
+
+    public function reconcileStaleJob(string $jobId, ?array $state = null): ?array
+    {
+        $state ??= $this->getJobState($jobId);
+        if (!$state || !in_array((string) ($state['status'] ?? ''), ['running', 'cancel_requested'], true)) {
+            return $state;
+        }
+
+        $updatedAt = $state['updatedAt'] ?? null;
+        if (!$updatedAt) {
+            return $state;
+        }
+
+        $staleAfterMinutes = ($state['status'] ?? null) === 'cancel_requested' ? 2 : 20;
+        if (now()->diffInMinutes(\Illuminate\Support\Carbon::parse($updatedAt)) < $staleAfterMinutes) {
+            return $state;
+        }
+
+        if (($state['status'] ?? null) === 'cancel_requested') {
+            $this->updateJob($jobId, [
+                'status' => 'cancelled',
+                'currentStep' => null,
+                'error' => null,
+            ]);
+        } else {
+            $this->markJobFailed(
+                $jobId,
+                'Discovery stopped responding before it completed. No further work is running; please start a new discovery.',
+            );
+        }
+
+        return $this->getJobState($jobId);
+    }
+
 public function getJobState(string $jobId): ?array
 {
     // DB must be the source of truth in multi-container deployments like Render.
@@ -146,6 +223,7 @@ public function getJobState(string $jobId): ?array
         $stepResults = [];
 
         try {
+            $this->assertNotCancelled($jobId);
             $this->updateJob($jobId, [
                 'status' => 'running',
                 'currentStep' => 'discovery_scrape',
@@ -158,7 +236,9 @@ public function getJobState(string $jobId): ?array
                 'workspaceId' => $payload['workspaceId'] ?? null,
                 'planId' => $payload['planId'] ?? 'free',
                 'moduleKey' => $payload['discoveryModuleKey'] ?? null,
+                'shouldCancel' => fn (): bool => $this->isCancellationRequested($jobId),
             ]);
+            $this->assertNotCancelled($jobId);
             $discoveryItems = $discovery->items;
             $stepResults[] = [
                 'step' => 'discovery_scrape',
@@ -170,6 +250,7 @@ public function getJobState(string $jobId): ?array
                 'billing' => $this->providerBillingSummary($discovery),
             ];
             $this->completeStep($jobId, 'discovery_scrape', end($stepResults));
+            $this->assertNotCancelled($jobId);
             $this->persistDiscoveryProviderResult($jobId, $projectId, $platform, $hashtags, $discoveryLimit, $enrichmentLimit, $dedupeAgainstCRM, $discovery);
             $this->persistDiscoveryItems($jobId, $projectId, $platform, $discoveryItems);
 
@@ -183,6 +264,7 @@ public function getJobState(string $jobId): ?array
                 'importedRows' => $importedRows,
             ];
             $this->completeStep($jobId, 'import_posts', end($stepResults));
+            $this->assertNotCancelled($jobId);
 
             $this->updateJob($jobId, ['currentStep' => 'extract_urls']);
             $selectionPoolLimit = $this->resolveSelectionPoolLimit($enrichmentLimit, $criteria);
@@ -219,6 +301,7 @@ public function getJobState(string $jobId): ?array
                 'uniqueProfiles' => count($profiles),
             ];
             $this->completeStep($jobId, 'extract_urls', end($stepResults));
+            $this->assertNotCancelled($jobId);
             $this->markDiscoveryProfilesPromoted($jobId, $projectId, array_column($profiles, 'profileUrl'));
 
             $previewCreators = $this->buildPreviewCreatorsResponse($profiles, $sourceHashtagsByUrl);
@@ -269,6 +352,7 @@ public function getJobState(string $jobId): ?array
                 'workspaceId' => $payload['workspaceId'] ?? null,
                 'planId' => $payload['planId'] ?? 'free',
                 'moduleKey' => $payload['enrichmentModuleKey'] ?? null,
+                'shouldCancel' => fn (): bool => $this->isCancellationRequested($jobId),
                 'onBatchProgress' => function (int $completedProfiles, int $totalProfiles, int $completedBatches, int $totalBatches) use ($jobId) {
                     $this->updateJob($jobId, [
                         'enrichmentProgress' => [
@@ -351,6 +435,31 @@ public function getJobState(string $jobId): ?array
             ]);
 
             return $final;
+        } catch (PipelineCancelledException $exception) {
+            $state = $this->getJobState($jobId) ?? [];
+            if (!empty($state['enrichmentJobId'])) {
+                $this->cancelEnrichmentJob((string) $state['enrichmentJobId']);
+            }
+
+            $usageSummary = $this->buildUsageSummary($stepResults, 0, 0);
+            $this->updateJob($jobId, [
+                'status' => 'cancelled',
+                'error' => null,
+                'failedStep' => null,
+                'currentStep' => null,
+                'steps' => $stepResults,
+                'usageSummary' => $usageSummary,
+                'result' => [
+                    'message' => 'Discovery stopped',
+                    'status' => 'cancelled',
+                    'steps' => $stepResults,
+                    'creators' => [],
+                    'totalCreators' => 0,
+                    'usageSummary' => $usageSummary,
+                ],
+            ]);
+
+            return ['status' => 'cancelled', 'message' => 'Discovery stopped'];
         } catch (\Throwable $exception) {
             Log::error('Pipeline discovery job failed', [
                 'jobId' => $jobId,
@@ -405,6 +514,18 @@ public function getJobState(string $jobId): ?array
             'completedSteps' => $completed,
             'steps' => $steps,
         ]);
+    }
+
+    private function isCancellationRequested(string $jobId): bool
+    {
+        return ($this->getJobState($jobId)['status'] ?? null) === 'cancel_requested';
+    }
+
+    private function assertNotCancelled(string $jobId): void
+    {
+        if ($this->isCancellationRequested($jobId)) {
+            throw new PipelineCancelledException();
+        }
     }
 
     private function providerBillingSummary(object $result): array
@@ -469,6 +590,9 @@ public function getJobState(string $jobId): ?array
     private function updateJob(string $jobId, array $changes): void
     {
         $state = $this->getJobState($jobId) ?? ['jobId' => $jobId];
+        if (($state['status'] ?? null) === 'cancel_requested' && ($changes['status'] ?? null) === 'running') {
+            unset($changes['status']);
+        }
         $state = array_merge($state, $changes, [
             'updatedAt' => now()->toDateTimeString(),
         ]);
@@ -536,7 +660,7 @@ public function getJobState(string $jobId): ?array
 );
         $run->error_message = $state['error'] ?? null;
         $run->started_at = $run->started_at ?: now();
-        if (($state['status'] ?? null) === 'completed' || ($state['status'] ?? null) === 'failed') {
+        if (in_array(($state['status'] ?? null), ['completed', 'failed', 'cancelled'], true)) {
             $run->finished_at = now();
         }
         $run->save();
@@ -689,6 +813,19 @@ public function getJobState(string $jobId): ?array
 
         $job->status = 'failed';
         $job->error_message = $message;
+        $job->finished_at = now();
+        $job->save();
+    }
+
+    private function cancelEnrichmentJob(string $enrichmentJobId): void
+    {
+        $job = EnrichmentJob::query()->find($enrichmentJobId);
+        if (!$job) {
+            return;
+        }
+
+        $job->status = 'cancelled';
+        $job->error_message = null;
         $job->finished_at = now();
         $job->save();
     }

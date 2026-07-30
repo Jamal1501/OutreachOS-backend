@@ -4,6 +4,7 @@ namespace App\Services\Providers;
 
 use App\DataTransferObjects\ProviderRunResult;
 use App\Exceptions\InsufficientCreditsException;
+use App\Exceptions\PipelineCancelledException;
 use App\Services\ProviderUsageLogger;
 use App\Services\WorkspaceBillingService;
 use Illuminate\Support\Facades\Http;
@@ -33,6 +34,7 @@ class ApifyRunExecutor
 
         $usageReservationId = null;
         $usageReservation = null;
+        $runId = null;
         $moduleKey = isset($context['moduleKey']) ? trim((string) $context['moduleKey']) : null;
         $workspaceId = isset($context['workspaceId']) ? trim((string) $context['workspaceId']) : null;
         $billingManagedExternally = trim((string) ($context['externalUsageReservationId'] ?? '')) !== '';
@@ -73,10 +75,12 @@ class ApifyRunExecutor
                 ->post($url, $input);
 
             if (!$startResponse->successful()) {
+                $providerMessage = $this->providerErrorMessage($startResponse->json(), $startResponse->body());
                 if ($usageReservationId) {
                     $this->billing->refundReservation($usageReservationId, 'Failed to start Apify actor', [
                         'status' => $startResponse->status(),
                     ]);
+                    $usageReservationId = null;
                 }
 
                 $this->usageLogger->logApify([
@@ -89,7 +93,7 @@ class ApifyRunExecutor
                     'error_message' => 'Failed to start Apify actor',
                 ]);
 
-                throw new RuntimeException('Failed to start Apify actor: ' . $startResponse->body());
+                throw new RuntimeException('Apify could not start the run: ' . $providerMessage);
             }
 
             $startData = $startResponse->json('data') ?? [];
@@ -98,7 +102,7 @@ class ApifyRunExecutor
                 throw new RuntimeException('Apify run ID missing in response');
             }
 
-            $runData = $this->pollRun($token, $runId);
+            $runData = $this->pollRun($token, $runId, $context['shouldCancel'] ?? null);
             $datasetId = (string) ($runData['defaultDatasetId'] ?? '');
             $datasetFetchLimit = isset($context['fetchLimit']) && is_numeric($context['fetchLimit'])
                 ? max(1, (int) $context['fetchLimit'])
@@ -162,6 +166,24 @@ class ApifyRunExecutor
             );
         } catch (InsufficientCreditsException $exception) {
             throw $exception;
+        } catch (PipelineCancelledException $exception) {
+            if ($usageReservationId) {
+                if ($runId) {
+                    $this->billing->consumeReservation(
+                        $usageReservationId,
+                        providerCostUsd: null,
+                        metadata: [
+                            'cancelled_by_user' => true,
+                            'run_id' => $runId,
+                            'provider_cost_source' => 'cancelled_run_cost_unavailable',
+                        ],
+                        referenceId: $runId,
+                    );
+                } else {
+                    $this->billing->refundReservation($usageReservationId, 'Cancelled before provider run started');
+                }
+            }
+            throw $exception;
         } catch (\Throwable $exception) {
             if ($usageReservationId) {
                 $this->billing->refundReservation($usageReservationId, 'Pipeline Apify execution failed', [
@@ -173,11 +195,20 @@ class ApifyRunExecutor
         }
     }
 
-    private function pollRun(string $token, string $runId): array
+    private function pollRun(string $token, string $runId, mixed $shouldCancel = null): array
     {
         $deadline = time() + self::DEFAULT_TIMEOUT_SECONDS;
 
         do {
+            if (is_callable($shouldCancel) && $shouldCancel()) {
+                Http::withToken($token)
+                    ->acceptJson()
+                    ->timeout(30)
+                    ->post("https://api.apify.com/v2/actor-runs/{$runId}/abort");
+
+                throw new PipelineCancelledException(providerRunId: $runId);
+            }
+
             $response = Http::withToken($token)
                 ->acceptJson()
                 ->timeout(30)
@@ -221,6 +252,22 @@ class ApifyRunExecutor
         }
 
         return null;
+    }
+
+    private function providerErrorMessage(mixed $payload, string $fallback): string
+    {
+        if (is_array($payload)) {
+            foreach (['error.message', 'message', 'error'] as $path) {
+                $message = data_get($payload, $path);
+                if (is_string($message) && trim($message) !== '') {
+                    return trim($message);
+                }
+            }
+        }
+
+        $clean = trim(strip_tags($fallback));
+
+        return $clean !== '' ? mb_substr($clean, 0, 500) : 'The provider rejected the request.';
     }
 
     private function fetchDatasetItems(string $token, string $datasetId, ?int $limit = null): array
