@@ -93,7 +93,8 @@ class PipelineDiscoveryService
         }
 
         $this->updateJob($jobId, [
-            'status' => 'cancel_requested',
+            'status' => 'cancelled',
+            'cancellationRequested' => true,
             'error' => null,
             'cancelRequestedAt' => now()->toDateTimeString(),
         ]);
@@ -182,6 +183,7 @@ public function getJobState(string $jobId): ?array
             'brief' => $result['brief'] ?? Arr::get($run->request_payload, 'brief'),
             'usageSummary' => $result['usageSummary'] ?? null,
             'enrichmentProgress' => $result['enrichmentProgress'] ?? null,
+            'cancellationRequested' => (bool) ($result['cancellationRequested'] ?? false),
             'resultsPreviewReady' => (bool) ($result['resultsPreviewReady'] ?? false),
             'createdAt' => optional($run->created_at)?->toDateTimeString(),
             'updatedAt' => optional($run->updated_at)?->toDateTimeString(),
@@ -447,6 +449,7 @@ public function getJobState(string $jobId): ?array
             $usageSummary = $this->buildUsageSummary($stepResults, 0, 0);
             $this->updateJob($jobId, [
                 'status' => 'cancelled',
+                'cancellationRequested' => false,
                 'error' => null,
                 'failedStep' => null,
                 'currentStep' => null,
@@ -521,7 +524,10 @@ public function getJobState(string $jobId): ?array
 
     private function isCancellationRequested(string $jobId): bool
     {
-        return ($this->getJobState($jobId)['status'] ?? null) === 'cancel_requested';
+        $state = $this->getJobState($jobId) ?? [];
+
+        return ($state['status'] ?? null) === 'cancel_requested'
+            || (bool) ($state['cancellationRequested'] ?? false);
     }
 
     private function assertNotCancelled(string $jobId): void
@@ -596,6 +602,12 @@ public function getJobState(string $jobId): ?array
         if (($state['status'] ?? null) === 'cancel_requested' && ($changes['status'] ?? null) === 'running') {
             unset($changes['status']);
         }
+        if (
+            (bool) ($state['cancellationRequested'] ?? false)
+            && in_array(($changes['status'] ?? null), ['running', 'completed'], true)
+        ) {
+            unset($changes['status']);
+        }
         $state = array_merge($state, $changes, [
             'updatedAt' => now()->toDateTimeString(),
         ]);
@@ -658,6 +670,7 @@ public function getJobState(string $jobId): ?array
         'brief' => $state['brief'] ?? Arr::get($state, 'request.brief'),
         'usageSummary' => $state['usageSummary'] ?? null,
         'resultsPreviewReady' => (bool) ($state['resultsPreviewReady'] ?? false),
+        'cancellationRequested' => (bool) ($state['cancellationRequested'] ?? false),
     ],
     is_array($state['result'] ?? null) ? $state['result'] : []
 );
