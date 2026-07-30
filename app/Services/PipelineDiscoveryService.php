@@ -470,6 +470,8 @@ public function getJobState(string $jobId): ?array
             Log::error('Pipeline discovery job failed', [
                 'jobId' => $jobId,
                 'message' => $exception->getMessage(),
+                'exception' => get_class($exception),
+                'trace' => $exception->getTraceAsString(),
             ]);
 
             $state = $this->getJobState($jobId) ?? [];
@@ -480,11 +482,12 @@ public function getJobState(string $jobId): ?array
             }
 
             $usageSummary = $this->buildUsageSummary($stepResults, 0, 0);
+            $publicError = $this->publicFailureMessage($exception, $failedStep);
 
             $this->updateJob($jobId, [
                 'status' => 'failed',
                 'failedStep' => $failedStep,
-                'error' => $exception->getMessage(),
+                'error' => $publicError,
                 'steps' => $stepResults,
                 'currentStep' => $failedStep,
                 'usageSummary' => $usageSummary,
@@ -504,6 +507,27 @@ public function getJobState(string $jobId): ?array
 
             throw $exception;
         }
+    }
+
+    private function publicFailureMessage(\Throwable $exception, ?string $failedStep): string
+    {
+        if ($exception instanceof \App\Exceptions\InsufficientCreditsException) {
+            return 'This discovery could not continue because the workspace does not have enough credits.';
+        }
+
+        $message = strtolower($exception->getMessage());
+        $isProviderFailure = str_contains($message, 'apify')
+            || str_contains($message, 'actor')
+            || str_contains($message, 'provider')
+            || str_contains($message, 'dataset');
+
+        if ($isProviderFailure) {
+            return $failedStep === 'enrichment_scrape'
+                ? 'Creator enrichment could not be completed because our data provider is temporarily unavailable. Please try again shortly.'
+                : 'Discovery could not start because our data provider is temporarily unavailable. Please try again shortly.';
+        }
+
+        return 'Discovery could not be completed because of an unexpected service error. Please try again. If it happens again, contact support with the reference below.';
     }
 
     private function completeStep(string $jobId, string $step, array $payload): void
