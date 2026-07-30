@@ -46,8 +46,8 @@ class PipelineController extends Controller
             'sheetId' => $this->resolveSheetId($request, $validated['sheetId'] ?? null),
             'platform' => $validated['platform'],
             'hashtags' => $validated['hashtags'],
-            'discoveryLimit' => (int) ($validated['discoveryLimit'] ?? 50),
-            'enrichmentLimit' => (int) ($validated['enrichmentLimit'] ?? 20),
+            'discoveryLimit' => (int) ($validated['discoveryLimit'] ?? 200),
+            'enrichmentLimit' => (int) ($validated['enrichmentLimit'] ?? 50),
             'dedupeAgainstCRM' => (bool) ($validated['dedupeAgainstCRM'] ?? true),
             'rankingMetric' => (string) ($validated['rankingMetric'] ?? ''),
             'brief' => $validated['brief'] ?? null,
@@ -86,8 +86,8 @@ class PipelineController extends Controller
             'sheetId' => $this->resolveSheetId($request, $validated['sheetId'] ?? null),
             'platform' => $validated['platform'],
             'hashtags' => $criteria['hashtags'] ?? [],
-            'discoveryLimit' => (int) ($validated['discoveryLimit'] ?? ($criteria['recommendedDiscoveryLimit'] ?? 60)),
-            'enrichmentLimit' => (int) ($validated['enrichmentLimit'] ?? ($criteria['recommendedEnrichmentLimit'] ?? 25)),
+            'discoveryLimit' => (int) ($validated['discoveryLimit'] ?? 200),
+            'enrichmentLimit' => (int) ($validated['enrichmentLimit'] ?? 50),
             'dedupeAgainstCRM' => (bool) ($validated['dedupeAgainstCRM'] ?? true),
             'rankingMetric' => (string) ($validated['rankingMetric'] ?? ''),
             'brief' => (string) $validated['brief'],
@@ -122,8 +122,8 @@ class PipelineController extends Controller
 
         $preflight = $this->creditPreflight($workspaceId, [
             'platform' => (string) $validated['platform'],
-            'discoveryLimit' => (int) ($validated['discoveryLimit'] ?? 50),
-            'enrichmentLimit' => (int) ($validated['enrichmentLimit'] ?? 20),
+            'discoveryLimit' => (int) ($validated['discoveryLimit'] ?? 200),
+            'enrichmentLimit' => (int) ($validated['enrichmentLimit'] ?? 50),
             'seedCount' => $seedCount,
             'discoveryModuleKey' => $validated['discoveryModuleKey'] ?? null,
             'enrichmentModuleKey' => $validated['enrichmentModuleKey'] ?? null,
@@ -215,8 +215,8 @@ class PipelineController extends Controller
         $creators = is_array($state['creators'] ?? null) ? $state['creators'] : [];
         $hashtags = array_values(array_filter((array) ($request['hashtags'] ?? []), fn ($value) => trim((string) $value) !== ''));
         $seedCount = max(1, count($hashtags));
-        $discoveryLimit = max(1, (int) ($request['discoveryLimit'] ?? 50));
-        $enrichmentLimit = max(1, (int) ($request['enrichmentLimit'] ?? 20));
+        $discoveryLimit = max(1, (int) ($request['discoveryLimit'] ?? 200));
+        $enrichmentLimit = max(1, (int) ($request['enrichmentLimit'] ?? 50));
 
         $stepPayloads = [];
         foreach ($steps as $step) {
@@ -403,8 +403,8 @@ class PipelineController extends Controller
         $estimate = $this->pipeline->estimate(
             $planId,
             (string) ($payload['platform'] ?? 'instagram'),
-            (int) ($payload['discoveryLimit'] ?? 50),
-            (int) ($payload['enrichmentLimit'] ?? 20),
+            (int) ($payload['discoveryLimit'] ?? 200),
+            (int) ($payload['enrichmentLimit'] ?? 50),
             $seedCount,
             $payload['discoveryModuleKey'] ?? null,
             $payload['enrichmentModuleKey'] ?? null,

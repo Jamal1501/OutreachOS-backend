@@ -209,8 +209,8 @@ public function getJobState(string $jobId): ?array
         $sheetId = $payload['sheetId'];
         $platform = $payload['platform'];
         $hashtags = array_values(array_unique(array_filter(array_map(fn ($value) => $this->normalizeHashtag((string) $value), $payload['hashtags'] ?? []))));
-        $discoveryLimit = (int) ($payload['discoveryLimit'] ?? 50);
-        $enrichmentLimit = (int) ($payload['enrichmentLimit'] ?? 20);
+        $discoveryLimit = (int) ($payload['discoveryLimit'] ?? 200);
+        $enrichmentLimit = (int) ($payload['enrichmentLimit'] ?? 50);
         $dedupeAgainstCRM = (bool) ($payload['dedupeAgainstCRM'] ?? true);
         [$rankingMetric, $rankingDirection] = $this->resolveRankingPreference($platform, (string) ($payload['rankingMetric'] ?? ''));
         $criteria = $this->normalizeDiscoveryCriteria(is_array($payload['criteria'] ?? null) ? $payload['criteria'] : []);
@@ -654,8 +654,8 @@ public function getJobState(string $jobId): ?array
         $run->status = (string) ($state['status'] ?? $run->status ?: 'running');
         $run->current_step = $state['currentStep'] ?? null;
         $run->hashtags = Arr::get($state, 'request.hashtags', []);
-        $run->discovery_limit = (int) Arr::get($state, 'request.discoveryLimit', 50);
-        $run->enrichment_limit = (int) Arr::get($state, 'request.enrichmentLimit', 20);
+        $run->discovery_limit = (int) Arr::get($state, 'request.discoveryLimit', 200);
+        $run->enrichment_limit = (int) Arr::get($state, 'request.enrichmentLimit', 50);
         $run->dedupe_against_crm = (bool) Arr::get($state, 'request.dedupeAgainstCRM', true);
         $run->request_payload = $state['request'] ?? null;
         $run->result_payload = array_merge(
