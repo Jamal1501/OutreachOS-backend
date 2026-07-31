@@ -171,7 +171,8 @@ class PipelineDiscoveryService
         }
 
         $staleAfterMinutes = ($state['status'] ?? null) === 'cancel_requested' ? 2 : 20;
-        if (now()->diffInMinutes(\Illuminate\Support\Carbon::parse($updatedAt)) < $staleAfterMinutes) {
+        $ageMinutes = \Illuminate\Support\Carbon::parse($updatedAt)->diffInMinutes(now(), true);
+        if ($ageMinutes < $staleAfterMinutes) {
             return $state;
         }
 

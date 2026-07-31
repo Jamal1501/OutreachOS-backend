@@ -491,7 +491,7 @@ $record->save();
 
     $member = DB::table('workspace_members')
         ->join('users', function ($join) {
-            $join->on(DB::raw('users.supabase_user_id::text'), '=', DB::raw('workspace_members.user_id::text'));
+            $join->on('users.supabase_user_id', '=', 'workspace_members.user_id');
         })
         ->where('workspace_members.workspace_id', $workspaceId)
         ->orderByRaw("CASE workspace_members.role WHEN 'owner' THEN 1 WHEN 'admin' THEN 2 ELSE 3 END")

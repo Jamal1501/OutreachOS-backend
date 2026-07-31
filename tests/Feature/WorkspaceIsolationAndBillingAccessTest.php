@@ -181,6 +181,12 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
     public function test_stripe_webhook_event_is_processed_once(): void
     {
         [, $workspace] = $this->createWorkspaceForRole('owner');
+        [$subscription] = app(WorkspaceBillingService::class)->ensureWorkspaceBilling($workspace->id);
+        DB::table('workspaces')->where('id', $workspace->id)->update(['plan_id' => 'pro']);
+        DB::table('workspace_subscriptions')->where('id', $subscription->id)->update([
+            'plan_id' => 'pro',
+            'status' => 'active',
+        ]);
         config(['services.stripe.webhook_secret' => 'whsec_test_secret']);
 
         $payload = json_encode([
@@ -191,7 +197,7 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
                     'id' => 'cs_test_once',
                     'payment_status' => 'paid',
                     'payment_intent' => 'pi_test_once',
-                    'amount_total' => 2375,
+                    'amount_total' => 1500,
                     'currency' => 'usd',
                     'customer' => 'cus_test_once',
                     'metadata' => [
@@ -327,6 +333,10 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
     public function test_pipeline_estimate_flags_insufficient_scrape_credits(): void
     {
         [$user, $workspace] = $this->createWorkspaceForRole('owner');
+        config([
+            'services.apify.actors.instagram_discovery' => 'test/instagram-discovery',
+            'services.apify.actors.instagram_profile' => 'test/instagram-profile',
+        ]);
         $billing = app(WorkspaceBillingService::class);
         [, $wallet] = $billing->ensureWorkspaceBilling($workspace->id);
 

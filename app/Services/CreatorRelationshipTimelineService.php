@@ -199,6 +199,16 @@ class CreatorRelationshipTimelineService
                 }
             }
 
+            if (trim((string) ($metadata['message_text'] ?? '')) === '') {
+                $messageText = trim((string) ($event->task?->message_draft ?? ''));
+                if ($messageText !== '') {
+                    $metadata['message_text'] = $messageText;
+                    $event->metadata = $metadata;
+                    $snapshotted++;
+                    $dirty = true;
+                }
+            }
+
             if ($dirty) {
                 $event->save();
             }
