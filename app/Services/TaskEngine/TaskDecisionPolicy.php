@@ -37,7 +37,7 @@ class TaskDecisionPolicy
         if ($profile->accepted_flag) {
             $score += 18;
         }
-        if (!empty($metadata['follow_up_variant'])) {
+        if (! empty($metadata['follow_up_variant'])) {
             $score += 14;
         }
         if ($this->isSupportTaskType($taskType)) {
@@ -47,7 +47,7 @@ class TaskDecisionPolicy
         $decision = $this->copyForTask($taskType, $sourceRule, $daysSinceOutreach);
         $riskFlags = [];
 
-        if ($actionableChannel === 'email' && !$this->profileHasUsableEmail($profile)) {
+        if ($actionableChannel === 'email' && ! $this->profileHasUsableEmail($profile)) {
             $riskFlags[] = 'missing_email';
             $score -= 18;
         }
@@ -73,7 +73,7 @@ class TaskDecisionPolicy
         if ($profile->accepted_flag) {
             $qualitySignals[] = 'accepted_handoff';
         }
-        if (!empty($metadata['follow_up_variant'])) {
+        if (! empty($metadata['follow_up_variant'])) {
             $qualitySignals[] = 'follow_up_due';
         }
         if ($this->isSupportTaskType($taskType)) {
@@ -91,7 +91,7 @@ class TaskDecisionPolicy
             'engagement_bonus' => $engagement >= 4.0 ? 6 : ($engagement >= 2.0 ? 3 : 0),
             'reply_bonus' => $profile->responded_at instanceof Carbon ? 24 : 0,
             'accepted_bonus' => $profile->accepted_flag ? 18 : 0,
-            'follow_up_bonus' => !empty($metadata['follow_up_variant']) ? 14 : 0,
+            'follow_up_bonus' => ! empty($metadata['follow_up_variant']) ? 14 : 0,
             'support_task_penalty' => $this->isSupportTaskType($taskType) ? (empty($metadata['follow_up_variant']) ? -26 : -14) : 0,
             'risk_penalty' => -1 * (in_array('missing_email', $riskFlags, true) ? 18 : 0)
                 - (in_array('duplicate_risk', $riskFlags, true) ? 12 : 0)

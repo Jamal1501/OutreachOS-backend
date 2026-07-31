@@ -16,7 +16,7 @@ class ProjectResolverService
     {
         $project = $this->resolveProject($sheetId, $projectName, true);
 
-        if (!$project) {
+        if (! $project) {
             throw new RuntimeException('Project not found for workbook id');
         }
 
@@ -63,7 +63,7 @@ class ProjectResolverService
         }
 
         $autoCreate = config('outreach.operational_db.auto_create_project', true);
-        if (!$autoCreate || !$allowCreate) {
+        if (! $autoCreate || ! $allowCreate) {
             return null;
         }
 
@@ -71,8 +71,8 @@ class ProjectResolverService
             'workspace_id' => $workspaceId,
             'name' => $projectName ?: (
                 str_starts_with($sheetId, 'workspace:')
-                    ? 'Workspace ' . substr($sheetId, strlen('workspace:'))
-                    : 'Workbook ' . substr($sheetId, 0, 8)
+                    ? 'Workspace '.substr($sheetId, strlen('workspace:'))
+                    : 'Workbook '.substr($sheetId, 0, 8)
             ),
             'workbook_id' => $sheetId,
             'status' => 'active',

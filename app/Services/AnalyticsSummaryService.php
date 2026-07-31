@@ -17,8 +17,7 @@ class AnalyticsSummaryService
     public function __construct(
         private ProjectResolverService $projects,
         private WorkspaceBillingService $billing,
-    ) {
-    }
+    ) {}
 
     public function summary(string $sheetId, string $workspaceId = '', string $range = '30d'): array
     {
@@ -39,7 +38,7 @@ class AnalyticsSummaryService
 
         $base = $this->emptySummary($range, $rangeStart, $rangeEnd, $billingUsage);
 
-        if (!$project) {
+        if (! $project) {
             return $base;
         }
 
@@ -157,7 +156,7 @@ class AnalyticsSummaryService
             ->chunkById(200, function ($events) use ($projectId, &$linkedEvents) {
                 foreach ($events as $event) {
                     $profile = $this->findProfileForEvent($projectId, $event);
-                    if (!$profile) {
+                    if (! $profile) {
                         continue;
                     }
 
@@ -185,7 +184,7 @@ class AnalyticsSummaryService
 
         foreach ($events as $event) {
             $profile = $this->findProfileForEvent($projectId, $event);
-            if (!$profile) {
+            if (! $profile) {
                 continue;
             }
 
@@ -239,7 +238,7 @@ class AnalyticsSummaryService
             'source' => 'analytics_summary_service',
             'range' => [
                 'key' => $range,
-                'label' => $range === 'all' ? 'all time' : 'last ' . ($range === '7d' ? '7' : '30') . ' days',
+                'label' => $range === 'all' ? 'all time' : 'last '.($range === '7d' ? '7' : '30').' days',
                 'start' => $rangeStart?->toIso8601String(),
                 'end' => $rangeEnd->toIso8601String(),
             ],
@@ -353,7 +352,7 @@ class AnalyticsSummaryService
 
         return [
             'range' => [
-                'label' => 'previous_' . $range,
+                'label' => 'previous_'.$range,
                 'start' => $previousStart->toIso8601String(),
                 'end' => $previousEnd->toIso8601String(),
             ],
@@ -492,7 +491,7 @@ class AnalyticsSummaryService
             $isEstimated = (bool) ($metadata['estimated'] ?? false) || (bool) ($metadata['demoSafeEstimate'] ?? false);
             $isManual = (bool) ($metadata['manual'] ?? false) || (bool) ($metadata['fallback'] ?? false);
 
-            if (in_array($type, ['campaign_spend', 'campaign_spend_adjustment', 'scrape_spend'], true) && !$isEstimated && ($isManual || $type !== 'scrape_spend')) {
+            if (in_array($type, ['campaign_spend', 'campaign_spend_adjustment', 'scrape_spend'], true) && ! $isEstimated && ($isManual || $type !== 'scrape_spend')) {
                 $manualSpend += (float) ($event->amount ?? 0);
                 $manualCount++;
             }
@@ -526,8 +525,10 @@ class AnalyticsSummaryService
         }
         if (is_string($value) && $value !== '') {
             $decoded = json_decode($value, true);
+
             return is_array($decoded) ? $decoded : [];
         }
+
         return [];
     }
 
@@ -566,7 +567,7 @@ class AnalyticsSummaryService
         $terminalStates = ['accepted', 'declined', 'won', 'lost', 'archived'];
 
         if (in_array($eventType, $this->strictOutreachSentEventTypes(), true)) {
-            if (!in_array((string) $profile->lifecycle_state, $advancedStates, true)) {
+            if (! in_array((string) $profile->lifecycle_state, $advancedStates, true)) {
                 $profile->status = 'CONTACTED';
                 $profile->lifecycle_state = 'contacted';
                 $profile->follow_up_needed = true;
@@ -581,7 +582,7 @@ class AnalyticsSummaryService
         }
 
         if (in_array($eventType, $this->strictReplyEventTypes(), true)) {
-            if (!in_array((string) $profile->lifecycle_state, $terminalStates, true)) {
+            if (! in_array((string) $profile->lifecycle_state, $terminalStates, true)) {
                 $profile->status = 'REPLIED';
                 $profile->lifecycle_state = 'replied';
             }

@@ -34,9 +34,7 @@ class AiPersonalizationService
         'your recent post stood out',
     ];
 
-    public function __construct(private AiGatewayService $ai)
-    {
-    }
+    public function __construct(private AiGatewayService $ai) {}
 
     public function personalize(array $payload): array
     {
@@ -202,11 +200,11 @@ PROMPT;
         $result = $this->sanitizeGeneratedPayload($result);
 
         $violations = $this->detectCheapOutreachViolations((string) ($result['personalizedMessage'] ?? ''));
-        if (!empty($violations)) {
+        if (! empty($violations)) {
             $repairPrompt = $userPrompt
-                . "\n\n---\n\nQUALITY REPAIR REQUIRED\n"
-                . "The first draft used banned generic outreach wording: " . implode(', ', $violations) . ".\n"
-                . "Rewrite from scratch. Avoid the mirrored-observation opener. Lead with a creator-native content idea plus offer relevance, use evidence only when it sounds natural, do not reuse any banned phrase, and never use the em dash character.";
+                ."\n\n---\n\nQUALITY REPAIR REQUIRED\n"
+                .'The first draft used banned generic outreach wording: '.implode(', ', $violations).".\n"
+                .'Rewrite from scratch. Avoid the mirrored-observation opener. Lead with a creator-native content idea plus offer relevance, use evidence only when it sounds natural, do not reuse any banned phrase, and never use the em dash character.';
 
             $repaired = $this->ai->structured(
                 $systemPrompt,
@@ -219,7 +217,7 @@ PROMPT;
 
             $repaired['messageType'] = (string) ($repaired['messageType'] ?? $messageType);
             $repaired = $this->sanitizeGeneratedPayload($repaired);
-            $repaired['personalizationNotes'] = trim((string) ($repaired['personalizationNotes'] ?? '') . ' Auto-repaired first draft after banned generic wording was detected.');
+            $repaired['personalizationNotes'] = trim((string) ($repaired['personalizationNotes'] ?? '').' Auto-repaired first draft after banned generic wording was detected.');
 
             return $this->guardAgainstCheapOutreach($repaired);
         }
@@ -244,35 +242,35 @@ PROMPT;
     ): string {
         $sections = [];
 
-        $sections[] = "PROJECT / BRAND CONTEXT\n" . ($projectContext !== '' ? $projectContext : 'No project context supplied. Keep the message neutral, professional, and low-assumption.');
-        $sections[] = "OUTREACH STAGE\n" . ($stage !== '' ? $stage : 'unspecified');
-        $sections[] = "MESSAGE TYPE\n" . $messageType;
-        $sections[] = "GENERATION MODE\n" . ($generationMode !== '' ? $generationMode : 'fresh_draft');
-        $sections[] = "TONE PREFERENCE\n" . $tonePreference;
+        $sections[] = "PROJECT / BRAND CONTEXT\n".($projectContext !== '' ? $projectContext : 'No project context supplied. Keep the message neutral, professional, and low-assumption.');
+        $sections[] = "OUTREACH STAGE\n".($stage !== '' ? $stage : 'unspecified');
+        $sections[] = "MESSAGE TYPE\n".$messageType;
+        $sections[] = "GENERATION MODE\n".($generationMode !== '' ? $generationMode : 'fresh_draft');
+        $sections[] = "TONE PREFERENCE\n".$tonePreference;
 
-        if (!empty($taskContext)) {
-            $sections[] = "TASK CONTEXT - this overrides the template if there is conflict\n" . $this->json($taskContext);
+        if (! empty($taskContext)) {
+            $sections[] = "TASK CONTEXT - this overrides the template if there is conflict\n".$this->json($taskContext);
         }
 
-        $sections[] = "CREATOR EVIDENCE PACK - use this before raw profile data\n" . $this->json($evidencePack);
-        $sections[] = "RAW CREATOR PROFILE - for backup only; do not invent beyond it\n" . $this->json($creator);
-        $sections[] = "TEMPLATE CONTEXT - learned angle memory, not final copy\n" . $this->json($templateContext);
+        $sections[] = "CREATOR EVIDENCE PACK - use this before raw profile data\n".$this->json($evidencePack);
+        $sections[] = "RAW CREATOR PROFILE - for backup only; do not invent beyond it\n".$this->json($creator);
+        $sections[] = "TEMPLATE CONTEXT - learned angle memory, not final copy\n".$this->json($templateContext);
         if ($template !== '' && $generationMode === 'rewrite_existing_draft') {
-            $sections[] = "USER-WRITTEN DRAFT - mandatory message intent, improve wording but preserve concrete facts\n" . $template;
+            $sections[] = "USER-WRITTEN DRAFT - mandatory message intent, improve wording but preserve concrete facts\n".$template;
         } else {
-            $sections[] = "HIDDEN TEMPLATE - learned angle memory, ignore wording when mode is fresh_draft\n" . ($template !== '' ? $template : 'No template supplied. Generate a fresh draft from evidence, brand context, task context, and tone preference.');
+            $sections[] = "HIDDEN TEMPLATE - learned angle memory, ignore wording when mode is fresh_draft\n".($template !== '' ? $template : 'No template supplied. Generate a fresh draft from evidence, brand context, task context, and tone preference.');
         }
 
         if ($previousMessage !== '') {
-            $sections[] = "PREVIOUS MESSAGE - avoid repeating this\n" . $previousMessage;
+            $sections[] = "PREVIOUS MESSAGE - avoid repeating this\n".$previousMessage;
         }
 
-        if (!empty($replyContext)) {
-            $sections[] = "REPLY CONTEXT - respond to this if present\n" . $this->json($replyContext);
+        if (! empty($replyContext)) {
+            $sections[] = "REPLY CONTEXT - respond to this if present\n".$this->json($replyContext);
         }
 
         if ($conversationGoal !== '') {
-            $sections[] = "CONVERSATION GOAL\n" . $conversationGoal;
+            $sections[] = "CONVERSATION GOAL\n".$conversationGoal;
         }
 
         $sections[] = <<<'INSTRUCTIONS'
@@ -344,7 +342,7 @@ INSTRUCTIONS;
         }
 
         $repeatedThemes = $this->deriveRepeatedThemes(array_merge($bioSignals, $postSignals));
-        $hasSpecificEvidence = trim($bio) !== '' || count($posts) > 0 || !empty($replyContext);
+        $hasSpecificEvidence = trim($bio) !== '' || count($posts) > 0 || ! empty($replyContext);
 
         return [
             'handle' => $handle,
@@ -386,9 +384,9 @@ INSTRUCTIONS;
                 'hardRule' => 'Examples are not defaults. Pick only what fits the actual brand and creator evidence.',
             ],
             'brandContextAvailable' => $projectContext !== '',
-            'taskContextAvailable' => !empty($taskContext),
-            'templateContextAvailable' => !empty($templateContext),
-            'replyContextAvailable' => !empty($replyContext),
+            'taskContextAvailable' => ! empty($taskContext),
+            'templateContextAvailable' => ! empty($templateContext),
+            'replyContextAvailable' => ! empty($replyContext),
             'evidenceStrength' => $hasSpecificEvidence ? 'specific_evidence_available' : 'thin_profile_data',
             'safeHookInstruction' => $hasSpecificEvidence
                 ? 'Evidence is available, but do not force it into a mirrored first line. Use it only when it creates useful offer relevance.'
@@ -410,7 +408,7 @@ INSTRUCTIONS;
 
         if (empty($posts)) {
             foreach (['caption', 'latestCaption', 'sourceCaption', 'postCaption'] as $captionKey) {
-                if (!empty($creator[$captionKey]) && is_string($creator[$captionKey])) {
+                if (! empty($creator[$captionKey]) && is_string($creator[$captionKey])) {
                     $posts[] = ['caption' => $creator[$captionKey]];
                     break;
                 }
@@ -419,7 +417,7 @@ INSTRUCTIONS;
 
         $normalized = [];
         foreach (array_slice($posts, 0, 5) as $post) {
-            if (!is_array($post)) {
+            if (! is_array($post)) {
                 continue;
             }
 
@@ -458,10 +456,10 @@ INSTRUCTIONS;
 
         $signals = [];
         foreach (array_slice($hashtagMatches[1] ?? [], 0, $limit) as $tag) {
-            $signals[] = '#' . $tag;
+            $signals[] = '#'.$tag;
         }
         foreach (array_slice($mentionMatches[1] ?? [], 0, max(0, $limit - count($signals))) as $mention) {
-            $signals[] = '@' . $mention;
+            $signals[] = '@'.$mention;
         }
 
         $clean = trim(preg_replace('/https?:\/\/\S+|[#@][\p{L}\p{N}_.]+/u', '', $text) ?: '');
@@ -563,7 +561,6 @@ INSTRUCTIONS;
         return in_array($normalized, $allowed, true) ? $normalized : 'warm_direct';
     }
 
-
     private function sanitizeGeneratedPayload(array $result): array
     {
         foreach ($result as $key => $value) {
@@ -590,14 +587,14 @@ INSTRUCTIONS;
     {
         $violations = $this->detectCheapOutreachViolations((string) ($result['personalizedMessage'] ?? ''));
 
-        if (!empty($violations)) {
-            $result['personalizationNotes'] = trim((string) ($result['personalizationNotes'] ?? '') . ' Quality warning: draft used banned generic outreach wording (' . implode(', ', array_unique($violations)) . '). Regenerate with stronger evidence.');
+        if (! empty($violations)) {
+            $result['personalizationNotes'] = trim((string) ($result['personalizationNotes'] ?? '').' Quality warning: draft used banned generic outreach wording ('.implode(', ', array_unique($violations)).'). Regenerate with stronger evidence.');
             $result['confidenceScore'] = min((float) ($result['confidenceScore'] ?? 0.5), 0.35);
 
-            if (!isset($result['analysis']) || !is_array($result['analysis'])) {
+            if (! isset($result['analysis']) || ! is_array($result['analysis'])) {
                 $result['analysis'] = [];
             }
-            if (!isset($result['analysis']['risksToAvoid']) || !is_array($result['analysis']['risksToAvoid'])) {
+            if (! isset($result['analysis']['risksToAvoid']) || ! is_array($result['analysis']['risksToAvoid'])) {
                 $result['analysis']['risksToAvoid'] = [];
             }
 
@@ -667,7 +664,7 @@ INSTRUCTIONS;
             return $text;
         }
 
-        return rtrim(mb_substr($text, 0, $maxLength - 1)) . '…';
+        return rtrim(mb_substr($text, 0, $maxLength - 1)).'…';
     }
 
     private function json(array $value): string

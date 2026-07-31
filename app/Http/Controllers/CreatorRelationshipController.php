@@ -15,8 +15,7 @@ class CreatorRelationshipController extends Controller
         private WorkspaceContextService $workspaceContext,
         private ProjectResolverService $projects,
         private CreatorRelationshipTimelineService $timeline,
-    ) {
-    }
+    ) {}
 
     public function index(Request $request, string $id)
     {
@@ -30,10 +29,10 @@ class CreatorRelationshipController extends Controller
 
         $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
         $project = $this->projects->findByWorkbookId($sheetId);
-        abort_if(!$project || (string) $project->workspace_id !== $workspaceId, 404, 'Creator not found');
+        abort_if(! $project || (string) $project->workspace_id !== $workspaceId, 404, 'Creator not found');
 
         $profile = $this->resolveCreatorProfileForRoute((string) $project->id, $id);
-        abort_if(!$profile, 404, 'Creator not found');
+        abort_if(! $profile, 404, 'Creator not found');
 
         return response()->json([
             'message' => 'Creator relationship timeline fetched',
@@ -55,10 +54,10 @@ class CreatorRelationshipController extends Controller
 
         $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
         $project = $this->projects->findByWorkbookId($sheetId);
-        abort_if(!$project || (string) $project->workspace_id !== $workspaceId, 404, 'Creator not found');
+        abort_if(! $project || (string) $project->workspace_id !== $workspaceId, 404, 'Creator not found');
 
         $profile = $this->resolveCreatorProfileForRoute((string) $project->id, $id);
-        abort_if(!$profile, 404, 'Creator not found');
+        abort_if(! $profile, 404, 'Creator not found');
 
         return response()->json([
             'message' => 'Creator conversation fetched',
@@ -80,7 +79,7 @@ class CreatorRelationshipController extends Controller
 
         $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
         $project = $this->projects->findByWorkbookId($sheetId);
-        abort_if(!$project || (string) $project->workspace_id !== $workspaceId, 404, 'Project not found');
+        abort_if(! $project || (string) $project->workspace_id !== $workspaceId, 404, 'Project not found');
 
         return response()->json([
             'message' => 'Active conversations fetched',
@@ -103,7 +102,7 @@ class CreatorRelationshipController extends Controller
                 return CreatorProfile::query()
                     ->where('project_id', $projectId)
                     ->where(function ($query) use ($rowNumber) {
-                        $query->where('source_reference', 'Creators_CRM:' . $rowNumber)
+                        $query->where('source_reference', 'Creators_CRM:'.$rowNumber)
                             ->orWhere('source_metadata->sheet_row_number', $rowNumber);
                     })
                     ->first();
@@ -116,7 +115,7 @@ class CreatorRelationshipController extends Controller
             $id = substr($id, 8);
         }
 
-        if (!Str::isUuid($id)) {
+        if (! Str::isUuid($id)) {
             return null;
         }
 

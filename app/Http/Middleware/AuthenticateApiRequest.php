@@ -22,7 +22,7 @@ class AuthenticateApiRequest
 
         if ($bearerToken !== '') {
             $supabaseUser = $this->resolveSupabaseUser($bearerToken);
-            if (!$supabaseUser) {
+            if (! $supabaseUser) {
                 return response()->json([
                     'error' => 'Invalid or expired authentication token.',
                 ], 401);
@@ -43,21 +43,21 @@ class AuthenticateApiRequest
                     ->where('user_id', $user->supabase_user_id)
                     ->where('status', 'scheduled')
                     ->exists();
-            if ($accountDeletionPending && !$request->is('api/account/restore')) {
+            if ($accountDeletionPending && ! $request->is('api/account/restore')) {
                 return response()->json([
                     'error' => 'account_deletion_pending',
                     'message' => 'This account is scheduled for deletion. Restore it before continuing.',
                 ], 403);
             }
 
-            if (config('outreach.launch.require_verified_email', true) && !$user->email_verified_at) {
+            if (config('outreach.launch.require_verified_email', true) && ! $user->email_verified_at) {
                 return response()->json([
                     'error' => 'email_verification_required',
                     'message' => 'Verify your email address before accessing the pilot.',
                 ], 403);
             }
 
-            if (config('outreach.launch.invite_only', false) && !$this->launchAccessAllowed($user)) {
+            if (config('outreach.launch.invite_only', false) && ! $this->launchAccessAllowed($user)) {
                 return response()->json([
                     'error' => 'pilot_invitation_required',
                     'message' => 'SocialCore is currently invite-only. Ask the pilot administrator for access.',
@@ -73,6 +73,7 @@ class AuthenticateApiRequest
 
         if ($allowLegacy && $configuredKey !== '' && hash_equals($configuredKey, $legacyKey)) {
             $request->attributes->set('legacy_api_access', true);
+
             return $next($request);
         }
 
@@ -108,18 +109,18 @@ class AuthenticateApiRequest
             return null;
         }
 
-        $cacheKey = 'supabase:user:' . sha1($bearerToken);
+        $cacheKey = 'supabase:user:'.sha1($bearerToken);
 
         return Cache::remember($cacheKey, now()->addSeconds(90), function () use ($supabaseUrl, $supabaseApiKey, $bearerToken) {
             $response = Http::timeout((int) config('services.supabase.auth_timeout', 15))
                 ->acceptJson()
                 ->withHeaders([
                     'apikey' => $supabaseApiKey,
-                    'Authorization' => 'Bearer ' . $bearerToken,
+                    'Authorization' => 'Bearer '.$bearerToken,
                 ])
-                ->get($supabaseUrl . '/auth/v1/user');
+                ->get($supabaseUrl.'/auth/v1/user');
 
-            if (!$response->successful()) {
+            if (! $response->successful()) {
                 return null;
             }
 
@@ -155,15 +156,15 @@ class AuthenticateApiRequest
             })
             ->first();
 
-        if (!$user) {
-            $user = new User();
+        if (! $user) {
+            $user = new User;
             $user->password = Str::random(32);
         }
 
         $user->supabase_user_id = $supabaseUserId !== '' ? $supabaseUserId : $user->supabase_user_id;
         $user->email = $email !== '' ? $email : ($user->email ?: 'missing-email@example.invalid');
         $user->name = $displayName;
-        $user->email_verified_at = !empty($supabaseUser['email_confirmed_at']) ? now() : $user->email_verified_at;
+        $user->email_verified_at = ! empty($supabaseUser['email_confirmed_at']) ? now() : $user->email_verified_at;
         $user->save();
 
         return $user;
@@ -171,7 +172,7 @@ class AuthenticateApiRequest
 
     private function acceptPendingWorkspaceInvitations(User $user): void
     {
-        if (!Schema::hasTable('workspace_invitations')) {
+        if (! Schema::hasTable('workspace_invitations')) {
             return;
         }
 

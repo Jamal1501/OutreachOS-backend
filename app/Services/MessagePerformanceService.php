@@ -13,9 +13,11 @@ use Illuminate\Support\Str;
 class MessagePerformanceService
 {
     private array $recordsCache = [];
+
     private array $creatorTargetCache = [];
 
     private const TERMINAL_TASK_STATUSES = ['COMPLETED', 'DONE', 'SKIPPED', 'ARCHIVED'];
+
     private const OUTBOUND_TASK_TYPES = [
         'DM_INVITE',
         'DM_FOLLOWUP',
@@ -29,13 +31,12 @@ class MessagePerformanceService
 
     public function __construct(
         private ProjectResolverService $projects,
-    ) {
-    }
+    ) {}
 
     public function summaryForSheet(string $sheetId, array $filters = []): array
     {
         $project = $this->projects->findByWorkbookId($sheetId);
-        if (!$project) {
+        if (! $project) {
             return $this->emptySummary($filters, 'Project not found for this workbook.');
         }
 
@@ -62,7 +63,7 @@ class MessagePerformanceService
             ->all();
 
         $records = array_values(array_filter($records, function (array $record) use ($templateIds, $target) {
-            if (!in_array((string) ($record['template_id'] ?? ''), $templateIds, true)) {
+            if (! in_array((string) ($record['template_id'] ?? ''), $templateIds, true)) {
                 return false;
             }
 
@@ -144,7 +145,7 @@ class MessagePerformanceService
             ?? $summary['recommendations']['bestOverall']
             ?? null;
 
-        if (!$candidate) {
+        if (! $candidate) {
             return null;
         }
 
@@ -192,7 +193,7 @@ class MessagePerformanceService
 
     private function recordsForProject(string $projectId): array
     {
-        if (!array_key_exists($projectId, $this->recordsCache)) {
+        if (! array_key_exists($projectId, $this->recordsCache)) {
             $records = array_merge(
                 $this->taskRecords($projectId),
                 $this->manualEventRecords($projectId),
@@ -217,12 +218,12 @@ class MessagePerformanceService
 
         $records = [];
         foreach ($tasks as $task) {
-            if (!$task->messageTemplate) {
+            if (! $task->messageTemplate) {
                 continue;
             }
 
             $taskType = strtoupper((string) ($task->task_type ?: ''));
-            if (!in_array($taskType, self::OUTBOUND_TASK_TYPES, true)) {
+            if (! in_array($taskType, self::OUTBOUND_TASK_TYPES, true)) {
                 continue;
             }
 
@@ -267,7 +268,7 @@ class MessagePerformanceService
 
         $records = [];
         foreach ($events as $event) {
-            if (!$event->messageTemplate) {
+            if (! $event->messageTemplate) {
                 continue;
             }
 
@@ -323,7 +324,7 @@ class MessagePerformanceService
                 $responseIndex = null;
                 foreach ($indexes as $index) {
                     $sentAt = $records[$index]['at'] ?? null;
-                    if (!$sentAt instanceof CarbonInterface) {
+                    if (! $sentAt instanceof CarbonInterface) {
                         continue;
                     }
                     if ($sentAt->lessThanOrEqualTo($respondedAt) && $sentAt->greaterThanOrEqualTo($respondedAt->copy()->subDays(45))) {
@@ -366,7 +367,7 @@ class MessagePerformanceService
 
         foreach ($records as $record) {
             $classification = $this->classifyRecord($record);
-            if (!$classification['sent']) {
+            if (! $classification['sent']) {
                 continue;
             }
 
@@ -381,7 +382,7 @@ class MessagePerformanceService
             $scoreTotal += $classification['score'];
 
             $recordAt = $record['at'] ?? null;
-            if ($recordAt instanceof CarbonInterface && (!$lastUsedAt || $recordAt->greaterThan($lastUsedAt))) {
+            if ($recordAt instanceof CarbonInterface && (! $lastUsedAt || $recordAt->greaterThan($lastUsedAt))) {
                 $lastUsedAt = $recordAt;
             }
 
@@ -419,7 +420,7 @@ class MessagePerformanceService
             'pendingOutcomeCount' => $pending,
             'replyRate' => $sent > 0 ? round(($responses / $sent) * 100, 1) : 0.0,
             'positiveRate' => $sent > 0 ? round(($positive / $sent) * 100, 1) : 0.0,
-'conversionRate' => $sent > 0 ? round(($accepted / $sent) * 100, 1) : 0.0,            'successScore' => (int) $successScore,
+            'conversionRate' => $sent > 0 ? round(($accepted / $sent) * 100, 1) : 0.0,            'successScore' => (int) $successScore,
             'recommendationScore' => (int) $recommendationScore,
             'confidence' => $confidence,
             'confidenceLabel' => $this->confidenceLabel($confidence),
@@ -457,15 +458,15 @@ class MessagePerformanceService
         $negative = in_array($outcome, ['declined', 'lost', 'not_a_fit', 'archive', 'archived', 'rejected', 'bounced'], true);
 
         $positive = $accepted
-        || (!$negative && in_array($outcome, ['positive', 'interested', 'negotiate', 'proposal'], true));
-    
-    if ($positive || $accepted || $won) {
-        $response = true;
-    }
-    
-    $fresh = $sentAt instanceof CarbonInterface && $sentAt->greaterThan(now()->subDays(7));
-    $pending = !$response && !$positive && !$accepted && !$won && !$negative && $fresh;
-        $noResponse = !$response && !$positive && !$accepted && !$won && !$negative && !$fresh;
+        || (! $negative && in_array($outcome, ['positive', 'interested', 'negotiate', 'proposal'], true));
+
+        if ($positive || $accepted || $won) {
+            $response = true;
+        }
+
+        $fresh = $sentAt instanceof CarbonInterface && $sentAt->greaterThan(now()->subDays(7));
+        $pending = ! $response && ! $positive && ! $accepted && ! $won && ! $negative && $fresh;
+        $noResponse = ! $response && ! $positive && ! $accepted && ! $won && ! $negative && ! $fresh;
 
         $score = 35;
         if ($won) {
@@ -498,7 +499,7 @@ class MessagePerformanceService
             $recordPlatform = (string) ($record['platform'] ?? '');
             $targetPlatform = (string) $target['platform'];
             $allowed = $targetPlatform === 'email' ? ['email', 'instagram'] : [$targetPlatform];
-            if (!in_array($recordPlatform, $allowed, true)) {
+            if (! in_array($recordPlatform, $allowed, true)) {
                 return false;
             }
         }
@@ -647,6 +648,7 @@ class MessagePerformanceService
     private function segmentForProfile(?CreatorProfile $profile, MessageTemplate $template): array
     {
         $profile?->loadMissing('creator');
+
         return [
             'niche' => $this->normalizeSegmentValue((string) ($profile?->creator?->niche_category ?: $template->niche ?: '')),
             'followerBand' => $this->followerBand($profile?->followers_count),
@@ -686,7 +688,7 @@ class MessagePerformanceService
 
     private function targetFromCreatorProfile(string $projectId, string $creatorProfileId): ?array
     {
-        $cacheKey = $projectId . ':' . $creatorProfileId;
+        $cacheKey = $projectId.':'.$creatorProfileId;
         if (array_key_exists($cacheKey, $this->creatorTargetCache)) {
             return $this->creatorTargetCache[$cacheKey];
         }
@@ -697,7 +699,7 @@ class MessagePerformanceService
             ->where('id', $creatorProfileId)
             ->first();
 
-        if (!$profile) {
+        if (! $profile) {
             return $this->creatorTargetCache[$cacheKey] = null;
         }
 
@@ -729,18 +731,21 @@ class MessagePerformanceService
     {
         $metadata = is_array($template->metadata) ? $template->metadata : [];
         $rowNumber = (int) ($metadata['source_row_number'] ?? 0);
-        return $rowNumber > 1 ? 'msg:' . $rowNumber : 'msgdb:' . $template->id;
+
+        return $rowNumber > 1 ? 'msg:'.$rowNumber : 'msgdb:'.$template->id;
     }
 
     private function normalizePlatform(string $value): string
     {
         $value = strtolower(trim($value));
+
         return in_array($value, ['instagram', 'tiktok', 'email'], true) ? $value : '';
     }
 
     private function normalizeStage(string $value): string
     {
         $value = strtolower(trim($value));
+
         return in_array($value, ['cold_invite', 'after_accept', 'follow_up', 'negotiation', 'check_in', 'post_confirmation'], true)
             ? $value
             : '';
@@ -781,6 +786,7 @@ class MessagePerformanceService
     private function followerBand(mixed $followers): string
     {
         $count = (int) ($followers ?? 0);
+
         return match (true) {
             $count <= 0 => '',
             $count < 1000 => 'under_1k',
@@ -794,6 +800,7 @@ class MessagePerformanceService
     private function valueTier(mixed $score): string
     {
         $value = (int) ($score ?? 0);
+
         return match (true) {
             $value >= 75 => 'high',
             $value >= 45 => 'medium',
@@ -819,6 +826,7 @@ class MessagePerformanceService
             arsort($counts);
             $result[$key] = array_slice($counts, 0, 3, true);
         }
+
         return $result;
     }
 

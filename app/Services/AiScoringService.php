@@ -7,14 +7,13 @@ class AiScoringService
     public function __construct(
         private InfluencerScoringService $deterministicScoring,
         private AiGatewayService $ai,
-    ) {
-    }
+    ) {}
 
     public function scoreCreators(array $creators, ?string $projectContext = null): array
     {
         $normalized = [];
         foreach ($creators as $creator) {
-            if (!is_array($creator)) {
+            if (! is_array($creator)) {
                 continue;
             }
 
@@ -81,11 +80,11 @@ class AiScoringService
         ];
 
         $systemPrompt = 'You score creators for outreach quality. Be skeptical, commercially minded, and conservative. Do not overrate creators just because engagement looks flashy. Penalize thin data, low contactability, weak niche fit, spammy behavior, and obvious mismatch with the project. Scores are 0-100.';
-        $userPrompt = "Project context:
-" . ($projectContext ?: 'General creator outreach campaign') . "
+        $userPrompt = 'Project context:
+'.($projectContext ?: 'General creator outreach campaign').'
 
 Creators to evaluate:
-" . json_encode($normalized, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+'.json_encode($normalized, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 
         $aiResult = $this->ai->structured(
             $systemPrompt,
@@ -98,7 +97,7 @@ Creators to evaluate:
 
         $indexed = [];
         foreach ((array) ($aiResult['scores'] ?? []) as $row) {
-            if (is_array($row) && !empty($row['id'])) {
+            if (is_array($row) && ! empty($row['id'])) {
                 $indexed[(string) $row['id']] = $row;
             }
         }

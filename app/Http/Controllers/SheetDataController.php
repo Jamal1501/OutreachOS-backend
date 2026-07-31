@@ -4,35 +4,32 @@ namespace App\Http\Controllers;
 
 use App\Models\Creator;
 use App\Models\CreatorProfile;
-use App\Models\Task;
-use App\Models\OutreachEvent;
 use App\Models\DiscoveryItem;
 use App\Models\MessageTemplate;
+use App\Models\OutreachEvent;
 use App\Services\AnalyticsSummaryService;
 use App\Services\AvatarCacheService;
 use App\Services\CreatorLifecycleService;
 use App\Services\CreatorLocationInferenceService;
 use App\Services\CreatorMergeService;
-use App\Services\LegacyWorkbookStore;
 use App\Services\InfluencerScoringService;
 use App\Services\LearningEventService;
+use App\Services\LegacyWorkbookStore;
+use App\Services\OperationalMirrorService;
 use App\Services\OperatorViewService;
 use App\Services\OutreachLogService;
-use App\Services\OperationalMirrorService;
 use App\Services\ProjectResolverService;
 use App\Services\TaskQueueService;
-use App\Services\WorkspaceContextService;
 use App\Services\WorkspaceBillingService;
+use App\Services\WorkspaceContextService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use RuntimeException;
-
 
 class SheetDataController extends Controller
 {
@@ -52,8 +49,7 @@ class SheetDataController extends Controller
         private AnalyticsSummaryService $analytics,
         private LearningEventService $learningEvents,
         private AvatarCacheService $avatarCache,
-    ) {
-    }
+    ) {}
 
     public function avatarProxy(Request $request)
     {
@@ -110,7 +106,7 @@ class SheetDataController extends Controller
                 if ($item === null) {
                     continue;
                 }
-                if ($search !== '' && !$this->matchesDiscoverySearch($item, $search)) {
+                if ($search !== '' && ! $this->matchesDiscoverySearch($item, $search)) {
                     continue;
                 }
                 $normalized[] = $item;
@@ -247,29 +243,29 @@ class SheetDataController extends Controller
             'offset' => $offset,
         ]);
 
-if ($dbItems !== null) {
-    return response()->json([
-        'message' => 'Creators fetched',
-        'items' => $dbItems['items'],
-        'total' => $dbItems['total'],
-        'statusCounts' => $dbItems['statusCounts'] ?? [],
-    ]);
-}
+        if ($dbItems !== null) {
+            return response()->json([
+                'message' => 'Creators fetched',
+                'items' => $dbItems['items'],
+                'total' => $dbItems['total'],
+                'statusCounts' => $dbItems['statusCounts'] ?? [],
+            ]);
+        }
 
-if (Str::startsWith($sheetId, 'workspace:')) {
-    return response()->json([
-        'message' => 'Creators fetched',
-        'items' => [],
-        'total' => 0,
-        'statusCounts' => [],
-    ]);
-}
+        if (Str::startsWith($sheetId, 'workspace:')) {
+            return response()->json([
+                'message' => 'Creators fetched',
+                'items' => [],
+                'total' => 0,
+                'statusCounts' => [],
+            ]);
+        }
 
-$items = [];
-foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
+        $items = [];
+        foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
             $item = $this->normalizeCreatorRow($row);
 
-            if (!$this->creatorListItemMatchesFilters($item, [
+            if (! $this->creatorListItemMatchesFilters($item, [
                 'search' => $search,
                 'platforms' => $platforms,
                 'statuses' => $statuses,
@@ -308,7 +304,7 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
         $project = $this->projects->findByWorkbookId($sheetId);
 
         if ($project && $this->mirror->enabled()) {
-            $cacheKey = 'crm_facets:v1:project:' . (int) $project->id;
+            $cacheKey = 'crm_facets:v1:project:'.(int) $project->id;
             if ((bool) ($validated['refresh'] ?? false)) {
                 Cache::forget($cacheKey);
             }
@@ -350,7 +346,7 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
         $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $project = $this->projects->findByWorkbookId($sheetId);
 
-        if (!$project) {
+        if (! $project) {
             return response()->json([
                 'message' => 'Creator location inference finished',
                 'updated' => 0,
@@ -374,8 +370,9 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
 
         foreach ($profiles as $profile) {
             $creator = $profile->creator;
-            if (!$creator) {
+            if (! $creator) {
                 $skipped++;
+
                 continue;
             }
 
@@ -393,8 +390,9 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
             ]);
 
             $location = $this->locationInference->applyToCreator($creator, $payload, (string) $profile->platform, $overwrite);
-            if (!$location) {
+            if (! $location) {
                 $skipped++;
+
                 continue;
             }
 
@@ -432,7 +430,7 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
         if ($dbProfile) {
             $dbProfile->loadMissing('creator');
             $creator = $dbProfile->creator;
-            if (!$creator) {
+            if (! $creator) {
                 return response()->json(['error' => 'Creator not found'], 404);
             }
 
@@ -505,7 +503,7 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
         $rows = $this->sheets->getRows($sheetId, 'Creators_CRM');
         $target = collect($rows)->first(fn (array $row) => (int) ($row['_row_number'] ?? 0) === $rowNumber);
 
-        if (!$target) {
+        if (! $target) {
             return response()->json(['error' => 'Creator not found'], 404);
         }
 
@@ -518,7 +516,7 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
         }
 
         foreach (['niche', 'status', 'notes', 'email', 'fullName'] as $field) {
-            if (!array_key_exists($field, $payload)) {
+            if (! array_key_exists($field, $payload)) {
                 continue;
             }
             match ($field) {
@@ -544,7 +542,6 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
             'source' => 'database',
         ]);
     }
-
 
     public function deleteCreator(Request $request, string $id)
     {
@@ -607,18 +604,18 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
                 $primaryProfile = $validated['primaryCreatorId']
                     ? $this->resolveCreatorProfileForRoute($sheetId, (string) $validated['primaryCreatorId'])
                     : null;
-                if (!$primaryProfile || !$profiles->contains(fn (CreatorProfile $profile) => $profile->id === $primaryProfile->id)) {
+                if (! $primaryProfile || ! $profiles->contains(fn (CreatorProfile $profile) => $profile->id === $primaryProfile->id)) {
                     $primaryProfile = $profiles->first();
                 }
 
                 $primaryCreator = $primaryProfile?->creator;
-                if (!$primaryCreator) {
+                if (! $primaryCreator) {
                     throw new RuntimeException('Primary creator not found');
                 }
 
                 $identityId = trim((string) ($primaryCreator->external_identity_key ?: ''));
                 if ($identityId === '') {
-                    $identityId = 'creator_' . Str::lower(Str::random(10));
+                    $identityId = 'creator_'.Str::lower(Str::random(10));
                     $primaryCreator->external_identity_key = $identityId;
                 }
 
@@ -658,7 +655,7 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
                     ->delete();
 
                 $linkedLabels = $profiles
-                    ->map(fn (CreatorProfile $profile) => strtolower((string) $profile->platform) . ':' . (string) $profile->handle)
+                    ->map(fn (CreatorProfile $profile) => strtolower((string) $profile->platform).':'.(string) $profile->handle)
                     ->unique()
                     ->sort()
                     ->values()
@@ -671,7 +668,8 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
 
                 $linked = $profiles->map(function (CreatorProfile $profile) {
                     $rowNumber = $this->extractSourceRowNumberFromProfile($profile);
-                    $id = $rowNumber > 0 ? 'crm:' . $rowNumber : 'crmdb:' . $profile->id;
+                    $id = $rowNumber > 0 ? 'crm:'.$rowNumber : 'crmdb:'.$profile->id;
+
                     return [
                         'id' => $id,
                         'handle' => (string) ($profile->handle ?? ''),
@@ -686,7 +684,7 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
                         'linked' => $linked,
                         'linkedCreatorIds' => array_values(array_map(fn (array $item) => (string) $item['id'], $linked)),
                         'linkedProfileCount' => count($linked),
-                        'primaryCreatorId' => $this->extractSourceRowNumberFromProfile($primaryProfile) > 0 ? 'crm:' . $this->extractSourceRowNumberFromProfile($primaryProfile) : 'crmdb:' . $primaryProfile->id,
+                        'primaryCreatorId' => $this->extractSourceRowNumberFromProfile($primaryProfile) > 0 ? 'crm:'.$this->extractSourceRowNumberFromProfile($primaryProfile) : 'crmdb:'.$primaryProfile->id,
                     ],
                     'source' => 'database',
                     'sheetSync' => $sheetSync,
@@ -696,7 +694,7 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
 
         $rows = $this->sheets->getRows($sheetId, 'Creators_CRM');
         $rowNumbers = array_map(fn (string $creatorId) => $this->parseRowNumber($creatorId, 'crm'), $validated['creatorIds']);
-        $primaryRowNumber = !empty($validated['primaryCreatorId']) ? $this->parseRowNumber((string) $validated['primaryCreatorId'], 'crm') : $rowNumbers[0];
+        $primaryRowNumber = ! empty($validated['primaryCreatorId']) ? $this->parseRowNumber((string) $validated['primaryCreatorId'], 'crm') : $rowNumbers[0];
 
         $selected = array_values(array_filter($rows, fn (array $row) => in_array((int) ($row['_row_number'] ?? 0), $rowNumbers, true)));
         if (count($selected) < 2) {
@@ -706,13 +704,15 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
         $existingIdentityId = null;
         foreach ($selected as $row) {
             $existingIdentityId = $this->extractCreatorIdentityId($row);
-            if ($existingIdentityId) break;
+            if ($existingIdentityId) {
+                break;
+            }
         }
-        $identityId = $existingIdentityId ?: 'creator_' . Str::lower(Str::random(10));
+        $identityId = $existingIdentityId ?: 'creator_'.Str::lower(Str::random(10));
 
         $linkedLabels = [];
         foreach ($selected as $row) {
-            $linkedLabels[] = Str::lower((string) ($row['Platform'] ?? 'instagram')) . ':' . (string) ($row['Handle'] ?? '');
+            $linkedLabels[] = Str::lower((string) ($row['Platform'] ?? 'instagram')).':'.(string) ($row['Handle'] ?? '');
         }
         sort($linkedLabels);
         $linkedValue = implode(',', array_unique($linkedLabels));
@@ -730,7 +730,7 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
             $row['Notes'] = $notes;
             $updates[] = ['rowNumber' => $rowNumber, 'record' => $row];
             $linked[] = [
-                'id' => 'crm:' . $rowNumber,
+                'id' => 'crm:'.$rowNumber,
                 'handle' => (string) ($row['Handle'] ?? ''),
                 'platform' => Str::lower((string) ($row['Platform'] ?? 'instagram')),
             ];
@@ -746,222 +746,225 @@ foreach ($this->sheets->getRows($sheetId, 'Creators_CRM') as $row) {
                 'linked' => $linked,
                 'linkedCreatorIds' => array_values(array_map(fn (array $item) => (string) $item['id'], $linked)),
                 'linkedProfileCount' => count($linked),
-                'primaryCreatorId' => 'crm:' . $primaryRowNumber,
+                'primaryCreatorId' => 'crm:'.$primaryRowNumber,
             ],
             'source' => 'database',
         ]);
     }
 
-public function mergeSelectedQueueToCrm(Request $request)
-{
-    $validated = $request->validate([
-        'sheetId' => ['nullable', 'string'],
-        'platform' => ['required', 'string', Rule::in(['instagram', 'tiktok'])],
-        'queueIds' => ['required', 'array', 'min:1'],
-        'queueIds.*' => ['string'],
-        'selectedCreators' => ['nullable', 'array'],
-        'selectedCreators.*' => ['array'],
-        'createTasks' => ['nullable', 'boolean'],
-        'taskLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
-    ]);
+    public function mergeSelectedQueueToCrm(Request $request)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+            'platform' => ['required', 'string', Rule::in(['instagram', 'tiktok'])],
+            'queueIds' => ['required', 'array', 'min:1'],
+            'queueIds.*' => ['string'],
+            'selectedCreators' => ['nullable', 'array'],
+            'selectedCreators.*' => ['array'],
+            'createTasks' => ['nullable', 'boolean'],
+            'taskLimit' => ['nullable', 'integer', 'min:1', 'max:500'],
+        ]);
 
-    $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
-    $platform = $validated['platform'];
-    $project = $this->projects->findByWorkbookId($sheetId);
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
+        $platform = $validated['platform'];
+        $project = $this->projects->findByWorkbookId($sheetId);
 
-    if ($project) {
-        $selectedCreators = array_values(array_filter((array) ($validated['selectedCreators'] ?? []), fn ($item) => is_array($item)));
+        if ($project) {
+            $selectedCreators = array_values(array_filter((array) ($validated['selectedCreators'] ?? []), fn ($item) => is_array($item)));
 
-        if ($selectedCreators !== []) {
-            $result = $this->mergeSelectedCreatorsIntoDatabase($project->id, $platform, $validated['queueIds'], $selectedCreators);
-        } else {
-            // DB fallback path — resolve existing profile IDs from queueIds
-            $rawQueueIds = array_values(array_unique($validated['queueIds']));
+            if ($selectedCreators !== []) {
+                $result = $this->mergeSelectedCreatorsIntoDatabase($project->id, $platform, $validated['queueIds'], $selectedCreators);
+            } else {
+                // DB fallback path — resolve existing profile IDs from queueIds
+                $rawQueueIds = array_values(array_unique($validated['queueIds']));
 
-            $profileIds = [];
-            $handles = [];
-            $profileUrls = [];
+                $profileIds = [];
+                $handles = [];
+                $profileUrls = [];
 
-            foreach ($rawQueueIds as $id) {
-                if (str_starts_with($id, 'profiledb:')) {
-                    $profileIds[] = substr($id, 10);
-                    continue;
-                }
+                foreach ($rawQueueIds as $id) {
+                    if (str_starts_with($id, 'profiledb:')) {
+                        $profileIds[] = substr($id, 10);
 
-                if (str_contains($id, ':source-url:')) {
-                    $parts = explode(':source-url:', $id, 2);
-                    $encodedUrl = $parts[1] ?? '';
-                    $decodedUrl = urldecode($encodedUrl);
-
-                    if ($decodedUrl !== '') {
-                        $profileUrls[] = rtrim($decodedUrl, '/');
-                        $profileUrls[] = rtrim($decodedUrl, '/') . '/';
+                        continue;
                     }
 
-                    continue;
-                }
+                    if (str_contains($id, ':source-url:')) {
+                        $parts = explode(':source-url:', $id, 2);
+                        $encodedUrl = $parts[1] ?? '';
+                        $decodedUrl = urldecode($encodedUrl);
 
-                if (str_starts_with($id, '@')) {
+                        if ($decodedUrl !== '') {
+                            $profileUrls[] = rtrim($decodedUrl, '/');
+                            $profileUrls[] = rtrim($decodedUrl, '/').'/';
+                        }
+
+                        continue;
+                    }
+
+                    if (str_starts_with($id, '@')) {
+                        $handles[] = $id;
+                        $handles[] = ltrim($id, '@');
+
+                        continue;
+                    }
+
+                    if (str_starts_with($id, 'http://') || str_starts_with($id, 'https://')) {
+                        $profileUrls[] = rtrim($id, '/');
+                        $profileUrls[] = rtrim($id, '/').'/';
+
+                        continue;
+                    }
+
                     $handles[] = $id;
-                    $handles[] = ltrim($id, '@');
-                    continue;
+                    $handles[] = '@'.ltrim($id, '@');
                 }
 
-                if (str_starts_with($id, 'http://') || str_starts_with($id, 'https://')) {
-                    $profileUrls[] = rtrim($id, '/');
-                    $profileUrls[] = rtrim($id, '/') . '/';
-                    continue;
+                $profileIds = array_values(array_unique(array_filter($profileIds)));
+                $handles = array_values(array_unique(array_filter($handles)));
+                $profileUrls = array_values(array_unique(array_filter($profileUrls)));
+
+                $profiles = CreatorProfile::query()
+                    ->with('creator')
+                    ->where('project_id', $project->id)
+                    ->where('platform', $platform)
+                    ->where(function ($q) use ($profileIds, $handles, $profileUrls) {
+                        $hasAny = false;
+
+                        if ($profileIds !== []) {
+                            $q->whereIn('id', $profileIds);
+                            $hasAny = true;
+                        }
+
+                        if ($handles !== []) {
+                            $method = $hasAny ? 'orWhereIn' : 'whereIn';
+                            $q->{$method}('handle', $handles);
+                            $hasAny = true;
+                        }
+
+                        if ($profileUrls !== []) {
+                            $method = $hasAny ? 'orWhereIn' : 'whereIn';
+                            $q->{$method}('profile_url', $profileUrls);
+                        }
+                    })
+                    ->get();
+
+                $created = 0;
+                $updated = 0;
+                $affectedProfileIds = [];
+
+                foreach ($profiles as $profile) {
+                    $existingBefore = $profile->exists;
+                    $profile->status = $profile->status && ! in_array(strtoupper((string) $profile->status), ['NEW', 'DISCOVERED', 'ENRICHED'], true)
+                        ? $profile->status : 'NEW';
+                    $profile->lifecycle_state = 'enriched';
+                    $profile->last_synced_at = now();
+                    $profile->save();
+                    $affectedProfileIds[] = $profile->id;
+                    $existingBefore ? $updated++ : $created++;
                 }
 
-                $handles[] = $id;
-                $handles[] = '@' . ltrim($id, '@');
+                $result = [
+                    'sourceSheet' => 'database',
+                    'processed' => $profiles->count(),
+                    'created' => $created,
+                    'updated' => $updated,
+                    'skipped' => count($validated['queueIds']) - $profiles->count(),
+                    'affectedProfileIds' => $affectedProfileIds,
+                    'affectedRowNumbers' => [],
+                    'selectedQueueCount' => count($validated['queueIds']),
+                    'selectionMode' => 'database',
+                    'resolvedBy' => ['database'],
+                ];
             }
 
-            $profileIds = array_values(array_unique(array_filter($profileIds)));
-            $handles = array_values(array_unique(array_filter($handles)));
-            $profileUrls = array_values(array_unique(array_filter($profileUrls)));
+            $affectedProfileIds = array_values(array_unique(array_filter(
+                array_map('strval', (array) ($result['affectedProfileIds'] ?? [])),
+                fn (string $profileId) => trim($profileId) !== ''
+            )));
 
-            $profiles = CreatorProfile::query()
-                ->with('creator')
-                ->where('project_id', $project->id)
-                ->where('platform', $platform)
-                ->where(function ($q) use ($profileIds, $handles, $profileUrls) {
-                    $hasAny = false;
-
-                    if ($profileIds !== []) {
-                        $q->whereIn('id', $profileIds);
-                        $hasAny = true;
-                    }
-
-                    if ($handles !== []) {
-                        $method = $hasAny ? 'orWhereIn' : 'whereIn';
-                        $q->{$method}('handle', $handles);
-                        $hasAny = true;
-                    }
-
-                    if ($profileUrls !== []) {
-                        $method = $hasAny ? 'orWhereIn' : 'whereIn';
-                        $q->{$method}('profile_url', $profileUrls);
-                    }
-                })
-                ->get();
-
-            $created = 0;
-            $updated = 0;
-            $affectedProfileIds = [];
-
-            foreach ($profiles as $profile) {
-                $existingBefore = $profile->exists;
-                $profile->status = $profile->status && !in_array(strtoupper((string) $profile->status), ['NEW', 'DISCOVERED', 'ENRICHED'], true)
-                    ? $profile->status : 'NEW';
-                $profile->lifecycle_state = 'enriched';
-                $profile->last_synced_at = now();
-                $profile->save();
-                $affectedProfileIds[] = $profile->id;
-                $existingBefore ? $updated++ : $created++;
+            if (($validated['createTasks'] ?? false) === true && $affectedProfileIds !== []) {
+                try {
+                    $result['taskGeneration'] = $this->taskQueue->generateInitialTasks($sheetId, [
+                        'limit' => $validated['taskLimit'] ?? 50,
+                        'profileIds' => $affectedProfileIds,
+                    ]);
+                } catch (\Throwable $e) {
+                    report($e);
+                    $result['taskGenerationError'] = $e->getMessage();
+                }
             }
 
-            $result = [
-                'sourceSheet' => 'database',
-                'processed' => $profiles->count(),
-                'created' => $created,
-                'updated' => $updated,
-                'skipped' => count($validated['queueIds']) - $profiles->count(),
-                'affectedProfileIds' => $affectedProfileIds,
-                'affectedRowNumbers' => [],
-                'selectedQueueCount' => count($validated['queueIds']),
-                'selectionMode' => 'database',
-                'resolvedBy' => ['database'],
-            ];
+            return response()->json([
+                'message' => 'Selected queue rows merged into Creators_CRM',
+                'result' => $result,
+                'source' => 'database',
+            ]);
         }
 
+        // Legacy spreadsheet fallback
+        $queueSheet = $this->queueSheetForPlatform($platform);
+        $sourceSheet = $this->enrichedSheetForPlatform($platform);
+
+        $queueRows = $this->sheets->getRows($sheetId, $queueSheet);
+        $sourceRows = $this->sheets->getRows($sheetId, $sourceSheet);
+
+        $selection = $this->resolveSelectedMergeTargets($platform, $validated['queueIds'], $queueRows, $sourceRows);
+        $selectedQueueRowNumbers = $selection['selectedQueueRowNumbers'];
+        $selectedQueueRows = $selection['selectedQueueRows'];
+        $sourceRowNumbers = $selection['sourceRowNumbers'];
+
+        $result = $this->creatorMerge->mergeSelectedFromEnrichedSheet($sheetId, $sourceSheet, $sourceRowNumbers);
+        $result['selectedQueueCount'] = count($selectedQueueRows);
+        $result['selectedQueueRowNumbers'] = $selectedQueueRowNumbers;
+        $result['matchedSourceRowNumbers'] = $sourceRowNumbers;
+        $result['selectionMode'] = $selection['selectionMode'];
+        $result['resolvedBy'] = $selection['resolvedBy'];
+
+        $affectedRowNumbers = array_values(array_unique(array_filter(
+            array_map('intval', (array) ($result['affectedRowNumbers'] ?? [])),
+            fn (int $rowNumber) => $rowNumber > 1
+        )));
         $affectedProfileIds = array_values(array_unique(array_filter(
             array_map('strval', (array) ($result['affectedProfileIds'] ?? [])),
             fn (string $profileId) => trim($profileId) !== ''
         )));
 
-        if (($validated['createTasks'] ?? false) === true && $affectedProfileIds !== []) {
-            try {
-                $result['taskGeneration'] = $this->taskQueue->generateInitialTasks($sheetId, [
-                    'limit' => $validated['taskLimit'] ?? 50,
-                    'profileIds' => $affectedProfileIds,
-                ]);
-            } catch (\Throwable $e) {
-                report($e);
-                $result['taskGenerationError'] = $e->getMessage();
+        if ($affectedProfileIds === [] && $affectedRowNumbers !== []) {
+            $this->mirror->syncCreators($sheetId, $affectedRowNumbers);
+        }
+
+        if (($validated['createTasks'] ?? false) === true) {
+            if ($affectedProfileIds === [] && $affectedRowNumbers === []) {
+                $result['taskGeneration'] = [
+                    'created' => 0,
+                    'taskSheet' => 'Task_Queue',
+                    'sourceRowNumbers' => [],
+                    'sourceProfileIds' => [],
+                ];
+            } else {
+                try {
+                    $taskOptions = [
+                        'limit' => $validated['taskLimit'] ?? 50,
+                    ];
+                    if ($affectedProfileIds !== []) {
+                        $taskOptions['profileIds'] = $affectedProfileIds;
+                    } else {
+                        $taskOptions['rowNumbers'] = $affectedRowNumbers;
+                    }
+                    $result['taskGeneration'] = $this->taskQueue->generateInitialTasks($sheetId, $taskOptions);
+                } catch (\Throwable $e) {
+                    report($e);
+                    $result['taskGenerationError'] = $e->getMessage();
+                }
             }
         }
 
         return response()->json([
             'message' => 'Selected queue rows merged into Creators_CRM',
             'result' => $result,
-            'source' => 'database',
         ]);
     }
-
-    // Legacy spreadsheet fallback
-    $queueSheet = $this->queueSheetForPlatform($platform);
-    $sourceSheet = $this->enrichedSheetForPlatform($platform);
-
-    $queueRows = $this->sheets->getRows($sheetId, $queueSheet);
-    $sourceRows = $this->sheets->getRows($sheetId, $sourceSheet);
-
-    $selection = $this->resolveSelectedMergeTargets($platform, $validated['queueIds'], $queueRows, $sourceRows);
-    $selectedQueueRowNumbers = $selection['selectedQueueRowNumbers'];
-    $selectedQueueRows = $selection['selectedQueueRows'];
-    $sourceRowNumbers = $selection['sourceRowNumbers'];
-
-    $result = $this->creatorMerge->mergeSelectedFromEnrichedSheet($sheetId, $sourceSheet, $sourceRowNumbers);
-    $result['selectedQueueCount'] = count($selectedQueueRows);
-    $result['selectedQueueRowNumbers'] = $selectedQueueRowNumbers;
-    $result['matchedSourceRowNumbers'] = $sourceRowNumbers;
-    $result['selectionMode'] = $selection['selectionMode'];
-    $result['resolvedBy'] = $selection['resolvedBy'];
-
-    $affectedRowNumbers = array_values(array_unique(array_filter(
-        array_map('intval', (array) ($result['affectedRowNumbers'] ?? [])),
-        fn (int $rowNumber) => $rowNumber > 1
-    )));
-    $affectedProfileIds = array_values(array_unique(array_filter(
-        array_map('strval', (array) ($result['affectedProfileIds'] ?? [])),
-        fn (string $profileId) => trim($profileId) !== ''
-    )));
-
-    if ($affectedProfileIds === [] && $affectedRowNumbers !== []) {
-        $this->mirror->syncCreators($sheetId, $affectedRowNumbers);
-    }
-
-    if (($validated['createTasks'] ?? false) === true) {
-        if ($affectedProfileIds === [] && $affectedRowNumbers === []) {
-            $result['taskGeneration'] = [
-                'created' => 0,
-                'taskSheet' => 'Task_Queue',
-                'sourceRowNumbers' => [],
-                'sourceProfileIds' => [],
-            ];
-        } else {
-            try {
-                $taskOptions = [
-                    'limit' => $validated['taskLimit'] ?? 50,
-                ];
-                if ($affectedProfileIds !== []) {
-                    $taskOptions['profileIds'] = $affectedProfileIds;
-                } else {
-                    $taskOptions['rowNumbers'] = $affectedRowNumbers;
-                }
-                $result['taskGeneration'] = $this->taskQueue->generateInitialTasks($sheetId, $taskOptions);
-            } catch (\Throwable $e) {
-                report($e);
-                $result['taskGenerationError'] = $e->getMessage();
-            }
-        }
-    }
-
-    return response()->json([
-        'message' => 'Selected queue rows merged into Creators_CRM',
-        'result' => $result,
-    ]);
-}
 
     public function messagesList(Request $request)
     {
@@ -983,22 +986,22 @@ public function mergeSelectedQueueToCrm(Request $request)
             'niche' => $niche,
         ]);
 
-if ($dbItems !== null) {
-    return response()->json([
-        'message' => 'Message templates fetched',
-        'items' => $dbItems,
-    ]);
-}
+        if ($dbItems !== null) {
+            return response()->json([
+                'message' => 'Message templates fetched',
+                'items' => $dbItems,
+            ]);
+        }
 
-if (Str::startsWith($sheetId, 'workspace:')) {
-    return response()->json([
-        'message' => 'Message templates fetched',
-        'items' => [],
-    ]);
-}
+        if (Str::startsWith($sheetId, 'workspace:')) {
+            return response()->json([
+                'message' => 'Message templates fetched',
+                'items' => [],
+            ]);
+        }
 
-$items = [];
-foreach ($this->sheets->getRows($sheetId, 'Message_Library') as $row) {
+        $items = [];
+        foreach ($this->sheets->getRows($sheetId, 'Message_Library') as $row) {
             $item = $this->normalizeMessageRow($row);
             if ($platform !== '' && Str::lower((string) $item['platform']) !== $platform) {
                 continue;
@@ -1044,7 +1047,7 @@ foreach ($this->sheets->getRows($sheetId, 'Message_Library') as $row) {
         $sheetSync = $this->syncMessageTemplateToSheet($sheetId, $template->fresh());
         $fresh = $template->fresh();
         $rowNumber = (int) (($fresh->metadata['source_row_number'] ?? 0));
-        $id = $rowNumber > 1 ? 'msg:' . $rowNumber : 'msgdb:' . $fresh->id;
+        $id = $rowNumber > 1 ? 'msg:'.$rowNumber : 'msgdb:'.$fresh->id;
 
         return response()->json([
             'message' => 'Message template created',
@@ -1063,7 +1066,7 @@ foreach ($this->sheets->getRows($sheetId, 'Message_Library') as $row) {
 
         $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $template = $this->resolveMessageTemplateForRoute($sheetId, $id);
-        if (!$template) {
+        if (! $template) {
             throw new RuntimeException('Message template not found');
         }
 
@@ -1097,7 +1100,7 @@ foreach ($this->sheets->getRows($sheetId, 'Message_Library') as $row) {
         $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $template = $this->resolveMessageTemplateForRoute($sheetId, $id);
 
-        if (!$template) {
+        if (! $template) {
             throw new RuntimeException('Message template not found');
         }
 
@@ -1129,47 +1132,101 @@ foreach ($this->sheets->getRows($sheetId, 'Message_Library') as $row) {
         ]);
     }
 
-public function enrichmentQueue(Request $request)
-{
-    $validated = $request->validate([
-        'sheetId' => ['nullable', 'string'],
-        'platform' => ['nullable', 'string', Rule::in(['instagram', 'tiktok'])],
-    ]);
+    public function enrichmentQueue(Request $request)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+            'platform' => ['nullable', 'string', Rule::in(['instagram', 'tiktok'])],
+        ]);
 
-    $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
-    $platform = $validated['platform'] ?? null;
-    $platforms = $platform ? [$platform] : ['instagram', 'tiktok'];
+        $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
+        $platform = $validated['platform'] ?? null;
+        $platforms = $platform ? [$platform] : ['instagram', 'tiktok'];
 
-    $project = $this->projects->findByWorkbookId($sheetId);
+        $project = $this->projects->findByWorkbookId($sheetId);
 
-    if ($project) {
+        if ($project) {
+            $items = [];
+            $query = CreatorProfile::query()
+                ->with('creator')
+                ->where('project_id', $project->id)
+                ->whereIn('platform', $platforms);
+
+            foreach ($query->get() as $profile) {
+                $profileUrl = (string) ($profile->profile_url ?: $profile->dm_link ?: '');
+                $handle = (string) ($profile->handle ?: '');
+                $status = strtolower((string) ($profile->lifecycle_state ?: $profile->status ?: 'queued'));
+                $enriched = in_array($status, ['new', 'enriched', 'contacted', 'follow_request_sent',
+                    'followed_up', 'replied', 'accepted', 'declined', 'archived'], true);
+
+                $items[] = [
+                    'id' => 'profiledb:'.$profile->id,
+                    'rowId' => 'profiledb:'.$profile->id,
+                    'platform' => (string) $profile->platform,
+                    'handle' => $handle,
+                    'avatarUrl' => (string) ($profile->profile_pic_url ?: ''),
+                    'profileUrl' => $profileUrl,
+                    'status' => $enriched ? 'enriched' : $status,
+                    'sourceNotes' => (string) ($profile->source_reference ?: ''),
+                    'addedAt' => optional($profile->created_at)->toDateTimeString() ?? '',
+                    'readyToMerge' => $enriched,
+                    'enrichedRowNumber' => null,
+                    'sourceSheet' => 'database',
+                ];
+            }
+
+            usort($items, fn (array $a, array $b) => strcmp((string) ($b['addedAt'] ?? ''), (string) ($a['addedAt'] ?? '')));
+
+            return response()->json([
+                'message' => 'Enrichment queue fetched',
+                'items' => $items,
+                'source' => 'database',
+            ]);
+        }
+
+        // Legacy spreadsheet fallback
         $items = [];
-        $query = CreatorProfile::query()
-            ->with('creator')
-            ->where('project_id', $project->id)
-            ->whereIn('platform', $platforms);
+        foreach ($platforms as $platformName) {
+            $queueSheet = $this->queueSheetForPlatform($platformName);
+            $sourceSheet = $this->enrichedSheetForPlatform($platformName);
+            $sourceRows = $this->sheets->getRows($sheetId, $sourceSheet);
+            $sourceIndex = $this->buildEnrichedLookup($platformName, $sourceRows);
 
-        foreach ($query->get() as $profile) {
-            $profileUrl = (string) ($profile->profile_url ?: $profile->dm_link ?: '');
-            $handle = (string) ($profile->handle ?: '');
-            $status = strtolower((string) ($profile->lifecycle_state ?: $profile->status ?: 'queued'));
-            $enriched = in_array($status, ['new', 'enriched', 'contacted', 'follow_request_sent',
-                'followed_up', 'replied', 'accepted', 'declined', 'archived'], true);
+            foreach ($this->sheets->getRows($sheetId, $queueSheet) as $row) {
+                $handle = $this->normalizeHandle((string) ($row['handle'] ?? $row['username'] ?? ''));
+                $url = trim((string) ($row['url'] ?? ''));
+                $lookupKeys = array_filter([
+                    strtolower($handle),
+                    strtolower(trim($url)),
+                    strtolower(trim((string) ($row['username'] ?? ''))),
+                ]);
+                $enrichedRowNumber = null;
+                foreach ($lookupKeys as $lookupKey) {
+                    if (isset($sourceIndex[$lookupKey])) {
+                        $enrichedRowNumber = (int) $sourceIndex[$lookupKey];
+                        break;
+                    }
+                }
 
-$items[] = [
-    'id' => 'profiledb:' . $profile->id,
-    'rowId' => 'profiledb:' . $profile->id,
-    'platform' => (string) $profile->platform,
-    'handle' => $handle,
-    'avatarUrl' => (string) ($profile->profile_pic_url ?: ''),
-    'profileUrl' => $profileUrl,
-    'status' => $enriched ? 'enriched' : $status,
-    'sourceNotes' => (string) ($profile->source_reference ?: ''),
-    'addedAt' => optional($profile->created_at)->toDateTimeString() ?? '',
-    'readyToMerge' => $enriched,
-    'enrichedRowNumber' => null,
-    'sourceSheet' => 'database',
-];
+                $rowStatus = strtolower(trim((string) ($row['status'] ?? 'queued')));
+                if ($enrichedRowNumber !== null) {
+                    $rowStatus = 'enriched';
+                }
+
+                $items[] = [
+                    'id' => $this->queueId($platformName, (int) ($row['_row_number'] ?? 0)),
+                    'rowId' => $this->queueId($platformName, (int) ($row['_row_number'] ?? 0)),
+                    'platform' => $platformName,
+                    'handle' => $handle,
+                    'profileUrl' => $url,
+                    'status' => $rowStatus,
+                    'sourceNotes' => (string) ($row['source_notes'] ?? ''),
+                    'addedAt' => $this->extractTaggedValue((string) ($row['source_notes'] ?? ''), 'added_at') ?? '',
+                    'readyToMerge' => $enrichedRowNumber !== null,
+                    'enrichedRowNumber' => $enrichedRowNumber,
+                    'sourceSheet' => $sourceSheet,
+                ];
+            }
         }
 
         usort($items, fn (array $a, array $b) => strcmp((string) ($b['addedAt'] ?? ''), (string) ($a['addedAt'] ?? '')));
@@ -1181,144 +1238,90 @@ $items[] = [
         ]);
     }
 
-    // Legacy spreadsheet fallback
-    $items = [];
-    foreach ($platforms as $platformName) {
-        $queueSheet = $this->queueSheetForPlatform($platformName);
-        $sourceSheet = $this->enrichedSheetForPlatform($platformName);
-        $sourceRows = $this->sheets->getRows($sheetId, $sourceSheet);
-        $sourceIndex = $this->buildEnrichedLookup($platformName, $sourceRows);
-
-        foreach ($this->sheets->getRows($sheetId, $queueSheet) as $row) {
-            $handle = $this->normalizeHandle((string) ($row['handle'] ?? $row['username'] ?? ''));
-            $url = trim((string) ($row['url'] ?? ''));
-            $lookupKeys = array_filter([
-                strtolower($handle),
-                strtolower(trim($url)),
-                strtolower(trim((string) ($row['username'] ?? ''))),
+    public function operatorView(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'sheetId' => ['nullable', 'string'],
+                'range' => ['nullable', Rule::in(['7d', '30d', 'all'])],
             ]);
-            $enrichedRowNumber = null;
-            foreach ($lookupKeys as $lookupKey) {
-                if (isset($sourceIndex[$lookupKey])) {
-                    $enrichedRowNumber = (int) $sourceIndex[$lookupKey];
-                    break;
-                }
-            }
 
-            $rowStatus = strtolower(trim((string) ($row['status'] ?? 'queued')));
-            if ($enrichedRowNumber !== null) {
-                $rowStatus = 'enriched';
-            }
+            $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
+            $workspaceId = (string) $request->attributes->get('workspace_id');
+            $range = (string) ($validated['range'] ?? '30d');
+            $cacheKey = 'operator-view:'.md5($workspaceId.'|'.$sheetId.'|'.$range);
+            $data = $request->has('_')
+                ? $this->dashboardOperatorPayload($sheetId, $workspaceId, $range)
+                : Cache::remember($cacheKey, now()->addSeconds(45), fn () => $this->dashboardOperatorPayload($sheetId, $workspaceId, $range));
 
-            $items[] = [
-                'id' => $this->queueId($platformName, (int) ($row['_row_number'] ?? 0)),
-                'rowId' => $this->queueId($platformName, (int) ($row['_row_number'] ?? 0)),
-                'platform' => $platformName,
-                'handle' => $handle,
-                'profileUrl' => $url,
-                'status' => $rowStatus,
-                'sourceNotes' => (string) ($row['source_notes'] ?? ''),
-                'addedAt' => $this->extractTaggedValue((string) ($row['source_notes'] ?? ''), 'added_at') ?? '',
-                'readyToMerge' => $enrichedRowNumber !== null,
-                'enrichedRowNumber' => $enrichedRowNumber,
-                'sourceSheet' => $sourceSheet,
-            ];
+            return response()->json([
+                'message' => 'Operator view fetched',
+                'data' => $data,
+            ]);
+        } catch (\Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'message' => 'Failed to build operator view',
+                'error' => $e->getMessage(),
+                'exception' => class_basename($e),
+            ], 500);
         }
     }
 
-    usort($items, fn (array $a, array $b) => strcmp((string) ($b['addedAt'] ?? ''), (string) ($a['addedAt'] ?? '')));
+    private function dashboardOperatorPayload(string $sheetId, string $workspaceId, string $range = '30d'): array
+    {
+        $data = $this->operatorView->build($sheetId);
+        $summary = $this->analytics->summary($sheetId, $workspaceId, $range);
 
-    return response()->json([
-        'message' => 'Enrichment queue fetched',
-        'items' => $items,
-        'source' => 'database',
-    ]);
-}
+        return array_merge($data, [
+            'range' => $summary['range'] ?? ['label' => $range],
+            'performance' => $summary['performance'] ?? [],
+            'usage' => $summary['usage'] ?? [],
+            'economics' => $summary['economics'] ?? [],
+            'quality' => $summary['quality'] ?? [],
+            'previousPeriod' => $summary['previousPeriod'] ?? null,
+            'metricDefinitions' => array_merge((array) ($summary['definitions'] ?? []), [
+                'needsAction' => 'Creators and tasks that need an operator decision now: qualification, duplicate blockers, and due follow-ups.',
+                'outreachQueue' => 'Approved or queued creators that also have a real open outreach task.',
+                'lifecycleSignals' => 'Replies, accepted/lost outcomes, state changes, and task signals worth acting on.',
+                'replyRate' => 'Replies divided by confirmed outbound send events in the selected range.',
+            ]),
+            'dataFreshness' => [
+                'generatedAt' => now()->toIso8601String(),
+                'cacheTtlSeconds' => 45,
+                'source' => 'operator_view_unified',
+            ],
+        ]);
+    }
 
-public function operatorView(Request $request)
-{
-    try {
+    public function creatorDecisionSheet(Request $request, string $id)
+    {
         $validated = $request->validate([
             'sheetId' => ['nullable', 'string'],
-            'range' => ['nullable', Rule::in(['7d', '30d', 'all'])],
         ]);
 
         $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
-        $workspaceId = (string) $request->attributes->get('workspace_id');
-        $range = (string) ($validated['range'] ?? '30d');
-        $cacheKey = 'operator-view:' . md5($workspaceId . '|' . $sheetId . '|' . $range);
-        $data = $request->has('_')
-            ? $this->dashboardOperatorPayload($sheetId, $workspaceId, $range)
-            : Cache::remember($cacheKey, now()->addSeconds(45), fn () => $this->dashboardOperatorPayload($sheetId, $workspaceId, $range));
 
-        return response()->json([
-            'message' => 'Operator view fetched',
-            'data' => $data,
-        ]);
-    } catch (\Throwable $e) {
-        report($e);
+        $dbProfile = $this->resolveCreatorProfileForRoute($sheetId, $id);
+        if ($dbProfile) {
+            return response()->json([
+                'message' => 'Creator decision sheet fetched',
+                'data' => $this->operatorView->buildDecisionSheetForProfileId($sheetId, $dbProfile->id),
+            ]);
+        }
 
-        return response()->json([
-            'message' => 'Failed to build operator view',
-            'error' => $e->getMessage(),
-            'exception' => class_basename($e),
-        ], 500);
-    }
-}
+        if (Str::startsWith($sheetId, 'workspace:')) {
+            return response()->json(['error' => 'Creator not found'], 404);
+        }
 
-private function dashboardOperatorPayload(string $sheetId, string $workspaceId, string $range = '30d'): array
-{
-    $data = $this->operatorView->build($sheetId);
-    $summary = $this->analytics->summary($sheetId, $workspaceId, $range);
+        $rowNumber = $this->parseRowNumber($id, 'crm');
 
-    return array_merge($data, [
-        'range' => $summary['range'] ?? ['label' => $range],
-        'performance' => $summary['performance'] ?? [],
-        'usage' => $summary['usage'] ?? [],
-        'economics' => $summary['economics'] ?? [],
-        'quality' => $summary['quality'] ?? [],
-        'previousPeriod' => $summary['previousPeriod'] ?? null,
-        'metricDefinitions' => array_merge((array) ($summary['definitions'] ?? []), [
-            'needsAction' => 'Creators and tasks that need an operator decision now: qualification, duplicate blockers, and due follow-ups.',
-            'outreachQueue' => 'Approved or queued creators that also have a real open outreach task.',
-            'lifecycleSignals' => 'Replies, accepted/lost outcomes, state changes, and task signals worth acting on.',
-            'replyRate' => 'Replies divided by confirmed outbound send events in the selected range.',
-        ]),
-        'dataFreshness' => [
-            'generatedAt' => now()->toIso8601String(),
-            'cacheTtlSeconds' => 45,
-            'source' => 'operator_view_unified',
-        ],
-    ]);
-}
-
-public function creatorDecisionSheet(Request $request, string $id)
-{
-    $validated = $request->validate([
-        'sheetId' => ['nullable', 'string'],
-    ]);
-
-    $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
-
-    $dbProfile = $this->resolveCreatorProfileForRoute($sheetId, $id);
-    if ($dbProfile) {
         return response()->json([
             'message' => 'Creator decision sheet fetched',
-            'data' => $this->operatorView->buildDecisionSheetForProfileId($sheetId, $dbProfile->id),
+            'data' => $this->operatorView->buildDecisionSheet($sheetId, $rowNumber),
         ]);
     }
-
-    if (Str::startsWith($sheetId, 'workspace:')) {
-        return response()->json(['error' => 'Creator not found'], 404);
-    }
-
-    $rowNumber = $this->parseRowNumber($id, 'crm');
-
-    return response()->json([
-        'message' => 'Creator decision sheet fetched',
-        'data' => $this->operatorView->buildDecisionSheet($sheetId, $rowNumber),
-    ]);
-}
 
     public function transitionCreator(Request $request, string $id)
     {
@@ -1338,11 +1341,11 @@ public function creatorDecisionSheet(Request $request, string $id)
             $dbProfile->loadMissing('creator');
             $currentState = $this->lifecycle->normalizeState((string) ($dbProfile->lifecycle_state ?: $dbProfile->status ?: ''), 'enriched');
 
-            if (!$this->lifecycle->isValidState($toState)) {
+            if (! $this->lifecycle->isValidState($toState)) {
                 throw new RuntimeException('Invalid target state');
             }
 
-            if (!$this->lifecycle->canTransition($currentState, $toState)) {
+            if (! $this->lifecycle->canTransition($currentState, $toState)) {
                 throw new RuntimeException(sprintf('Invalid transition %s -> %s', $currentState, $toState));
             }
 
@@ -1369,16 +1372,17 @@ public function creatorDecisionSheet(Request $request, string $id)
                     'transition %s -> %s%s%s',
                     $currentState,
                     $toState,
-                    !empty($validated['reason']) ? '; reason=' . $validated['reason'] : '',
-                    !empty($validated['notes']) ? '; note=' . str_replace(';', ',', (string) $validated['notes']) : ''
+                    ! empty($validated['reason']) ? '; reason='.$validated['reason'] : '',
+                    ! empty($validated['notes']) ? '; note='.str_replace(';', ',', (string) $validated['notes']) : ''
                 )),
             ]);
 
             $rowNumber = $this->extractSourceRowNumberFromProfile($freshProfile);
+
             return response()->json([
                 'message' => 'Creator transitioned',
                 'data' => [
-                    'creatorId' => $rowNumber > 0 ? 'crm:' . $rowNumber : 'crmdb:' . $freshProfile->id,
+                    'creatorId' => $rowNumber > 0 ? 'crm:'.$rowNumber : 'crmdb:'.$freshProfile->id,
                     'fromState' => $currentState,
                     'toState' => $toState,
                     'eventId' => $eventId,
@@ -1392,18 +1396,18 @@ public function creatorDecisionSheet(Request $request, string $id)
         $creatorRow = collect($this->sheets->getRows($sheetId, 'Creators_CRM'))
             ->first(fn (array $row) => (int) ($row['_row_number'] ?? 0) === $rowNumber);
 
-        if (!$creatorRow) {
+        if (! $creatorRow) {
             throw new RuntimeException('Creator not found');
         }
 
         $enrichmentStatus = $this->normalizeEnrichmentStatus($creatorRow);
         $fromState = $this->lifecycle->normalizeState((string) ($creatorRow['Status'] ?? ''), $enrichmentStatus);
 
-        if (!$this->lifecycle->isValidState($toState)) {
+        if (! $this->lifecycle->isValidState($toState)) {
             throw new RuntimeException('Invalid target state');
         }
 
-        if (!$this->lifecycle->canTransition($fromState, $toState)) {
+        if (! $this->lifecycle->canTransition($fromState, $toState)) {
             throw new RuntimeException(sprintf('Invalid transition %s -> %s', $fromState, $toState));
         }
 
@@ -1422,15 +1426,15 @@ public function creatorDecisionSheet(Request $request, string $id)
                 'transition %s -> %s%s%s',
                 $fromState,
                 $toState,
-                !empty($validated['reason']) ? '; reason=' . $validated['reason'] : '',
-                !empty($validated['notes']) ? '; note=' . str_replace(';', ',', (string) $validated['notes']) : ''
+                ! empty($validated['reason']) ? '; reason='.$validated['reason'] : '',
+                ! empty($validated['notes']) ? '; note='.str_replace(';', ',', (string) $validated['notes']) : ''
             )),
         ]);
 
         return response()->json([
             'message' => 'Creator transitioned',
             'data' => [
-                'creatorId' => 'crm:' . $rowNumber,
+                'creatorId' => 'crm:'.$rowNumber,
                 'fromState' => $fromState,
                 'toState' => $toState,
                 'eventId' => $eventId,
@@ -1438,7 +1442,6 @@ public function creatorDecisionSheet(Request $request, string $id)
             'source' => 'database',
         ]);
     }
-
 
     public function analyticsSummary(Request $request)
     {
@@ -1450,7 +1453,7 @@ public function creatorDecisionSheet(Request $request, string $id)
         $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $workspaceId = (string) $request->attributes->get('workspace_id');
         $range = (string) ($validated['range'] ?? '30d');
-        $cacheKey = 'analytics-summary:' . md5($workspaceId . '|' . $sheetId . '|' . $range);
+        $cacheKey = 'analytics-summary:'.md5($workspaceId.'|'.$sheetId.'|'.$range);
         $summary = $request->has('_')
             ? $this->analytics->summary($sheetId, $workspaceId, $range)
             : Cache::remember($cacheKey, now()->addSeconds(60), fn () => $this->analytics->summary($sheetId, $workspaceId, $range));
@@ -1513,7 +1516,7 @@ public function creatorDecisionSheet(Request $request, string $id)
         $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
         $workspaceId = (string) $request->attributes->get('workspace_id');
         $range = (string) ($validated['range'] ?? '30d');
-        $cacheKey = 'dashboard-metrics:' . md5($workspaceId . '|' . $sheetId . '|' . $range);
+        $cacheKey = 'dashboard-metrics:'.md5($workspaceId.'|'.$sheetId.'|'.$range);
         $summary = $request->has('_')
             ? $this->analytics->summary($sheetId, $workspaceId, $range)
             : Cache::remember($cacheKey, now()->addSeconds(60), fn () => $this->analytics->summary($sheetId, $workspaceId, $range));
@@ -1524,8 +1527,6 @@ public function creatorDecisionSheet(Request $request, string $id)
             'summary' => $summary,
         ]);
     }
-
-
 
     private function dashboardRangeStart(string $range): ?CarbonImmutable
     {
@@ -1538,7 +1539,7 @@ public function creatorDecisionSheet(Request $request, string $id)
 
     private function applyOutreachEventRange($query, ?CarbonImmutable $rangeStart): void
     {
-        if (!$rangeStart) {
+        if (! $rangeStart) {
             return;
         }
 
@@ -1598,6 +1599,7 @@ public function creatorDecisionSheet(Request $request, string $id)
                 $candidate = $this->normalizeSelectedCreatorForMerge($platform, $payload);
                 if ($candidate === null) {
                     $skipped++;
+
                     continue;
                 }
 
@@ -1620,13 +1622,13 @@ public function creatorDecisionSheet(Request $request, string $id)
                         ],
                     ]);
 
-                    $profile = new CreatorProfile();
+                    $profile = new CreatorProfile;
                     $profile->creator()->associate($creator);
                     $profile->project_id = $projectId;
                     $profile->platform = $platform;
                 } else {
                     $creator = $profile->creator;
-                    if (!$creator) {
+                    if (! $creator) {
                         $creator = Creator::query()->create([
                             'project_id' => $projectId,
                             'external_identity_key' => $candidate['identityKey'],
@@ -1677,23 +1679,23 @@ public function creatorDecisionSheet(Request $request, string $id)
                 $this->locationInference->applyToCreator($creator, $candidate['locationPayload'] ?? $candidate, $platform);
                 $creator->save();
 
-$profile->handle = $candidate['handle'];
-$profile->username = ltrim($candidate['handle'], '@');
-$profile->profile_url = $candidate['profileUrl'] ?: $profile->profile_url;
-$profile->dm_link = $candidate['profileUrl'] ?: $profile->dm_link ?: $profile->profile_url;
-$profile->profile_pic_url = $candidate['avatarUrl'] ?: $profile->profile_pic_url;
-if ((string) ($profile->profile_pic_url ?? '') !== '') {
-    $avatarUrls[] = (string) $profile->profile_pic_url;
-}
-$profile->status = $profile->status && !in_array(strtoupper((string) $profile->status), ['NEW', 'DISCOVERED', 'ENRICHED'], true)
-    ? $profile->status
-    : 'NEW';
-$profile->lifecycle_state = $this->lifecycle->normalizeState((string) ($profile->status ?: 'NEW'), 'enriched');
-$profile->followers_count = $candidate['followers'] ?? $profile->followers_count;
-$profile->engagement_rate_pct = $candidate['engagementRate'] ?? $profile->engagement_rate_pct;
-$profile->preferred_channel = $candidate['email'] ? 'Email' : ($profile->preferred_channel ?: 'DM');
-$profile->source_provider = 'pipeline';
-$profile->source_reference = $candidate['sourceReference'];
+                $profile->handle = $candidate['handle'];
+                $profile->username = ltrim($candidate['handle'], '@');
+                $profile->profile_url = $candidate['profileUrl'] ?: $profile->profile_url;
+                $profile->dm_link = $candidate['profileUrl'] ?: $profile->dm_link ?: $profile->profile_url;
+                $profile->profile_pic_url = $candidate['avatarUrl'] ?: $profile->profile_pic_url;
+                if ((string) ($profile->profile_pic_url ?? '') !== '') {
+                    $avatarUrls[] = (string) $profile->profile_pic_url;
+                }
+                $profile->status = $profile->status && ! in_array(strtoupper((string) $profile->status), ['NEW', 'DISCOVERED', 'ENRICHED'], true)
+                    ? $profile->status
+                    : 'NEW';
+                $profile->lifecycle_state = $this->lifecycle->normalizeState((string) ($profile->status ?: 'NEW'), 'enriched');
+                $profile->followers_count = $candidate['followers'] ?? $profile->followers_count;
+                $profile->engagement_rate_pct = $candidate['engagementRate'] ?? $profile->engagement_rate_pct;
+                $profile->preferred_channel = $candidate['email'] ? 'Email' : ($profile->preferred_channel ?: 'DM');
+                $profile->source_provider = 'pipeline';
+                $profile->source_reference = $candidate['sourceReference'];
                 $sourceMetadata = is_array($profile->source_metadata) ? $profile->source_metadata : [];
                 $sourceMetadata['pipeline_creator_id'] = $candidate['id'];
                 $sourceMetadata['merge_ref'] = $candidate['mergeRef'];
@@ -1812,69 +1814,69 @@ $profile->source_reference = $candidate['sourceReference'];
             (array) ($payload['sourceHashtags'] ?? [])
         ), fn ($tag) => $tag !== '')));
 
-$avatarUrl = trim((string) (
-    $payload['avatarUrl']
-    ?? $payload['profilePicUrl']
-    ?? $payload['profile_pic_url']
-    ?? ''
-)) ?: null;
+        $avatarUrl = trim((string) (
+            $payload['avatarUrl']
+            ?? $payload['profilePicUrl']
+            ?? $payload['profile_pic_url']
+            ?? ''
+        )) ?: null;
 
-$fullName = trim((string) ($payload['fullName'] ?? '')) ?: null;
-$email = trim((string) ($payload['email'] ?? '')) ?: null;
-$bio = trim((string) ($payload['bio'] ?? '')) ?: null;
-$niche = trim((string) ($payload['niche'] ?? '')) ?: ($sourceHashtags[0] ?? null);
-$mergeRef = trim((string) ($payload['mergeRef'] ?? ''));
-$sourceReference = $mergeRef !== ''
-    ? $mergeRef
-    : ($profileUrl !== '' ? $platform . ':source-url:' . rawurlencode(rtrim(strtolower($profileUrl), '/')) : null);
-$identitySeed = $profileUrl !== '' ? strtolower(rtrim($profileUrl, '/')) : strtolower(ltrim($handle, '@'));
-$valueScore = $this->sanitizeFloat($payload['valueScore'] ?? null);
-$priorityScore = $this->sanitizeFloat($payload['priorityScore'] ?? null);
-$matchAccuracy = $this->sanitizeFloat($payload['matchAccuracy'] ?? null);
-$valueTier = trim((string) ($payload['valueTier'] ?? '')) ?: null;
-$matchCategory = trim((string) ($payload['matchCategory'] ?? '')) ?: null;
-$nicheHints = array_values(array_filter(array_map(fn ($hint) => trim((string) $hint), (array) ($payload['nicheHints'] ?? [])), fn ($hint) => $hint !== ''));
-$locationPayload = array_merge($payload, [
-    'bio' => $bio,
-    'fullName' => $fullName,
-    'handle' => $handle,
-    'profileUrl' => $profileUrl,
-]);
-$locationInference = $this->locationInference->infer($locationPayload, $platform);
+        $fullName = trim((string) ($payload['fullName'] ?? '')) ?: null;
+        $email = trim((string) ($payload['email'] ?? '')) ?: null;
+        $bio = trim((string) ($payload['bio'] ?? '')) ?: null;
+        $niche = trim((string) ($payload['niche'] ?? '')) ?: ($sourceHashtags[0] ?? null);
+        $mergeRef = trim((string) ($payload['mergeRef'] ?? ''));
+        $sourceReference = $mergeRef !== ''
+            ? $mergeRef
+            : ($profileUrl !== '' ? $platform.':source-url:'.rawurlencode(rtrim(strtolower($profileUrl), '/')) : null);
+        $identitySeed = $profileUrl !== '' ? strtolower(rtrim($profileUrl, '/')) : strtolower(ltrim($handle, '@'));
+        $valueScore = $this->sanitizeFloat($payload['valueScore'] ?? null);
+        $priorityScore = $this->sanitizeFloat($payload['priorityScore'] ?? null);
+        $matchAccuracy = $this->sanitizeFloat($payload['matchAccuracy'] ?? null);
+        $valueTier = trim((string) ($payload['valueTier'] ?? '')) ?: null;
+        $matchCategory = trim((string) ($payload['matchCategory'] ?? '')) ?: null;
+        $nicheHints = array_values(array_filter(array_map(fn ($hint) => trim((string) $hint), (array) ($payload['nicheHints'] ?? [])), fn ($hint) => $hint !== ''));
+        $locationPayload = array_merge($payload, [
+            'bio' => $bio,
+            'fullName' => $fullName,
+            'handle' => $handle,
+            'profileUrl' => $profileUrl,
+        ]);
+        $locationInference = $this->locationInference->infer($locationPayload, $platform);
 
-return [
-    'id' => trim((string) ($payload['id'] ?? '')) ?: null,
-    'mergeRef' => $mergeRef !== '' ? $mergeRef : null,
-    'sourceReference' => $sourceReference,
-    'identityKey' => $platform . ':' . sha1($identitySeed),
-    'handle' => $handle,
-    'profileUrl' => $profileUrl,
-    'avatarUrl' => $avatarUrl,
-    'fullName' => $fullName,
-    'email' => $email,
-    'bio' => $bio,
-    'niche' => $niche,
-    'followers' => $this->sanitizeMetric($payload['followers'] ?? null),
-    'engagementRate' => $this->sanitizeFloat($payload['engagementRate'] ?? null),
-    'postsCount' => $this->sanitizeMetric($payload['postsCount'] ?? null),
-    'avgLikes' => $this->sanitizeFloat($payload['avgLikes'] ?? null),
-    'avgComments' => $this->sanitizeFloat($payload['avgComments'] ?? null),
-    'isVerified' => filter_var($payload['isVerified'] ?? null, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE),
-    'sourceHashtags' => $sourceHashtags,
-    'sourcePostUrl' => trim((string) ($payload['sourcePostUrl'] ?? '')) ?: null,
-    'sourceMetricType' => trim((string) ($payload['sourceMetricType'] ?? '')) ?: null,
-    'sourceMetricValue' => $this->sanitizeMetric($payload['sourceMetricValue'] ?? null),
-    'sourcePostMetrics' => is_array($payload['sourcePostMetrics'] ?? null) ? $payload['sourcePostMetrics'] : null,
-    'matchedPostCount' => $this->sanitizeMetric($payload['matchedPostCount'] ?? null),
-    'valueScore' => $valueScore,
-    'valueTier' => $valueTier,
-    'priorityScore' => $priorityScore,
-    'matchAccuracy' => $matchAccuracy,
-    'matchCategory' => $matchCategory,
-    'nicheHints' => $nicheHints,
-    'locationPayload' => $locationPayload,
-    'locationInference' => $locationInference,
-];
+        return [
+            'id' => trim((string) ($payload['id'] ?? '')) ?: null,
+            'mergeRef' => $mergeRef !== '' ? $mergeRef : null,
+            'sourceReference' => $sourceReference,
+            'identityKey' => $platform.':'.sha1($identitySeed),
+            'handle' => $handle,
+            'profileUrl' => $profileUrl,
+            'avatarUrl' => $avatarUrl,
+            'fullName' => $fullName,
+            'email' => $email,
+            'bio' => $bio,
+            'niche' => $niche,
+            'followers' => $this->sanitizeMetric($payload['followers'] ?? null),
+            'engagementRate' => $this->sanitizeFloat($payload['engagementRate'] ?? null),
+            'postsCount' => $this->sanitizeMetric($payload['postsCount'] ?? null),
+            'avgLikes' => $this->sanitizeFloat($payload['avgLikes'] ?? null),
+            'avgComments' => $this->sanitizeFloat($payload['avgComments'] ?? null),
+            'isVerified' => filter_var($payload['isVerified'] ?? null, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE),
+            'sourceHashtags' => $sourceHashtags,
+            'sourcePostUrl' => trim((string) ($payload['sourcePostUrl'] ?? '')) ?: null,
+            'sourceMetricType' => trim((string) ($payload['sourceMetricType'] ?? '')) ?: null,
+            'sourceMetricValue' => $this->sanitizeMetric($payload['sourceMetricValue'] ?? null),
+            'sourcePostMetrics' => is_array($payload['sourcePostMetrics'] ?? null) ? $payload['sourcePostMetrics'] : null,
+            'matchedPostCount' => $this->sanitizeMetric($payload['matchedPostCount'] ?? null),
+            'valueScore' => $valueScore,
+            'valueTier' => $valueTier,
+            'priorityScore' => $priorityScore,
+            'matchAccuracy' => $matchAccuracy,
+            'matchCategory' => $matchCategory,
+            'nicheHints' => $nicheHints,
+            'locationPayload' => $locationPayload,
+            'locationInference' => $locationInference,
+        ];
     }
 
     private function selectedCreatorMatchesProfile(CreatorProfile $profile, array $candidate): bool
@@ -1910,12 +1912,14 @@ return [
 
         if ($platform === 'instagram') {
             $segments = array_values(array_filter(explode('/', $path)));
+
             return $segments[0] ?? '';
         }
 
         if ($platform === 'tiktok') {
             $segments = array_values(array_filter(explode('/', $path)));
             $first = $segments[0] ?? '';
+
             return ltrim($first, '@');
         }
 
@@ -1958,7 +1962,7 @@ return [
     private function creatorListItemMatchesFilters(array $item, array $filters): bool
     {
         $search = (string) ($filters['search'] ?? '');
-        if ($search !== '' && !$this->matchesTextSearch($search, [
+        if ($search !== '' && ! $this->matchesTextSearch($search, [
             $item['handle'] ?? '',
             $item['fullName'] ?? '',
             $item['niche'] ?? '',
@@ -1971,17 +1975,17 @@ return [
         }
 
         $platforms = (array) ($filters['platforms'] ?? []);
-        if (!empty($platforms) && !in_array(Str::lower((string) ($item['platform'] ?? '')), $platforms, true)) {
+        if (! empty($platforms) && ! in_array(Str::lower((string) ($item['platform'] ?? '')), $platforms, true)) {
             return false;
         }
 
         $statuses = (array) ($filters['statuses'] ?? []);
-        if (!empty($statuses) && !in_array(Str::lower((string) ($item['status'] ?? '')), $statuses, true)) {
+        if (! empty($statuses) && ! in_array(Str::lower((string) ($item['status'] ?? '')), $statuses, true)) {
             return false;
         }
 
         $niches = (array) ($filters['niches'] ?? []);
-        if (!empty($niches)) {
+        if (! empty($niches)) {
             $sourceTags = array_map(
                 fn ($tag) => Str::lower(trim(ltrim((string) $tag, '#'))),
                 array_merge([(string) ($item['niche'] ?? '')], (array) ($item['sourceHashtags'] ?? [])),
@@ -1991,7 +1995,7 @@ return [
             }
         }
 
-        if (!$this->matchesDateRange((string) ($item['addedAt'] ?? ''), (string) ($filters['added_from'] ?? ''), (string) ($filters['added_to'] ?? ''))) {
+        if (! $this->matchesDateRange((string) ($item['addedAt'] ?? ''), (string) ($filters['added_from'] ?? ''), (string) ($filters['added_to'] ?? ''))) {
             return false;
         }
 
@@ -2044,12 +2048,12 @@ return [
 
     private function loadCreatorsFromDatabase(string $sheetId, array $filters): ?array
     {
-        if (!$this->mirror->enabled()) {
+        if (! $this->mirror->enabled()) {
             return null;
         }
 
         $project = $this->projects->findByWorkbookId($sheetId);
-        if (!$project) {
+        if (! $project) {
             return null;
         }
 
@@ -2089,31 +2093,31 @@ return [
             ->where('project_id', $project->id);
 
         $platformFilters = array_values((array) ($filters['platforms'] ?? []));
-        if (!empty($platformFilters)) {
+        if (! empty($platformFilters)) {
             $query->whereIn('platform', $platformFilters);
         }
 
-        if (!empty($statusFilters) && !$duplicateReviewOnly) {
+        if (! empty($statusFilters) && ! $duplicateReviewOnly) {
             $query->whereIn('lifecycle_state', $statusFilters);
         }
 
         $nicheFilters = array_values((array) ($filters['niches'] ?? []));
-        if (!empty($nicheFilters)) {
+        if (! empty($nicheFilters)) {
             $query->where(function ($outerQuery) use ($nicheFilters) {
                 foreach ($nicheFilters as $niche) {
                     $outerQuery->orWhereHas('creator', fn ($q) => $q->whereRaw("LOWER(COALESCE(niche_category, '')) = ?", [$niche]))
-                        ->orWhereRaw("LOWER(CAST(source_metadata AS TEXT)) LIKE ?", ['%"' . strtolower($niche) . '"%'])
-                        ->orWhereRaw("LOWER(CAST(source_metadata AS TEXT)) LIKE ?", ['%' . strtolower($niche) . '%']);
+                        ->orWhereRaw('LOWER(CAST(source_metadata AS TEXT)) LIKE ?', ['%"'.strtolower($niche).'"%'])
+                        ->orWhereRaw('LOWER(CAST(source_metadata AS TEXT)) LIKE ?', ['%'.strtolower($niche).'%']);
                 }
             });
         }
 
         if (($filters['added_from'] ?? '') !== '') {
-            $query->where('created_at', '>=', $filters['added_from'] . ' 00:00:00');
+            $query->where('created_at', '>=', $filters['added_from'].' 00:00:00');
         }
 
         if (($filters['added_to'] ?? '') !== '') {
-            $query->where('created_at', '<=', $filters['added_to'] . ' 23:59:59');
+            $query->where('created_at', '<=', $filters['added_to'].' 23:59:59');
         }
 
         if (($filters['has_email'] ?? false) === true) {
@@ -2130,13 +2134,13 @@ return [
 
         if (($filters['search'] ?? '') !== '') {
             $searchTerm = strtolower(trim((string) $filters['search']));
-            $searchLike = '%' . $searchTerm . '%';
-            $handlePrefix = ltrim($searchTerm, '@') . '%';
+            $searchLike = '%'.$searchTerm.'%';
+            $handlePrefix = ltrim($searchTerm, '@').'%';
             $query->where(function ($q) use ($searchLike, $handlePrefix) {
-                $q->whereRaw("LOWER(COALESCE(handle, '')) LIKE ?", ['@' . $handlePrefix])
+                $q->whereRaw("LOWER(COALESCE(handle, '')) LIKE ?", ['@'.$handlePrefix])
                     ->orWhereRaw("LOWER(COALESCE(handle, '')) LIKE ?", [$handlePrefix])
                     ->orWhereRaw("LOWER(COALESCE(username, '')) LIKE ?", [$handlePrefix])
-                    ->orWhereRaw("LOWER(CAST(source_metadata AS TEXT)) LIKE ?", [$searchLike])
+                    ->orWhereRaw('LOWER(CAST(source_metadata AS TEXT)) LIKE ?', [$searchLike])
                     ->orWhereHas('creator', function ($creatorQuery) use ($searchLike) {
                         $creatorQuery->whereRaw("LOWER(COALESCE(display_name, '')) LIKE ?", [$searchLike])
                             ->orWhereRaw("LOWER(COALESCE(primary_email, '')) LIKE ?", [$searchLike])
@@ -2176,6 +2180,7 @@ return [
             $profile->loadMissing('creator');
             $item = $this->buildCreatorListItemFromProfile($profile, $fields === 'summary');
             $item['linkedProfileCount'] = (int) ($counts[$profile->creator_id] ?? ($item['linkedProfileCount'] ?? 1));
+
             return $item;
         })->values()->all();
 
@@ -2188,7 +2193,7 @@ return [
 
                 return ($item['status'] ?? '') === 'duplicate_review_needed'
                     || in_array(($item['duplicateRisk'] ?? 'low'), ['medium', 'high'], true)
-                    || !empty($item['duplicateCandidateIds']);
+                    || ! empty($item['duplicateCandidateIds']);
             }));
             $total = count($items);
             $items = array_values(array_slice($items, $offset, $limit));
@@ -2332,6 +2337,7 @@ return [
 
         if (is_string($value) && $value !== '') {
             $decoded = json_decode($value, true);
+
             return is_array($decoded) ? $decoded : [];
         }
 
@@ -2352,7 +2358,7 @@ return [
 
         foreach ($latestSends as $row) {
             $profile = $this->findCreatorProfileForOutreachEvent($projectId, $row);
-            if (!$profile || in_array((string) $profile->lifecycle_state, $advancedStates, true)) {
+            if (! $profile || in_array((string) $profile->lifecycle_state, $advancedStates, true)) {
                 continue;
             }
 
@@ -2374,7 +2380,7 @@ return [
 
         foreach ($latestReplies as $row) {
             $profile = $this->findCreatorProfileForOutreachEvent($projectId, $row);
-            if (!$profile || in_array((string) $profile->lifecycle_state, $terminalStates, true)) {
+            if (! $profile || in_array((string) $profile->lifecycle_state, $terminalStates, true)) {
                 continue;
             }
 
@@ -2428,10 +2434,10 @@ return [
             $platform = strtolower(trim((string) ($item['platform'] ?? '')));
 
             if ($email !== '') {
-                $groups['email:' . $email][] = $index;
+                $groups['email:'.$email][] = $index;
             }
             if ($handle !== '') {
-                $groups['handle:' . $platform . ':' . $handle][] = $index;
+                $groups['handle:'.$platform.':'.$handle][] = $index;
             }
         }
 
@@ -2473,12 +2479,12 @@ return [
 
     private function loadMessageTemplatesFromDatabase(string $sheetId, array $filters): ?array
     {
-        if (!$this->mirror->enabled()) {
+        if (! $this->mirror->enabled()) {
             return null;
         }
 
         $project = $this->projects->findByWorkbookId($sheetId);
-        if (!$project) {
+        if (! $project) {
             return null;
         }
 
@@ -2501,8 +2507,9 @@ return [
 
         return $rows->map(function (MessageTemplate $template) {
             $rowNumber = (int) (($template->metadata['source_row_number'] ?? 0));
+
             return [
-                'id' => $rowNumber > 1 ? 'msg:' . $rowNumber : 'msgdb:' . $template->id,
+                'id' => $rowNumber > 1 ? 'msg:'.$rowNumber : 'msgdb:'.$template->id,
                 'angleId' => (string) $template->angle_id,
                 'platform' => strtolower((string) ($template->platform ?: 'instagram')),
                 'niche' => (string) ($template->niche ?: ''),
@@ -2514,15 +2521,14 @@ return [
         })->values()->all();
     }
 
-
     private function resolveCreatorProfileForRoute(string $sheetId, string $id): ?CreatorProfile
     {
-        if (!$this->mirror->enabled()) {
+        if (! $this->mirror->enabled()) {
             return null;
         }
 
         $project = $this->projects->findByWorkbookId($sheetId);
-        if (!$project) {
+        if (! $project) {
             return null;
         }
 
@@ -2538,7 +2544,7 @@ return [
                     ->with('creator')
                     ->where('project_id', $project->id)
                     ->where(function ($query) use ($rowNumber) {
-                        $query->where('source_reference', 'Creators_CRM:' . $rowNumber)
+                        $query->where('source_reference', 'Creators_CRM:'.$rowNumber)
                             ->orWhere('source_metadata->sheet_row_number', $rowNumber);
                     })
                     ->first();
@@ -2547,11 +2553,13 @@ return [
 
         if (Str::startsWith($id, 'crmdb:')) {
             $candidate = substr($id, 6);
+
             return CreatorProfile::query()->with('creator')->where('project_id', $project->id)->where('id', $candidate)->first();
         }
 
         if (Str::startsWith($id, 'profile:')) {
             $candidate = substr($id, 8);
+
             return CreatorProfile::query()->with('creator')->where('project_id', $project->id)->where('id', $candidate)->first();
         }
 
@@ -2566,7 +2574,7 @@ return [
     {
         $creator = $profile->creator;
         $rowNumber = $this->extractSourceRowNumberFromProfile($profile);
-        $id = $rowNumber > 0 ? 'crm:' . $rowNumber : 'crmdb:' . $profile->id;
+        $id = $rowNumber > 0 ? 'crm:'.$rowNumber : 'crmdb:'.$profile->id;
         $score = (float) ($profile->value_score ?? 0);
         $status = trim((string) ($profile->lifecycle_state ?: $profile->status ?: 'discovered'));
         $enrichmentStatus = ($profile->followers_count !== null || $profile->engagement_rate_pct !== null || filled(optional($creator)->primary_email))
@@ -2679,7 +2687,7 @@ return [
     private function applySheetRecordToProfile(CreatorProfile $profile, array $record): void
     {
         $creator = $profile->creator;
-        if (!$creator) {
+        if (! $creator) {
             return;
         }
 
@@ -2720,7 +2728,7 @@ return [
         try {
             $sheetRow = collect($this->sheets->getRows($sheetId, 'Creators_CRM'))
                 ->first(fn (array $row) => (int) ($row['_row_number'] ?? 0) === $rowNumber);
-            if (!$sheetRow) {
+            if (! $sheetRow) {
                 return ['synced' => false, 'reason' => 'sheet_row_missing'];
             }
 
@@ -2757,7 +2765,7 @@ return [
         try {
             $sheetRow = collect($this->sheets->getRows($sheetId, 'Creators_CRM'))
                 ->first(fn (array $row) => (int) ($row['_row_number'] ?? 0) === $rowNumber);
-            if (!$sheetRow) {
+            if (! $sheetRow) {
                 return ['synced' => false, 'reason' => 'sheet_row_missing'];
             }
 
@@ -2808,7 +2816,8 @@ return [
         if ($primaryNotes === '') {
             return $secondaryNotes;
         }
-        return trim($primaryNotes . ' | ' . $secondaryNotes, ' |');
+
+        return trim($primaryNotes.' | '.$secondaryNotes, ' |');
     }
 
     private function isUuid(string $value): bool
@@ -2840,11 +2849,11 @@ return [
         $comments = $this->sanitizeMetric($row['commentsCount'] ?? $row['commentCount'] ?? null);
         $views = $this->sanitizeMetric($row['playCount'] ?? null);
         $rowNumber = (int) ($row['_row_number'] ?? 0);
-        $duplicateKey = strtolower(trim(($postUrl !== '' ? $postUrl : ($platform . '|' . $handle . '|' . $caption))));
+        $duplicateKey = strtolower(trim(($postUrl !== '' ? $postUrl : ($platform.'|'.$handle.'|'.$caption))));
 
         return [
-            'id' => $platform . ':' . $rowNumber,
-            'rowId' => $platform . ':' . $rowNumber,
+            'id' => $platform.':'.$rowNumber,
+            'rowId' => $platform.':'.$rowNumber,
             'sourceSheet' => $sheetName,
             'sourceRowNumber' => $rowNumber,
             'platform' => $platform,
@@ -2869,6 +2878,7 @@ return [
             if ($scoreA === $scoreB) {
                 return strcmp((string) ($b['timestamp'] ?? ''), (string) ($a['timestamp'] ?? ''));
             }
+
             return $scoreB <=> $scoreA;
         });
 
@@ -2899,7 +2909,7 @@ return [
         $existingLookup = [];
         foreach (['IG_Profile_URL_Queue', 'TikTok_Profile_URL_Queue', 'Profile_URL_Queue_All'] as $sheetName) {
             foreach ($this->sheets->getRows($sheetId, $sheetName) as $row) {
-                $key = strtolower(trim((string) ($row['platform'] ?? ''))) . '|' . strtolower(trim((string) ($row['handle'] ?? ''))) . '|' . strtolower(trim((string) ($row['url'] ?? '')));
+                $key = strtolower(trim((string) ($row['platform'] ?? ''))).'|'.strtolower(trim((string) ($row['handle'] ?? ''))).'|'.strtolower(trim((string) ($row['url'] ?? '')));
                 $existingLookup[$sheetName][$key] = true;
             }
         }
@@ -2935,11 +2945,12 @@ return [
 
             if ($queueRecord === null) {
                 $skipped++;
+
                 continue;
             }
 
             $sheetTarget = $this->queueSheetForPlatform((string) $queueRecord['platform']);
-            $key = strtolower($queueRecord['platform']) . '|' . strtolower($queueRecord['handle']) . '|' . strtolower($queueRecord['url']);
+            $key = strtolower($queueRecord['platform']).'|'.strtolower($queueRecord['handle']).'|'.strtolower($queueRecord['url']);
 
             if (isset($existingLookup[$sheetTarget][$key])) {
                 if ($dbDiscoveryItem) {
@@ -2947,6 +2958,7 @@ return [
                     $dbDiscoveryItem->save();
                 }
                 $skipped++;
+
                 continue;
             }
 
@@ -3019,8 +3031,8 @@ return [
         $linkedProfileCount = $linkedProfiles !== '' ? count(array_filter(explode(',', $linkedProfiles))) : ($identityId ? 1 : 0);
 
         return [
-            'id' => 'crm:' . (int) ($row['_row_number'] ?? 0),
-            'rowId' => 'crm:' . (int) ($row['_row_number'] ?? 0),
+            'id' => 'crm:'.(int) ($row['_row_number'] ?? 0),
+            'rowId' => 'crm:'.(int) ($row['_row_number'] ?? 0),
             'platform' => $platform,
             'handle' => (string) ($row['Handle'] ?? ''),
             'fullName' => (string) ($row['Name'] ?? ''),
@@ -3093,7 +3105,7 @@ return [
         $meta = $this->parseMessageMeta((string) ($row['Psychological_Trigger'] ?? ''));
 
         return [
-            'id' => 'msg:' . (int) ($row['_row_number'] ?? 0),
+            'id' => 'msg:'.(int) ($row['_row_number'] ?? 0),
             'angleId' => (string) ($row['Angle_Name'] ?? ''),
             'platform' => Str::lower((string) ($row['Best_For_Platform'] ?? 'instagram')),
             'niche' => (string) ($meta['niche'] ?? ''),
@@ -3117,7 +3129,7 @@ return [
             'Angle_Name' => (string) ($template['angleId'] ?? ''),
             'DM_Template' => (string) ($template['copy'] ?? ''),
             'Best_For_Platform' => (string) ($template['platform'] ?? 'instagram'),
-            'Psychological_Trigger' => $trigger . ' || META:' . json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            'Psychological_Trigger' => $trigger.' || META:'.json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
         ];
     }
 
@@ -3131,14 +3143,15 @@ return [
             'notes' => '',
         ];
 
-        if (!str_contains($text, '|| META:')) {
+        if (! str_contains($text, '|| META:')) {
             return $result;
         }
 
         [$trigger, $metaJson] = explode('|| META:', $text, 2);
         $decoded = json_decode(trim($metaJson), true);
-        if (!is_array($decoded)) {
+        if (! is_array($decoded)) {
             $result['trigger'] = trim($trigger);
+
             return $result;
         }
 
@@ -3159,6 +3172,7 @@ return [
                 $lookup[$key] = (int) ($row['_row_number'] ?? 0);
             }
         }
+
         return $lookup;
     }
 
@@ -3197,7 +3211,6 @@ return [
             strtolower(trim((string) ($row['username'] ?? ''))),
         ])));
     }
-
 
     private function matchesDiscoverySearch(array $item, string $search): bool
     {
@@ -3250,6 +3263,7 @@ return [
             if ($to !== '' && $date > substr($to, 0, 10)) {
                 return false;
             }
+
             return true;
         } catch (\Throwable) {
             return false;
@@ -3268,35 +3282,35 @@ return [
 
     private function loadDiscoveryItemsFromDatabase(string $sheetId, array $filters): ?array
     {
-        if (!$this->mirror->enabled()) {
+        if (! $this->mirror->enabled()) {
             return null;
         }
-    
+
         $project = $this->projects->findByWorkbookId($sheetId);
-        if (!$project) {
+        if (! $project) {
             return null;
         }
-    
+
         $platforms = array_values(array_filter(
             (array) ($filters['platforms'] ?? []),
             fn ($value) => in_array($value, ['instagram', 'tiktok'], true)
         ));
-    
+
         $search = Str::lower(trim((string) ($filters['search'] ?? '')));
         $dedupe = (bool) ($filters['dedupe'] ?? true);
         $offset = max(0, (int) ($filters['offset'] ?? 0));
         $limit = max(1, min(500, (int) ($filters['limit'] ?? 200)));
-    
+
         $query = DiscoveryItem::query()
             ->where('project_id', $project->id);
-    
+
         if ($platforms !== []) {
             $query->whereIn('platform', $platforms);
         }
-    
+
         if ($search !== '') {
-            $like = '%' . str_replace(['%', '_'], ['\%', '\_'], $search) . '%';
-    
+            $like = '%'.str_replace(['%', '_'], ['\%', '\_'], $search).'%';
+
             $query->where(function ($searchQuery) use ($like) {
                 $searchQuery
                     ->whereRaw('LOWER(COALESCE(handle, \'\')) LIKE ?', [$like])
@@ -3307,9 +3321,9 @@ return [
                     ->orWhereRaw('LOWER(COALESCE(profile_url, \'\')) LIKE ?', [$like]);
             });
         }
-    
+
         $rawTotal = (clone $query)->count();
-    
+
         if ($rawTotal === 0) {
             return [
                 'items' => [],
@@ -3319,7 +3333,7 @@ return [
                 'duplicate_groups' => 0,
             ];
         }
-    
+
         /*
          * Do not load the entire discovery_items table into PHP.
          * The old version used ->get() without a hard limit, then deduped/sliced in memory.
@@ -3329,24 +3343,24 @@ return [
             5000,
             max($offset + ($limit * 5), 1000)
         );
-    
+
         $rows = (clone $query)
             ->orderByDesc('discovered_at')
             ->orderByDesc('created_at')
             ->limit($candidateLimit)
             ->get();
-    
+
         $normalized = [];
         foreach ($rows as $row) {
             $item = $this->discoveryItemToListItem($row);
-    
-            if ($search !== '' && !$this->matchesDiscoverySearch($item, $search)) {
+
+            if ($search !== '' && ! $this->matchesDiscoverySearch($item, $search)) {
                 continue;
             }
-    
+
             $normalized[] = $item;
         }
-    
+
         usort(
             $normalized,
             fn (array $a, array $b) => strcmp(
@@ -3354,30 +3368,30 @@ return [
                 (string) ($a['timestamp'] ?? '')
             )
         );
-    
+
         if ($dedupe) {
             $groups = [];
-    
+
             foreach ($normalized as $item) {
                 $groups[$item['duplicateKey']][] = $item;
             }
-    
+
             $deduped = [];
             $duplicateGroups = 0;
-    
+
             foreach ($groups as $items) {
                 if (count($items) > 1) {
                     $duplicateGroups++;
                 }
-    
+
                 $deduped[] = $this->collapseDuplicateGroup($items);
             }
-    
+
             $normalized = $deduped;
         } else {
             $duplicateGroups = 0;
         }
-    
+
         return [
             'items' => array_values(array_slice($normalized, $offset, $limit)),
             'total' => count($normalized),
@@ -3393,11 +3407,11 @@ return [
         $raw = is_array($item->raw_payload) ? $item->raw_payload : [];
         $timestamp = $item->discovered_at?->toISOString() ?: (string) data_get($raw, 'timestamp', '');
         $handle = $this->normalizeHandle((string) ($item->handle ?: $item->username ?: ''));
-        $duplicateKey = strtolower(trim((string) ($item->duplicate_key ?: ($item->post_url ?: ($item->platform . '|' . $handle . '|' . $item->caption)))));
+        $duplicateKey = strtolower(trim((string) ($item->duplicate_key ?: ($item->post_url ?: ($item->platform.'|'.$handle.'|'.$item->caption)))));
 
         return [
-            'id' => 'discdb:' . $item->id,
-            'rowId' => 'discdb:' . $item->id,
+            'id' => 'discdb:'.$item->id,
+            'rowId' => 'discdb:'.$item->id,
             'sourceSheet' => 'discovery_items',
             'sourceRowNumber' => null,
             'platform' => (string) $item->platform,
@@ -3425,7 +3439,7 @@ return [
     private function resolveMessageTemplateForRoute(string $sheetId, string $id): ?MessageTemplate
     {
         $project = $this->projects->findByWorkbookId($sheetId);
-        if (!$project) {
+        if (! $project) {
             return null;
         }
 
@@ -3436,6 +3450,7 @@ return [
 
         if (Str::startsWith($id, 'msgdb:')) {
             $candidate = substr($id, 6);
+
             return MessageTemplate::query()->where('project_id', $project->id)->where('id', $candidate)->first();
         }
 
@@ -3471,6 +3486,7 @@ return [
         try {
             if ($rowNumber > 1) {
                 $this->sheets->updateAssocRow($sheetId, 'Message_Library', $rowNumber, $record);
+
                 return ['mode' => 'updated', 'rowNumber' => $rowNumber];
             }
 
@@ -3483,6 +3499,7 @@ return [
                 $template->metadata = $metadata;
                 $template->save();
             }
+
             return ['mode' => 'created', 'rowNumber' => $rowNumber];
         } catch (\Throwable $e) {
             Log::warning('Message_Library sheet sync failed after database template write', [
@@ -3491,6 +3508,7 @@ return [
                 'row_number' => $rowNumber,
                 'error' => $e->getMessage(),
             ]);
+
             return ['mode' => 'disabled', 'rowNumber' => $rowNumber, 'reason' => 'external_workbook_disabled'];
         }
     }
@@ -3498,7 +3516,7 @@ return [
     private function discoveryItemToQueueRecord(DiscoveryItem $item, string $actionTag): ?array
     {
         $platform = strtolower(trim((string) $item->platform));
-        if (!in_array($platform, ['instagram', 'tiktok'], true)) {
+        if (! in_array($platform, ['instagram', 'tiktok'], true)) {
             return null;
         }
 
@@ -3515,6 +3533,7 @@ return [
         }
 
         $addedAt = now()->toDateTimeString();
+
         return [
             'platform' => $platform,
             'handle' => $handle,
@@ -3534,9 +3553,10 @@ return [
     private function parseDiscoveryId(string $id): array
     {
         $parts = explode(':', $id);
-        if (count($parts) !== 2 || !in_array($parts[0], ['instagram', 'tiktok'], true) || !is_numeric($parts[1])) {
+        if (count($parts) !== 2 || ! in_array($parts[0], ['instagram', 'tiktok'], true) || ! is_numeric($parts[1])) {
             throw new RuntimeException('Invalid discovery row id');
         }
+
         return [$parts[0], (int) $parts[1]];
     }
 
@@ -3554,6 +3574,7 @@ return [
             $resolvedQueueRow = $this->parseQueueSelector((string) $selector, $platform, $maxQueueRowNumber);
             if ($resolvedQueueRow !== null) {
                 $selectedQueueRowNumbers[] = $resolvedQueueRow;
+
                 continue;
             }
 
@@ -3586,13 +3607,15 @@ return [
 
     private function parseQueueSelector(string $id, string $platform, int $maxQueueRowNumber): ?int
     {
-        $prefix = $platform . ':queue:';
+        $prefix = $platform.':queue:';
         if (str_starts_with($id, $prefix)) {
             $value = substr($id, strlen($prefix));
             if (is_numeric($value)) {
                 $rowNumber = (int) $value;
+
                 return $rowNumber > 1 ? $rowNumber : null;
             }
+
             return null;
         }
 
@@ -3641,14 +3664,14 @@ return [
 
         $keys = [strtolower($selector)];
 
-        $urlPrefix = $platform . ':source-url:';
+        $urlPrefix = $platform.':source-url:';
         if (str_starts_with($selector, $urlPrefix)) {
             $decoded = rawurldecode(substr($selector, strlen($urlPrefix)));
             $decoded = rtrim(strtolower(trim($decoded)), '/');
             $keys[] = $decoded;
         }
 
-        $idPrefix = $platform . ':source-id:';
+        $idPrefix = $platform.':source-id:';
         if (str_starts_with($selector, $idPrefix)) {
             $idValue = trim(substr($selector, strlen($idPrefix)));
             if ($idValue !== '') {
@@ -3672,7 +3695,7 @@ return [
 
     private function parseRowNumber(string $id, string $prefix): int
     {
-        $expectedPrefix = $prefix . ':';
+        $expectedPrefix = $prefix.':';
         if (str_starts_with($id, $expectedPrefix)) {
             $value = substr($id, strlen($expectedPrefix));
             if (is_numeric($value)) {
@@ -3687,7 +3710,7 @@ return [
 
     private function queueId(string $platform, int $rowNumber): string
     {
-        return $platform . ':queue:' . $rowNumber;
+        return $platform.':queue:'.$rowNumber;
     }
 
     private function sanitizeMetric(mixed $value): ?int
@@ -3695,19 +3718,21 @@ return [
         if ($value === null || $value === '') {
             return null;
         }
-        if (!is_numeric($value)) {
+        if (! is_numeric($value)) {
             return null;
         }
         $value = (int) $value;
+
         return $value < 0 ? null : $value;
     }
 
     private function sanitizeFloat(mixed $value): ?float
     {
-        if ($value === null || $value === '' || !is_numeric($value)) {
+        if ($value === null || $value === '' || ! is_numeric($value)) {
             return null;
         }
         $value = (float) $value;
+
         return $value < 0 ? null : $value;
     }
 
@@ -3717,26 +3742,30 @@ return [
         if ($handle === '') {
             return '';
         }
-        return str_starts_with($handle, '@') ? $handle : '@' . $handle;
+
+        return str_starts_with($handle, '@') ? $handle : '@'.$handle;
     }
 
     private function instagramProfileUrl(string $username): string
     {
         $username = trim($username);
-        return $username === '' ? '' : 'https://www.instagram.com/' . ltrim($username, '@') . '/';
+
+        return $username === '' ? '' : 'https://www.instagram.com/'.ltrim($username, '@').'/';
     }
 
     private function tiktokProfileUrl(string $username): string
     {
         $username = trim($username);
-        return $username === '' ? '' : 'https://www.tiktok.com/@' . ltrim($username, '@');
+
+        return $username === '' ? '' : 'https://www.tiktok.com/@'.ltrim($username, '@');
     }
 
     private function extractTaggedValue(string $text, string $key): ?string
     {
-        if (preg_match('/(?:^|[;|\s])' . preg_quote($key, '/') . '=([^;|]+)/', $text, $matches)) {
+        if (preg_match('/(?:^|[;|\s])'.preg_quote($key, '/').'=([^;|]+)/', $text, $matches)) {
             return trim($matches[1]);
         }
+
         return null;
     }
 
@@ -3753,12 +3782,13 @@ return [
     private function upsertTaggedValue(string $text, string $key, string $value): string
     {
         $value = trim($value);
-        $pattern = '/(?:^|[;|\s])' . preg_quote($key, '/') . '=[^;|]*/';
+        $pattern = '/(?:^|[;|\s])'.preg_quote($key, '/').'=[^;|]*/';
         if (preg_match($pattern, $text)) {
-            $updated = preg_replace($pattern, ' ' . $key . '=' . $value, $text, 1);
+            $updated = preg_replace($pattern, ' '.$key.'='.$value, $text, 1);
+
             return trim((string) $updated);
         }
 
-        return trim($text . ' ' . $key . '=' . $value);
+        return trim($text.' '.$key.'='.$value);
     }
 }

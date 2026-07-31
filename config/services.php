@@ -35,7 +35,6 @@ return [
         'auth_timeout' => env('SUPABASE_AUTH_TIMEOUT', 15),
     ],
 
-
     'ai' => [
         'openai_key' => env('OPENAI_API_KEY'),
         'openai_model' => env('OPENAI_MODEL', 'gpt-4.1-mini'),

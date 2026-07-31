@@ -31,7 +31,7 @@ class DiscoveryCriteriaService
         $weakMatchCount = 0;
 
         foreach ($creators as $creator) {
-            if (!is_array($creator)) {
+            if (! is_array($creator)) {
                 continue;
             }
 
@@ -45,9 +45,9 @@ class DiscoveryCriteriaService
             $creator['rejectReasons'] = $evaluation['rejectReasons'];
             $creator['priorityScore'] = $this->priorityScoreFor($creator, $evaluation);
 
-            if (!$evaluation['passesHardFilters']) {
+            if (! $evaluation['passesHardFilters']) {
                 $hardFiltered++;
-            } elseif (!$evaluation['passesSoftFilters']) {
+            } elseif (! $evaluation['passesSoftFilters']) {
                 $softFiltered++;
             }
 
@@ -173,7 +173,7 @@ class DiscoveryCriteriaService
             $hardRequested++;
             $weightedTotal += 20;
             $latest = $latestPostAt !== '' ? $this->parseDate($latestPostAt) : null;
-            if (!$latest) {
+            if (! $latest) {
                 $hardFailures[] = 'missing_recent_post';
                 $rejectReasons[] = 'Recent activity could not be verified.';
             } else {
@@ -270,9 +270,9 @@ class DiscoveryCriteriaService
         $matchAccuracy = (int) round(min($evidenceCap, $rawAccuracy));
 
         $fitScore = $matchAccuracy;
-        if (!$passesHardFilters) {
+        if (! $passesHardFilters) {
             $fitScore = max(0, $fitScore - 25);
-        } elseif ($softRequested > 0 && !$passesSoftFilters) {
+        } elseif ($softRequested > 0 && ! $passesSoftFilters) {
             $fitScore = max(0, $fitScore - 10);
         }
         $fitScore = max(0, min(100, $fitScore));
@@ -281,7 +281,7 @@ class DiscoveryCriteriaService
         if ($passesHardFilters) {
             if ($softRequested === 0) {
                 $matchCategory = 'partial';
-            } elseif ($passesSoftFilters && (!$nicheRequested || $nicheMatched) && $matchAccuracy >= 75) {
+            } elseif ($passesSoftFilters && (! $nicheRequested || $nicheMatched) && $matchAccuracy >= 75) {
                 $matchCategory = 'full';
             } elseif ($softMatches > 0 || $matchAccuracy >= 55) {
                 $matchCategory = 'partial';
@@ -438,7 +438,7 @@ class DiscoveryCriteriaService
     {
         $keywords = [];
         foreach ($values as $value) {
-            if (!is_scalar($value)) {
+            if (! is_scalar($value)) {
                 continue;
             }
 
@@ -453,7 +453,7 @@ class DiscoveryCriteriaService
 
             foreach (preg_split('/\s+/', $value) ?: [] as $part) {
                 $part = trim($part);
-                if ($part !== '' && strlen($part) >= 3 && !in_array($part, ['and', 'with', 'for', 'the', 'und', 'mit'], true)) {
+                if ($part !== '' && strlen($part) >= 3 && ! in_array($part, ['and', 'with', 'for', 'the', 'und', 'mit'], true)) {
                     $keywords[] = $part;
                 }
             }

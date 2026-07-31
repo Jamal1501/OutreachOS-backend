@@ -20,7 +20,7 @@ class RequireAppKey
 
         $providedKey = (string) $request->header('X-APP-KEY');
 
-        if ($providedKey === '' || !hash_equals($configuredKey, $providedKey)) {
+        if ($providedKey === '' || ! hash_equals($configuredKey, $providedKey)) {
             return response()->json([
                 'error' => 'Unauthorized',
             ], 401);

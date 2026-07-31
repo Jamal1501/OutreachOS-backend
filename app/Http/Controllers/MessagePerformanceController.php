@@ -13,8 +13,7 @@ class MessagePerformanceController extends Controller
     public function __construct(
         private WorkspaceContextService $workspaceContext,
         private MessagePerformanceService $performance,
-    ) {
-    }
+    ) {}
 
     public function index(Request $request)
     {
@@ -32,7 +31,7 @@ class MessagePerformanceController extends Controller
 
         $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
         $workspaceId = (string) $request->attributes->get('workspace_id');
-        $cacheKey = 'message-performance:' . md5($workspaceId . '|' . $sheetId . '|' . json_encode($validated));
+        $cacheKey = 'message-performance:'.md5($workspaceId.'|'.$sheetId.'|'.json_encode($validated));
         $data = $request->has('_')
             ? $this->performance->summaryForSheet($sheetId, $validated)
             : Cache::remember($cacheKey, now()->addSeconds(90), fn () => $this->performance->summaryForSheet($sheetId, $validated));

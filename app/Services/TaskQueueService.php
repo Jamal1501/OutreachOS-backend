@@ -9,18 +9,20 @@ use App\Models\Workspace;
 use App\Services\TaskEngine\TaskAutomationSettings;
 use App\Services\TaskEngine\TaskDecisionPolicy;
 use Carbon\Carbon;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
-use RuntimeException;
 use Illuminate\Validation\ValidationException;
+use RuntimeException;
 
 class TaskQueueService
 {
     private const TERMINAL_TASK_STATUSES = ['COMPLETED', 'DONE', 'SKIPPED', 'ARCHIVED'];
+
     private const OPEN_TASK_STATUSES = ['PENDING', 'IN_PROGRESS', 'SNOOZED', 'OPEN', 'QUEUED'];
+
     private const TERMINAL_PROFILE_STATES = ['ARCHIVED', 'WON', 'LOST', 'DECLINED', 'POSTED'];
+
     private const REQUIRES_CONNECTION = ['instagram'];
 
     public function __construct(
@@ -32,8 +34,7 @@ class TaskQueueService
         private MessagePerformanceService $messagePerformance,
         private TaskAutomationSettings $automationSettings,
         private TaskDecisionPolicy $decisionPolicy,
-    ) {
-    }
+    ) {}
 
     public function listTasks(string $sheetId): array
     {
@@ -55,6 +56,7 @@ class TaskQueueService
             if ($pa !== $pb) {
                 return $pa <=> $pb;
             }
+
             return strcmp((string) ($a['Due_At'] ?? ''), (string) ($b['Due_At'] ?? ''));
         });
 
@@ -64,12 +66,12 @@ class TaskQueueService
     public function listColdRetry(string $sheetId): array
     {
         $project = $this->projects->findByWorkbookId($sheetId);
-        if (!$project) {
+        if (! $project) {
             return [];
         }
 
         $settings = $this->resolveTaskSettings($this->resolveWorkspaceForSheet($sheetId, $project));
-        if (!(bool) ($settings['revival_review_enabled'] ?? true)) {
+        if (! (bool) ($settings['revival_review_enabled'] ?? true)) {
             return [];
         }
 
@@ -110,19 +112,19 @@ class TaskQueueService
                     ?: now()->subDays($intervalDays);
 
                 return [
-                    'taskId'        => (string) $profile->id,
-                    'taskType'      => 'CHECK_IN',
-                    'platform'      => strtolower((string) ($profile->platform ?: 'instagram')),
-                    'handle'        => (string) ($profile->handle ?: ''),
-                    'profileUrl'    => (string) ($profile->profile_url ?: $profile->dm_link ?: $profile->conversation_url ?: ''),
-                    'status'        => $bucket,
-                    'priority'      => $this->normalizePriority($this->priorityFromProfile($profile)),
-                    'valueScore'    => (int) ($profile->value_score ?? 0),
-                    'followers'     => (int) ($profile->followers_count ?? 0),
+                    'taskId' => (string) $profile->id,
+                    'taskType' => 'CHECK_IN',
+                    'platform' => strtolower((string) ($profile->platform ?: 'instagram')),
+                    'handle' => (string) ($profile->handle ?: ''),
+                    'profileUrl' => (string) ($profile->profile_url ?: $profile->dm_link ?: $profile->conversation_url ?: ''),
+                    'status' => $bucket,
+                    'priority' => $this->normalizePriority($this->priorityFromProfile($profile)),
+                    'valueScore' => (int) ($profile->value_score ?? 0),
+                    'followers' => (int) ($profile->followers_count ?? 0),
                     'profilePicUrl' => (string) ($profile->profile_pic_url ?: ''),
                     'followUpCount' => (int) ($state['follow_up_attempts'] ?? 0),
-                    'notes'         => sprintf('Review this %s creator. They have been parked long enough to be worth a fresh look.', str_replace('_', ' ', $bucket)),
-                    'completedAt'   => optional($reviewAt)->toDateTimeString() ?? '',
+                    'notes' => sprintf('Review this %s creator. They have been parked long enough to be worth a fresh look.', str_replace('_', ' ', $bucket)),
+                    'completedAt' => optional($reviewAt)->toDateTimeString() ?? '',
                 ];
             })
             ->values()
@@ -145,7 +147,7 @@ class TaskQueueService
     public function queueHealth(string $sheetId): array
     {
         $project = $this->projects->findByWorkbookId($sheetId);
-        if (!$project) {
+        if (! $project) {
             return [
                 'source' => str_starts_with($sheetId, 'workspace:') ? 'workspace_runtime' : 'legacy_workbook',
                 'activeOpenCount' => 0,
@@ -179,8 +181,8 @@ class TaskQueueService
                     if ($this->buildCandidateForProfile($profile, $settings) !== null) {
                         $qualifiedBacklogCount++;
                     }
-            }
-        });
+                }
+            });
 
         $recovery = null;
         if ($activeOpenCount === 0 && $qualifiedBacklogCount > 0) {
@@ -223,13 +225,13 @@ class TaskQueueService
     public function updateTaskSettings(string $sheetId, array $updates): array
     {
         $workspace = $this->resolveWorkspaceForSheet($sheetId);
-        if (!$workspace) {
+        if (! $workspace) {
             throw new RuntimeException('Workspace not found for task settings.');
         }
 
         $settings = $this->resolveTaskSettings($workspace);
         $role = $this->currentWorkspaceRole();
-        if (!$this->canEditTaskSettings($settings, $role)) {
+        if (! $this->canEditTaskSettings($settings, $role)) {
             throw new RuntimeException('You do not have permission to change task settings.');
         }
 
@@ -302,12 +304,12 @@ class TaskQueueService
         }
 
         $task = $this->sheets->findFirstRowBy($sheetId, 'Task_Queue', 'Task_ID', $taskId);
-        if (!$task) {
+        if (! $task) {
             throw new RuntimeException('Task not found');
         }
 
         $task['Status'] = 'SNOOZED';
-        $task['Notes'] = trim(((string) ($task['Notes'] ?? '')) . ' ' . ($reason ?: 'Snoozed until ' . $until->toDateTimeString()));
+        $task['Notes'] = trim(((string) ($task['Notes'] ?? '')).' '.($reason ?: 'Snoozed until '.$until->toDateTimeString()));
         $this->sheets->updateAssocRow($sheetId, 'Task_Queue', (int) ($task['_row_number'] ?? 0), $task);
 
         return [
@@ -362,7 +364,7 @@ class TaskQueueService
             'Template_ID' => '',
             'Created_At' => now()->toDateTimeString(),
             'Completed_At' => '',
-            'Notes' => trim('Manual task: ' . (string) ($payload['notes'] ?? '')),
+            'Notes' => trim('Manual task: '.(string) ($payload['notes'] ?? '')),
         ];
 
         $headers = $this->sheets->getHeaders($sheetId, 'Task_Queue');
@@ -383,7 +385,7 @@ class TaskQueueService
         }
 
         $task = $this->sheets->findFirstRowBy($sheetId, 'Task_Queue', 'Task_ID', $taskId);
-        if (!$task) {
+        if (! $task) {
             throw new RuntimeException('Task not found');
         }
 
@@ -392,7 +394,7 @@ class TaskQueueService
         $task['Completed_At'] = in_array($status, ['COMPLETED', 'DONE', 'SKIPPED'], true)
             ? now()->toDateTimeString()
             : '';
-        $task['Notes'] = trim(((string) ($task['Notes'] ?? '')) . ' ' . (string) ($payload['notes'] ?? ''));
+        $task['Notes'] = trim(((string) ($task['Notes'] ?? '')).' '.(string) ($payload['notes'] ?? ''));
         $this->sheets->updateAssocRow($sheetId, 'Task_Queue', (int) ($task['_row_number'] ?? 0), $task);
 
         return [
@@ -420,7 +422,7 @@ class TaskQueueService
         foreach ($rows as $row) {
             $rowHandle = $this->normalizeCreatorHandle((string) ($row['Handle'] ?? ''));
             $rowStatus = strtoupper((string) ($row['Status'] ?? 'PENDING'));
-            if ($rowHandle === $handle && !in_array($rowStatus, self::TERMINAL_TASK_STATUSES, true)) {
+            if ($rowHandle === $handle && ! in_array($rowStatus, self::TERMINAL_TASK_STATUSES, true)) {
                 return [
                     'task' => $this->normalizeSheetTaskRow($row),
                     'created' => false,
@@ -480,7 +482,7 @@ class TaskQueueService
         if ($targetProfileIds === [] && $targetRowNumbers !== []) {
             $profilesQuery->where(function ($q) use ($targetRowNumbers) {
                 foreach ($targetRowNumbers as $rowNumber) {
-                    $q->orWhere('source_reference', 'Creators_CRM:' . $rowNumber);
+                    $q->orWhere('source_reference', 'Creators_CRM:'.$rowNumber);
                 }
             });
         }
@@ -555,13 +557,15 @@ class TaskQueueService
             if (isset($openByProfileId[$profile->id])) {
                 $skippedExisting++;
                 $recordSkip('existing_open_task', $profile);
+
                 continue;
             }
 
             $candidate = $this->buildCandidateForProfile($profile, $settings);
-            if (!$candidate) {
+            if (! $candidate) {
                 $skippedIneligible++;
                 $recordSkip($this->explainProfileTaskIneligibility($profile, $settings), $profile);
+
                 continue;
             }
 
@@ -635,7 +639,7 @@ class TaskQueueService
     private function listTasksFromDatabase(string $sheetId): ?array
     {
         $project = $this->projects->findByWorkbookId($sheetId);
-        if (!$project) {
+        if (! $project) {
             return null;
         }
 
@@ -720,6 +724,7 @@ class TaskQueueService
             ->where(function ($q) use ($profile, $handle, $platform) {
                 if ($profile) {
                     $q->where('creator_profile_id', $profile->id);
+
                     return;
                 }
 
@@ -783,7 +788,7 @@ class TaskQueueService
         $taskType = (string) ($payload['taskType'] ?? 'DM_INVITE');
         $platform = strtolower((string) ($payload['platform'] ?? ($profile?->platform ?: 'instagram')));
         $priority = strtoupper((string) ($payload['priority'] ?? ($profile ? $this->priorityFromProfile($profile) : 'MEDIUM')));
-        $dueAt = !empty($payload['dueAt']) ? Carbon::parse((string) $payload['dueAt']) : now();
+        $dueAt = ! empty($payload['dueAt']) ? Carbon::parse((string) $payload['dueAt']) : now();
 
         $candidate = [
             'profile' => $profile,
@@ -844,24 +849,25 @@ class TaskQueueService
         ];
 
         $task = $this->createDatabaseTask($project->id, $profile, $candidate, MessageTemplate::query()->where('project_id', $project->id)->get()->all(), true);
+
         return $this->normalizeDbTask($task);
     }
 
     private function completeTaskInDatabase(string $sheetId, string $taskId, array $payload = []): array
     {
         $project = $this->projects->findByWorkbookId($sheetId);
-        if (!$project) {
-            throw new RuntimeException('Project not found for sheet: ' . $sheetId);
+        if (! $project) {
+            throw new RuntimeException('Project not found for sheet: '.$sheetId);
         }
 
         $task = Task::query()
             ->where('project_id', $project->id)
             ->where(function ($q) use ($taskId) {
-                    $q->where('external_task_key', $taskId);
-                    if (Str::isUuid($taskId)) {
-                        $q->orWhere('id', $taskId);
-                    }
-                })
+                $q->where('external_task_key', $taskId);
+                if (Str::isUuid($taskId)) {
+                    $q->orWhere('id', $taskId);
+                }
+            })
             ->with(['creatorProfile.creator', 'messageTemplate'])
             ->firstOrFail();
 
@@ -883,7 +889,7 @@ class TaskQueueService
         $keepOriginalAsLaterTask = (bool) ($payload['keepOriginalAsLaterTask'] ?? true);
         $isChangedAction = $status === 'SKIPPED' && $skipReason === 'changed_action' && $replacementTaskType !== '';
 
-        if ($isChangedAction && $replacementTaskType === 'EMAIL_SEND' && !$this->profileHasUsableEmail($task->creatorProfile)) {
+        if ($isChangedAction && $replacementTaskType === 'EMAIL_SEND' && ! $this->profileHasUsableEmail($task->creatorProfile)) {
             throw ValidationException::withMessages([
                 'replacementTaskType' => 'Email replacement is not available because this creator has no usable email on file.',
             ]);
@@ -947,7 +953,7 @@ class TaskQueueService
         $task->skip_reason_detail = $skipReasonDetail !== '' ? $skipReasonDetail : null;
         $task->external_channel = $externalChannel !== '' ? $externalChannel : $task->external_channel;
         $task->conversation_url = $conversationUrl !== '' ? $conversationUrl : $task->conversation_url;
-        $task->notes = trim(((string) ($task->notes ?? '')) . ($notes !== '' ? ' ' . $notes : ''));
+        $task->notes = trim(((string) ($task->notes ?? '')).($notes !== '' ? ' '.$notes : ''));
         $task->metadata = $meta;
 
         if ($status === 'COMPLETED' && in_array($task->task_type, ['DM_INVITE', 'EMAIL_SEND', 'DM_FOLLOWUP'], true)) {
@@ -1001,7 +1007,7 @@ class TaskQueueService
                 $outcome,
                 $skipReason,
                 $skipReasonDetail,
-                $completedAdHocActions !== [] ? 'Also completed: ' . implode(', ', $completedAdHocActions) : '',
+                $completedAdHocActions !== [] ? 'Also completed: '.implode(', ', $completedAdHocActions) : '',
             ]))),
             'Message_Text' => $hasExplicitSentMessage ? (string) ($task->message_draft ?: '') : '',
             'Use_Task_Draft_As_Message' => $hasExplicitSentMessage,
@@ -1032,7 +1038,7 @@ class TaskQueueService
             return null;
         }
 
-        if ($replacementTaskType === 'EMAIL_SEND' && !$this->profileHasUsableEmail($profile)) {
+        if ($replacementTaskType === 'EMAIL_SEND' && ! $this->profileHasUsableEmail($profile)) {
             return null;
         }
 
@@ -1054,6 +1060,7 @@ class TaskQueueService
                 'open_immediately' => $openReplacement,
             ]);
             $existing->save();
+
             return $this->normalizeDbTask($existing->refresh()->load(['creatorProfile.creator', 'messageTemplate']));
         }
 
@@ -1062,10 +1069,10 @@ class TaskQueueService
             : $this->resolveExecutionChannel($profile, $this->profileAutomationState($profile));
 
         $notes = match ($replacementTaskType) {
-            'EMAIL_SEND' => 'Changed from ' . $originalTask->task_type . '. Write email outreach now, but keep the skipped warm-up action available as later support.',
-            'DM_INVITE' => 'Changed from ' . $originalTask->task_type . '. Open outreach now, but keep the skipped warm-up action available as later support.',
-            'COMMENT_ON_POST' => 'Changed from ' . $originalTask->task_type . '. Use a public comment instead of the original action.',
-            default => 'Changed from ' . $originalTask->task_type . '. Handle this replacement action next.',
+            'EMAIL_SEND' => 'Changed from '.$originalTask->task_type.'. Write email outreach now, but keep the skipped warm-up action available as later support.',
+            'DM_INVITE' => 'Changed from '.$originalTask->task_type.'. Open outreach now, but keep the skipped warm-up action available as later support.',
+            'COMMENT_ON_POST' => 'Changed from '.$originalTask->task_type.'. Use a public comment instead of the original action.',
+            default => 'Changed from '.$originalTask->task_type.'. Handle this replacement action next.',
         };
 
         $candidate = $this->candidateArray(
@@ -1090,13 +1097,14 @@ class TaskQueueService
         );
 
         $task = $this->createDatabaseTask($projectId, $profile, $candidate, MessageTemplate::query()->where('project_id', $projectId)->get()->all(), true);
+
         return $this->normalizeDbTask($task->load(['creatorProfile.creator', 'messageTemplate']));
     }
 
     private function createDeferredOriginalTaskAfterActionChange(string $projectId, CreatorProfile $profile, Task $originalTask, string $replacementTaskType, array $settings = []): ?array
     {
         $originalTaskType = (string) $originalTask->task_type;
-        if (!in_array($originalTaskType, ['FOLLOW_REQUEST', 'COMMENT_ON_POST'], true)) {
+        if (! in_array($originalTaskType, ['FOLLOW_REQUEST', 'COMMENT_ON_POST'], true)) {
             return null;
         }
 
@@ -1140,18 +1148,19 @@ class TaskQueueService
         );
 
         $task = $this->createDatabaseTask($projectId, $profile, $candidate, MessageTemplate::query()->where('project_id', $projectId)->get()->all());
+
         return $this->normalizeDbTask($task->load(['creatorProfile.creator', 'messageTemplate']));
     }
 
     private function applyRelatedWarmupTasksAfterOutreach(string $projectId, string $sheetId, CreatorProfile $profile, Task $completedTask, array $payload, string $senderAccount = ''): array
     {
         $status = strtoupper((string) ($completedTask->status ?? ''));
-        if (!in_array($status, self::TERMINAL_TASK_STATUSES, true)) {
+        if (! in_array($status, self::TERMINAL_TASK_STATUSES, true)) {
             return ['completed' => [], 'reframed' => []];
         }
 
         $actionType = strtoupper(trim((string) ($payload['actionType'] ?? $completedTask->task_type ?? '')));
-        if (!in_array($actionType, ['DM_INVITE', 'EMAIL_SEND', 'DM_FOLLOWUP', 'COMMENT_ON_POST'], true)) {
+        if (! in_array($actionType, ['DM_INVITE', 'EMAIL_SEND', 'DM_FOLLOWUP', 'COMMENT_ON_POST'], true)) {
             return ['completed' => [], 'reframed' => []];
         }
 
@@ -1185,7 +1194,7 @@ class TaskQueueService
                 $relatedTask->status = 'COMPLETED';
                 $relatedTask->completed_at = $now;
                 $relatedTask->completion_outcome = $outcome;
-                $relatedTask->notes = trim(((string) ($relatedTask->notes ?? '')) . ' Completed alongside ' . $actionType . ' from Outreach Panel.');
+                $relatedTask->notes = trim(((string) ($relatedTask->notes ?? '')).' Completed alongside '.$actionType.' from Outreach Panel.');
                 $relatedTask->metadata = array_merge($meta, [
                     'completed_with_outreach_task_id' => (string) ($completedTask->external_task_key ?: $completedTask->id),
                     'completed_with_action_type' => $actionType,
@@ -1215,14 +1224,15 @@ class TaskQueueService
                     'Sender_Account' => $senderAccount,
                     'Status' => 'COMPLETED',
                     'URL' => (string) ($relatedTask->conversation_url ?: $relatedTask->open_url ?: $completedTask->conversation_url ?: ''),
-                    'Notes' => 'Confirmed as also completed while logging ' . $actionType,
+                    'Notes' => 'Confirmed as also completed while logging '.$actionType,
                 ]);
 
                 $completed[] = $this->normalizeDbTask($relatedTask);
+
                 continue;
             }
 
-            if (!$keepAsFollowup) {
+            if (! $keepAsFollowup) {
                 continue;
             }
 
@@ -1268,7 +1278,7 @@ class TaskQueueService
     private function cleanupSupersededOpenTasks(string $projectId, CreatorProfile $profile, Task $completedTask, array $payload = []): array
     {
         $status = strtoupper((string) ($completedTask->status ?? ''));
-        if (!in_array($status, self::TERMINAL_TASK_STATUSES, true)) {
+        if (! in_array($status, self::TERMINAL_TASK_STATUSES, true)) {
             return ['closed' => []];
         }
 
@@ -1303,8 +1313,8 @@ class TaskQueueService
             $task->status = 'SKIPPED';
             $task->completed_at = $now;
             $task->completion_outcome = 'superseded';
-            $task->skip_reason = 'superseded_by_' . strtolower($taskType);
-            $task->notes = trim(((string) ($task->notes ?? '')) . ' Closed because ' . $taskType . ' superseded this action.');
+            $task->skip_reason = 'superseded_by_'.strtolower($taskType);
+            $task->notes = trim(((string) ($task->notes ?? '')).' Closed because '.$taskType.' superseded this action.');
             $task->metadata = array_merge($meta, [
                 'superseded_by_task_id' => (string) ($completedTask->external_task_key ?: $completedTask->id),
                 'superseded_by_task_type' => $taskType,
@@ -1377,11 +1387,12 @@ class TaskQueueService
             }
         }
 
-        if (!empty($state['external_conversation_active'])) {
+        if (! empty($state['external_conversation_active'])) {
             $due = $this->coerceCarbon($profile->next_action_at ?: ($state['external_check_in_at'] ?? null));
             if ($due && $due->isFuture()) {
                 return null;
             }
+
             return $this->candidateArray(
                 profile: $profile,
                 taskType: 'CHECK_IN',
@@ -1451,10 +1462,10 @@ class TaskQueueService
 
         if (
             $profile->responded_at !== null
-            && !$profile->accepted_flag
+            && ! $profile->accepted_flag
             && (($state['needs_reply_review'] ?? true) !== false)
-            && !in_array('NEGOTIATING', $statusValues, true)
-            && !in_array('ACCEPTED', $statusValues, true)
+            && ! in_array('NEGOTIATING', $statusValues, true)
+            && ! in_array('ACCEPTED', $statusValues, true)
         ) {
             return $this->candidateArray(
                 profile: $profile,
@@ -1570,7 +1581,7 @@ class TaskQueueService
             return 'waiting_until_future';
         }
 
-        if (!empty($state['external_conversation_active'])) {
+        if (! empty($state['external_conversation_active'])) {
             $due = $this->coerceCarbon($profile->next_action_at ?: ($state['external_check_in_at'] ?? null));
             if ($due && $due->isFuture()) {
                 return 'external_check_in_not_due';
@@ -1609,7 +1620,7 @@ class TaskQueueService
     private function taskGenerationSummary(int $created, int $eligible, int $skippedExisting, int $skippedIneligible, array $skipReasonCounts): string
     {
         if ($created > 0) {
-            return "Created {$created} task" . ($created === 1 ? '' : 's') . " from {$eligible} eligible creator" . ($eligible === 1 ? '' : 's') . '.';
+            return "Created {$created} task".($created === 1 ? '' : 's')." from {$eligible} eligible creator".($eligible === 1 ? '' : 's').'.';
         }
 
         if ($skippedExisting > 0 && $skippedExisting >= $skippedIneligible) {
@@ -1618,7 +1629,7 @@ class TaskQueueService
 
         $topReason = array_key_first($skipReasonCounts);
         if ($topReason) {
-            return 'No new tasks were created. Top blocker: ' . str_replace('_', ' ', $topReason) . '.';
+            return 'No new tasks were created. Top blocker: '.str_replace('_', ' ', $topReason).'.';
         }
 
         return 'No new tasks were created from this generation run.';
@@ -1636,7 +1647,7 @@ class TaskQueueService
         }
 
         if ($executionChannel === 'instagram') {
-            if (!$timePressure && empty($state['warmup_follow_request_completed']) && empty($state['warmup_follow_request_sent'])) {
+            if (! $timePressure && empty($state['warmup_follow_request_completed']) && empty($state['warmup_follow_request_sent'])) {
                 return 'FOLLOW_REQUEST';
             }
 
@@ -1685,11 +1696,11 @@ class TaskQueueService
             return $executionChannel === 'email' && $hasEmail ? 'EMAIL_SEND' : 'DM_FOLLOWUP';
         }
 
-        if ($profile->responded_at !== null && !$profile->accepted_flag && $needsReplyReview) {
+        if ($profile->responded_at !== null && ! $profile->accepted_flag && $needsReplyReview) {
             return 'REVIEW_CREATOR';
         }
 
-        if ($warmupEnabled && !$timePressure) {
+        if ($warmupEnabled && ! $timePressure) {
             if ($score >= $highValueThreshold) {
                 if ($platform === 'instagram' && empty($state['warmup_follow_request_completed']) && empty($state['warmup_follow_request_sent'])) {
                     return 'FOLLOW_REQUEST';
@@ -1776,11 +1787,13 @@ class TaskQueueService
                 $profile->next_action_at = $profile->waiting_until;
             }
             $profile->automation_state = $state;
+
             return;
         }
 
-        if (!in_array($status, ['COMPLETED', 'DONE'], true)) {
+        if (! in_array($status, ['COMPLETED', 'DONE'], true)) {
             $profile->automation_state = $state;
+
             return;
         }
 
@@ -1798,7 +1811,7 @@ class TaskQueueService
                     $state['follow_status'] = 'requested';
                     $state['follow_request_sent_at'] = $state['follow_request_sent_at'] ?? $now->toIso8601String();
                 }
-                if (!empty(($task->metadata ?? [])['follow_up_variant'])) {
+                if (! empty(($task->metadata ?? [])['follow_up_variant'])) {
                     if ($markReplied || in_array($outcome, ['creator_replied', 'replied_elsewhere', 'conversation_active_elsewhere'], true)) {
                         $this->markExternalConversationActive($profile, $state, $settings, $externalChannel ?: (string) ($task->actionable_channel ?: $task->platform), $conversationUrl ?: (string) ($task->conversation_url ?: $task->open_url));
                         $state['needs_reply_review'] = true;
@@ -1824,7 +1837,7 @@ class TaskQueueService
                 $profile->status = 'COMMENT_ATTEMPTED';
                 $profile->lifecycle_state = 'warming';
                 $state['warmup_comment_completed'] = true;
-                if (!empty(($task->metadata ?? [])['follow_up_variant'])) {
+                if (! empty(($task->metadata ?? [])['follow_up_variant'])) {
                     if ($markReplied || in_array($outcome, ['creator_replied', 'replied_elsewhere', 'conversation_active_elsewhere'], true)) {
                         $this->markExternalConversationActive($profile, $state, $settings, $externalChannel ?: (string) ($task->actionable_channel ?: $task->platform), $conversationUrl ?: (string) ($task->conversation_url ?: $task->open_url));
                         $state['needs_reply_review'] = true;
@@ -2012,7 +2025,7 @@ class TaskQueueService
 
     private function maybeCreateImmediateNextTask(string $projectId, CreatorProfile $profile, Task $task, array $settings): void
     {
-        if (!in_array($task->status, ['COMPLETED', 'DONE'], true)) {
+        if (! in_array($task->status, ['COMPLETED', 'DONE'], true)) {
             return;
         }
 
@@ -2021,10 +2034,10 @@ class TaskQueueService
         $nextTaskType = null;
 
         if (in_array($taskType, ['FOLLOW_REQUEST', 'COMMENT_ON_POST'], true)) {
-            if (!empty(($task->metadata ?? [])['follow_up_variant'])) {
+            if (! empty(($task->metadata ?? [])['follow_up_variant'])) {
                 return;
             }
-            if (!$this->timePressureEnabled($settings) && !in_array($outcome, ['not_a_fit', 'archive', 'lost'], true)) {
+            if (! $this->timePressureEnabled($settings) && ! in_array($outcome, ['not_a_fit', 'archive', 'lost'], true)) {
                 $nextTaskType = $this->determineInitialTaskTypeFromProfile($profile, array_merge($settings, ['high_value_warmup_enabled' => false]));
             }
         } elseif ($taskType === 'REVIEW_CREATOR') {
@@ -2047,7 +2060,7 @@ class TaskQueueService
             $nextTaskType = 'REVIEW_CREATOR';
         }
 
-        if (!$nextTaskType) {
+        if (! $nextTaskType) {
             return;
         }
 
@@ -2073,7 +2086,7 @@ class TaskQueueService
             dueAt: $dueAt,
             actionableChannel: $nextTaskType === 'EMAIL_SEND' ? 'email' : $this->resolveExecutionChannel($profile, $this->profileAutomationState($profile)),
             conversationUrl: (string) ($profile->conversation_url ?: $profile->dm_link ?: $profile->profile_url ?: ''),
-            notes: 'Auto-promoted after completing ' . $taskType,
+            notes: 'Auto-promoted after completing '.$taskType,
             metadata: [
                 'source_rule' => 'immediate_next_step',
                 'parent_task_id' => (string) ($task->external_task_key ?: $task->id),
@@ -2112,7 +2125,7 @@ class TaskQueueService
             'open_url' => (string) ($candidate['conversation_url'] ?? ($profile?->dm_link ?: $profile?->profile_url ?: '')),
             'message_draft' => $messageDraft,
             'source_provider' => $manual ? 'manual' : 'database',
-            'source_reference' => $profile ? 'creator_profile:' . $profile->id : 'manual',
+            'source_reference' => $profile ? 'creator_profile:'.$profile->id : 'manual',
             'notes' => (string) ($candidate['notes'] ?? ''),
             'metadata' => array_merge((array) ($candidate['metadata'] ?? []), ['creator_profile_id' => $profile?->id]),
             'group_key' => $groupMeta['group_key'],
@@ -2207,12 +2220,12 @@ class TaskQueueService
             return Workspace::query()->find($workspaceId);
         }
 
-        if ($project && !empty($project->workspace_id)) {
+        if ($project && ! empty($project->workspace_id)) {
             return Workspace::query()->find($project->workspace_id);
         }
 
         $resolved = $this->projects->findByWorkbookId($sheetId);
-        if ($resolved && !empty($resolved->workspace_id)) {
+        if ($resolved && ! empty($resolved->workspace_id)) {
             return Workspace::query()->find($resolved->workspace_id);
         }
 
@@ -2341,24 +2354,24 @@ class TaskQueueService
     {
         if ($manual) {
             return [
-                'group_key' => 'manual:' . strtolower($taskType),
+                'group_key' => 'manual:'.strtolower($taskType),
                 'group_label' => 'Manual tasks',
                 'group_type' => 'manual',
             ];
         }
 
         return match ($taskType) {
-            'FOLLOW_REQUEST', 'COMMENT_ON_POST' => !empty($metadata['group_context']) && $metadata['group_context'] === 'follow_up' ? [
-                'group_key' => 'follow-up-soft-touch:' . strtolower($taskType),
+            'FOLLOW_REQUEST', 'COMMENT_ON_POST' => ! empty($metadata['group_context']) && $metadata['group_context'] === 'follow_up' ? [
+                'group_key' => 'follow-up-soft-touch:'.strtolower($taskType),
                 'group_label' => 'Use softer follow-ups on no-reply creators',
                 'group_type' => 'follow_up',
             ] : [
-                'group_key' => 'warmup:' . strtolower($taskType),
+                'group_key' => 'warmup:'.strtolower($taskType),
                 'group_label' => 'Warm high-value creators',
                 'group_type' => 'warmup',
             ],
             'DM_INVITE', 'EMAIL_SEND' => [
-                'group_key' => 'first-outreach:' . strtolower($taskType),
+                'group_key' => 'first-outreach:'.strtolower($taskType),
                 'group_label' => 'Send first outreach',
                 'group_type' => 'first_outreach',
             ],
@@ -2373,10 +2386,10 @@ class TaskQueueService
                 'group_type' => 'reply_review',
             ],
             'CHECK_IN' => [
-                'group_key' => 'check-in:' . strtolower((string) ($metadata['group_context'] ?? 'general')),
-                'group_label' => !empty($metadata['group_context']) && $metadata['group_context'] === 'external_conversation'
+                'group_key' => 'check-in:'.strtolower((string) ($metadata['group_context'] ?? 'general')),
+                'group_label' => ! empty($metadata['group_context']) && $metadata['group_context'] === 'external_conversation'
                     ? 'Check outside-app conversations'
-                    : (!empty($metadata['group_context']) && $metadata['group_context'] === 'revival_review'
+                    : (! empty($metadata['group_context']) && $metadata['group_context'] === 'revival_review'
                         ? 'Review older lost and archived creators'
                         : 'Check creator progress'),
                 'group_type' => 'check_in',
@@ -2402,7 +2415,7 @@ class TaskQueueService
                 'group_type' => 'cleanup',
             ],
             default => [
-                'group_key' => 'general:' . strtolower($taskType),
+                'group_key' => 'general:'.strtolower($taskType),
                 'group_label' => 'Task queue',
                 'group_type' => 'general',
             ],
@@ -2479,6 +2492,7 @@ class TaskQueueService
 
                 return $value;
             };
+
             return $score($b) <=> $score($a);
         });
 
@@ -2547,7 +2561,7 @@ class TaskQueueService
     {
         $metadata = (array) ($task->metadata ?? []);
         $groupMeta = $this->groupMetaForTask((string) $task->task_type, $metadata);
-        if (!isset($metadata['decision_score']) && $task->creatorProfile instanceof CreatorProfile) {
+        if (! isset($metadata['decision_score']) && $task->creatorProfile instanceof CreatorProfile) {
             $metadata = array_merge($metadata, $this->buildTaskDecisionMetadata(
                 $task->creatorProfile,
                 (string) $task->task_type,
@@ -2651,7 +2665,7 @@ class TaskQueueService
 
         $openKeys = [];
         foreach ($existing as $task) {
-            if (!in_array(strtoupper((string) ($task['Status'] ?? 'PENDING')), self::TERMINAL_TASK_STATUSES, true)) {
+            if (! in_array(strtoupper((string) ($task['Status'] ?? 'PENDING')), self::TERMINAL_TASK_STATUSES, true)) {
                 $openKeys[$this->taskUniqKey((string) ($task['Platform'] ?? ''), (string) ($task['Handle'] ?? ''), (string) ($task['Task_Type'] ?? ''))] = true;
             }
         }
@@ -2668,8 +2682,9 @@ class TaskQueueService
             }
 
             $taskType = $this->determineInitialTaskTypeFromRow($creator);
-            if (!$taskType) {
+            if (! $taskType) {
                 $skippedIneligible++;
+
                 continue;
             }
 
@@ -2677,6 +2692,7 @@ class TaskQueueService
             $uniqKey = $this->taskUniqKey((string) ($creator['Platform'] ?? ''), (string) ($creator['Handle'] ?? ''), $taskType);
             if (isset($openKeys[$uniqKey])) {
                 $skippedExisting++;
+
                 continue;
             }
 
@@ -2733,11 +2749,11 @@ class TaskQueueService
 
     private function initialConnectionState(string $platform, ?CreatorProfile $profile): string
     {
-        if (!in_array($platform, self::REQUIRES_CONNECTION, true)) {
+        if (! in_array($platform, self::REQUIRES_CONNECTION, true)) {
             return 'none';
         }
 
-        if (!$profile) {
+        if (! $profile) {
             return 'none';
         }
 
@@ -2750,7 +2766,7 @@ class TaskQueueService
 
     private function taskUniqKey(string $platform, string $handle, string $taskType): string
     {
-        return strtolower(trim($platform)) . '|' . strtolower(trim($handle)) . '|' . strtoupper(trim($taskType));
+        return strtolower(trim($platform)).'|'.strtolower(trim($handle)).'|'.strtoupper(trim($taskType));
     }
 
     private function normalizeStatus(string $status): string

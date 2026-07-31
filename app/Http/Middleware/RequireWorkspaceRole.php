@@ -19,7 +19,7 @@ class RequireWorkspaceRole
             ], 403);
         }
 
-        if ($role === '' || !in_array($role, $allowed, true)) {
+        if ($role === '' || ! in_array($role, $allowed, true)) {
             return response()->json([
                 'error' => 'You do not have permission to perform this action.',
                 'requiredRoles' => $allowed,

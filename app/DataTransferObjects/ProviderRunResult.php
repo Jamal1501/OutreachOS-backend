@@ -13,8 +13,7 @@ final class ProviderRunResult
         public readonly array $requestPayload = [],
         public readonly array $responsePayload = [],
         public readonly array $billing = [],
-    ) {
-    }
+    ) {}
 
     public function itemCount(): int
     {

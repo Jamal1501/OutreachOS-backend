@@ -47,6 +47,7 @@ class DataLifecycleService
         foreach (Workspace::query()->where('owner_id', $userId)->pluck('id') as $workspaceId) {
             $this->scheduleWorkspaceDeletion((string) $workspaceId, $userId);
         }
+
         return ['purgeAfter' => $purgeAfter->toIso8601String(), 'recoveryDays' => 30];
     }
 
@@ -106,6 +107,7 @@ class DataLifecycleService
                 ->update(['status' => 'completed', 'completed_at' => now(), 'updated_at' => now()]);
             $completed++;
         }
+
         return $completed;
     }
 
@@ -129,7 +131,7 @@ class DataLifecycleService
             $workspace = Workspace::query()->find($workspaceId);
             if ($workspace) {
                 $workspace->name = 'Deleted workspace';
-                $workspace->slug = 'deleted-' . Str::lower(Str::random(12));
+                $workspace->slug = 'deleted-'.Str::lower(Str::random(12));
                 $workspace->owner_id = 'deleted';
                 $workspace->settings = ['purgedAt' => now()->toIso8601String()];
                 $workspace->save();
@@ -144,8 +146,8 @@ class DataLifecycleService
         $url = rtrim((string) config('services.supabase.url'), '/');
         $serviceKey = (string) config('services.supabase.service_role_key');
         if ($url !== '' && $serviceKey !== '') {
-            Http::withHeaders(['apikey' => $serviceKey, 'Authorization' => 'Bearer ' . $serviceKey])
-                ->delete($url . '/auth/v1/admin/users/' . rawurlencode($userId));
+            Http::withHeaders(['apikey' => $serviceKey, 'Authorization' => 'Bearer '.$serviceKey])
+                ->delete($url.'/auth/v1/admin/users/'.rawurlencode($userId));
         }
     }
 }

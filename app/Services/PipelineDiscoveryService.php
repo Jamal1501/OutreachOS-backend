@@ -9,8 +9,8 @@ use App\Models\DiscoveryItem;
 use App\Models\DiscoveryRun;
 use App\Models\EnrichmentJob;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class PipelineDiscoveryService
@@ -25,8 +25,7 @@ class PipelineDiscoveryService
         private ScraperRegistryService $scrapers,
         private InfluencerScoringService $scoring,
         private AvatarCacheService $avatarCache,
-    ) {
-    }
+    ) {}
 
     public function estimate(
         string $planId,
@@ -36,8 +35,7 @@ class PipelineDiscoveryService
         int $seedCount = 1,
         ?string $discoveryModuleKey = null,
         ?string $enrichmentModuleKey = null,
-    ): array
-    {
+    ): array {
         return $this->scrapers->estimatePipeline(
             $planId,
             $platform,
@@ -84,24 +82,25 @@ class PipelineDiscoveryService
 
     public function claimJobExecution(string $jobId, string $workerJobId): bool
     {
-        if (!$this->pipelineSyncEnabled()) {
+        if (! $this->pipelineSyncEnabled()) {
             return true;
         }
 
         return DB::transaction(function () use ($jobId, $workerJobId) {
             $run = DiscoveryRun::query()->whereKey($jobId)->lockForUpdate()->first();
-            if (!$run || in_array($run->status, ['completed', 'failed', 'cancelled'], true)) {
+            if (! $run || in_array($run->status, ['completed', 'failed', 'cancelled'], true)) {
                 return false;
             }
 
             $result = is_array($run->result_payload) ? $run->result_payload : [];
-            if (!empty($result['executionClaimedAt'])) {
+            if (! empty($result['executionClaimedAt'])) {
                 Log::warning('Duplicate pipeline delivery rejected', [
                     'jobId' => $jobId,
                     'workerJobId' => $workerJobId,
                     'claimedBy' => $result['executionWorkerJobId'] ?? null,
                     'claimedAt' => $result['executionClaimedAt'],
                 ]);
+
                 return false;
             }
 
@@ -117,7 +116,7 @@ class PipelineDiscoveryService
     public function requestCancellation(string $jobId): array
     {
         $state = $this->getJobState($jobId);
-        if (!$state) {
+        if (! $state) {
             throw new \RuntimeException('Pipeline job not found');
         }
 
@@ -138,7 +137,7 @@ class PipelineDiscoveryService
     public function markJobFailed(string $jobId, string $message): void
     {
         $state = $this->getJobState($jobId);
-        if (!$state || in_array((string) ($state['status'] ?? ''), ['completed', 'failed', 'cancelled'], true)) {
+        if (! $state || in_array((string) ($state['status'] ?? ''), ['completed', 'failed', 'cancelled'], true)) {
             return;
         }
 
@@ -148,6 +147,7 @@ class PipelineDiscoveryService
                 'currentStep' => null,
                 'error' => null,
             ]);
+
             return;
         }
 
@@ -161,12 +161,12 @@ class PipelineDiscoveryService
     public function reconcileStaleJob(string $jobId, ?array $state = null): ?array
     {
         $state ??= $this->getJobState($jobId);
-        if (!$state || !in_array((string) ($state['status'] ?? ''), ['running', 'cancel_requested'], true)) {
+        if (! $state || ! in_array((string) ($state['status'] ?? ''), ['running', 'cancel_requested'], true)) {
             return $state;
         }
 
         $updatedAt = $state['updatedAt'] ?? null;
-        if (!$updatedAt) {
+        if (! $updatedAt) {
             return $state;
         }
 
@@ -192,55 +192,54 @@ class PipelineDiscoveryService
         return $this->getJobState($jobId);
     }
 
-public function getJobState(string $jobId): ?array
-{
-    // DB must be the source of truth in multi-container deployments like Render.
-    $run = DiscoveryRun::query()->find($jobId);
+    public function getJobState(string $jobId): ?array
+    {
+        // DB must be the source of truth in multi-container deployments like Render.
+        $run = DiscoveryRun::query()->find($jobId);
 
-    if ($run) {
-        $result = is_array($run->result_payload) ? $run->result_payload : [];
+        if ($run) {
+            $result = is_array($run->result_payload) ? $run->result_payload : [];
 
-        return [
-            'jobId' => $run->id,
-            'status' => $run->status,
-            'currentStep' => $run->current_step,
-            'completedSteps' => $result['completedSteps'] ?? [],
-            'steps' => $result['steps'] ?? [],
-            'creators' => $result['creators'] ?? [],
-            'totalCreators' => $result['totalCreators'] ?? 0,
-            'failedStep' => $run->error_message ? $run->current_step : null,
-            'error' => $run->error_message,
-            'projectId' => $run->project_id,
-            'request' => $run->request_payload,
-            'criteria' => $result['criteria'] ?? Arr::get($run->request_payload, 'criteria'),
-            'filterSummary' => $result['filterSummary'] ?? null,
-            'brief' => $result['brief'] ?? Arr::get($run->request_payload, 'brief'),
-            'usageSummary' => $result['usageSummary'] ?? null,
-            'enrichmentProgress' => $result['enrichmentProgress'] ?? null,
-            'cancellationRequested' => (bool) ($result['cancellationRequested'] ?? false),
-            'executionClaimedAt' => $result['executionClaimedAt'] ?? null,
-            'executionWorkerJobId' => $result['executionWorkerJobId'] ?? null,
-            'resultsPreviewReady' => (bool) ($result['resultsPreviewReady'] ?? false),
-            'createdAt' => optional($run->created_at)?->toDateTimeString(),
-            'updatedAt' => optional($run->updated_at)?->toDateTimeString(),
-            'finishedAt' => optional($run->finished_at)?->toDateTimeString(),
-        ];
-    }
-
-    // File fallback only for local/dev cases.
-    $path = $this->jobPath($jobId);
-    if (is_file($path)) {
-        $decoded = json_decode((string) file_get_contents($path), true);
-        if (is_array($decoded)) {
-            return $decoded;
+            return [
+                'jobId' => $run->id,
+                'status' => $run->status,
+                'currentStep' => $run->current_step,
+                'completedSteps' => $result['completedSteps'] ?? [],
+                'steps' => $result['steps'] ?? [],
+                'creators' => $result['creators'] ?? [],
+                'totalCreators' => $result['totalCreators'] ?? 0,
+                'failedStep' => $run->error_message ? $run->current_step : null,
+                'error' => $run->error_message,
+                'projectId' => $run->project_id,
+                'request' => $run->request_payload,
+                'criteria' => $result['criteria'] ?? Arr::get($run->request_payload, 'criteria'),
+                'filterSummary' => $result['filterSummary'] ?? null,
+                'brief' => $result['brief'] ?? Arr::get($run->request_payload, 'brief'),
+                'usageSummary' => $result['usageSummary'] ?? null,
+                'enrichmentProgress' => $result['enrichmentProgress'] ?? null,
+                'cancellationRequested' => (bool) ($result['cancellationRequested'] ?? false),
+                'executionClaimedAt' => $result['executionClaimedAt'] ?? null,
+                'executionWorkerJobId' => $result['executionWorkerJobId'] ?? null,
+                'resultsPreviewReady' => (bool) ($result['resultsPreviewReady'] ?? false),
+                'createdAt' => optional($run->created_at)?->toDateTimeString(),
+                'updatedAt' => optional($run->updated_at)?->toDateTimeString(),
+                'finishedAt' => optional($run->finished_at)?->toDateTimeString(),
+            ];
         }
-    }
 
-    return null;
-}
+        // File fallback only for local/dev cases.
+        $path = $this->jobPath($jobId);
+        if (is_file($path)) {
+            $decoded = json_decode((string) file_get_contents($path), true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+        }
+
+        return null;
+    }
 
     public function runJob(string $jobId, array $payload): array
-    
     {
         $sheetId = $payload['sheetId'];
         $platform = $payload['platform'];
@@ -255,7 +254,7 @@ public function getJobState(string $jobId): ?array
 
         if ($projectId) {
             $run = DiscoveryRun::query()->find($jobId);
-            if ($run && !$run->project_id) {
+            if ($run && ! $run->project_id) {
                 $run->project_id = $projectId;
                 $run->save();
             }
@@ -478,7 +477,7 @@ public function getJobState(string $jobId): ?array
             return $final;
         } catch (PipelineCancelledException $exception) {
             $state = $this->getJobState($jobId) ?? [];
-            if (!empty($state['enrichmentJobId'])) {
+            if (! empty($state['enrichmentJobId'])) {
                 $this->cancelEnrichmentJob((string) $state['enrichmentJobId']);
             }
 
@@ -513,7 +512,7 @@ public function getJobState(string $jobId): ?array
             $state = $this->getJobState($jobId) ?? [];
             $failedStep = $state['currentStep'] ?? null;
 
-            if (!empty($state['enrichmentJobId'])) {
+            if (! empty($state['enrichmentJobId'])) {
                 $this->failEnrichmentJob((string) $state['enrichmentJobId'], $exception->getMessage());
             }
 
@@ -593,7 +592,7 @@ public function getJobState(string $jobId): ?array
     private function assertNotCancelled(string $jobId): void
     {
         if ($this->isCancellationRequested($jobId)) {
-            throw new PipelineCancelledException();
+            throw new PipelineCancelledException;
         }
     }
 
@@ -633,7 +632,7 @@ public function getJobState(string $jobId): ?array
                 $scrapeCredits += $creditCost;
             }
 
-            if (!empty($billing['usageEventId'])) {
+            if (! empty($billing['usageEventId'])) {
                 $usageEventIds[] = (string) $billing['usageEventId'];
             }
 
@@ -678,7 +677,7 @@ public function getJobState(string $jobId): ?array
     private function writeJobState(string $jobId, array $state): void
     {
         $dir = dirname($this->jobPath($jobId));
-        if (!is_dir($dir)) {
+        if (! is_dir($dir)) {
             mkdir($dir, 0777, true);
         }
 
@@ -687,7 +686,7 @@ public function getJobState(string $jobId): ?array
 
     private function jobPath(string $jobId): string
     {
-        return storage_path('app/private/pipeline_jobs/' . $jobId . '.json');
+        return storage_path('app/private/pipeline_jobs/'.$jobId.'.json');
     }
 
     private function pipelineSyncEnabled(): bool
@@ -698,13 +697,13 @@ public function getJobState(string $jobId): ?array
 
     private function syncJobToDatabase(array $state): void
     {
-        if (!$this->pipelineSyncEnabled() || empty($state['projectId']) || empty($state['jobId'])) {
+        if (! $this->pipelineSyncEnabled() || empty($state['projectId']) || empty($state['jobId'])) {
             return;
         }
 
         $run = DiscoveryRun::query()->find((string) $state['jobId']);
-        if (!$run) {
-            $run = new DiscoveryRun();
+        if (! $run) {
+            $run = new DiscoveryRun;
             $run->id = (string) $state['jobId'];
         }
 
@@ -719,23 +718,23 @@ public function getJobState(string $jobId): ?array
         $run->dedupe_against_crm = (bool) Arr::get($state, 'request.dedupeAgainstCRM', true);
         $run->request_payload = $state['request'] ?? null;
         $run->result_payload = array_merge(
-    [
-        'completedSteps' => $state['completedSteps'] ?? [],
-        'steps' => $state['steps'] ?? [],
-        'creators' => $state['creators'] ?? [],
-        'totalCreators' => $state['totalCreators'] ?? 0,
-        'failedStep' => $state['failedStep'] ?? null,
-        'criteria' => $state['criteria'] ?? Arr::get($state, 'request.criteria'),
-        'filterSummary' => $state['filterSummary'] ?? null,
-        'brief' => $state['brief'] ?? Arr::get($state, 'request.brief'),
-        'usageSummary' => $state['usageSummary'] ?? null,
-        'resultsPreviewReady' => (bool) ($state['resultsPreviewReady'] ?? false),
-        'cancellationRequested' => (bool) ($state['cancellationRequested'] ?? false),
-        'executionClaimedAt' => $state['executionClaimedAt'] ?? null,
-        'executionWorkerJobId' => $state['executionWorkerJobId'] ?? null,
-    ],
-    is_array($state['result'] ?? null) ? $state['result'] : []
-);
+            [
+                'completedSteps' => $state['completedSteps'] ?? [],
+                'steps' => $state['steps'] ?? [],
+                'creators' => $state['creators'] ?? [],
+                'totalCreators' => $state['totalCreators'] ?? 0,
+                'failedStep' => $state['failedStep'] ?? null,
+                'criteria' => $state['criteria'] ?? Arr::get($state, 'request.criteria'),
+                'filterSummary' => $state['filterSummary'] ?? null,
+                'brief' => $state['brief'] ?? Arr::get($state, 'request.brief'),
+                'usageSummary' => $state['usageSummary'] ?? null,
+                'resultsPreviewReady' => (bool) ($state['resultsPreviewReady'] ?? false),
+                'cancellationRequested' => (bool) ($state['cancellationRequested'] ?? false),
+                'executionClaimedAt' => $state['executionClaimedAt'] ?? null,
+                'executionWorkerJobId' => $state['executionWorkerJobId'] ?? null,
+            ],
+            is_array($state['result'] ?? null) ? $state['result'] : []
+        );
         $run->error_message = $state['error'] ?? null;
         $run->started_at = $run->started_at ?: now();
         if (in_array(($state['status'] ?? null), ['completed', 'failed', 'cancelled'], true)) {
@@ -754,12 +753,12 @@ public function getJobState(string $jobId): ?array
         bool $dedupeAgainstCrm,
         object $discovery,
     ): void {
-        if (!$this->pipelineSyncEnabled() || !$projectId) {
+        if (! $this->pipelineSyncEnabled() || ! $projectId) {
             return;
         }
 
         $run = DiscoveryRun::query()->find($jobId);
-        if (!$run) {
+        if (! $run) {
             return;
         }
 
@@ -776,7 +775,7 @@ public function getJobState(string $jobId): ?array
 
     private function persistDiscoveryItems(string $jobId, ?int $projectId, string $platform, array $items): void
     {
-        if (!$this->pipelineSyncEnabled() || !$projectId) {
+        if (! $this->pipelineSyncEnabled() || ! $projectId) {
             return;
         }
 
@@ -790,7 +789,7 @@ public function getJobState(string $jobId): ?array
                 : Arr::get($item, 'webVideoUrl', Arr::get($item, 'url', ''))));
             $caption = trim((string) Arr::get($item, 'caption', Arr::get($item, 'text', '')));
             $hashtags = $this->matchedHashtagsForItem($item, []);
-            $duplicateKey = strtolower($platform . '|' . ($username !== '' ? ltrim($this->normalizeHandle($username), '@') : $postUrl));
+            $duplicateKey = strtolower($platform.'|'.($username !== '' ? ltrim($this->normalizeHandle($username), '@') : $postUrl));
 
             if ($profileUrl === '' && $postUrl === '' && $caption === '') {
                 continue;
@@ -801,7 +800,7 @@ public function getJobState(string $jobId): ?array
                     'project_id' => $projectId,
                     'discovery_run_id' => $jobId,
                     'platform' => $platform,
-                    'post_url' => $postUrl !== '' ? $postUrl : ('payload:' . md5(json_encode($item))),
+                    'post_url' => $postUrl !== '' ? $postUrl : ('payload:'.md5(json_encode($item))),
                 ],
                 [
                     'external_post_id' => (string) Arr::get($item, 'id', Arr::get($item, 'postId', '')) ?: null,
@@ -827,7 +826,7 @@ public function getJobState(string $jobId): ?array
 
     private function markDiscoveryProfilesPromoted(string $jobId, ?int $projectId, array $profileUrls): void
     {
-        if (!$this->pipelineSyncEnabled() || !$projectId || $profileUrls === []) {
+        if (! $this->pipelineSyncEnabled() || ! $projectId || $profileUrls === []) {
             return;
         }
 
@@ -840,11 +839,11 @@ public function getJobState(string $jobId): ?array
 
     private function startEnrichmentJob(string $jobId, ?int $projectId, string $platform, array $inputUrls): ?string
     {
-        if (!$this->pipelineSyncEnabled() || !$projectId) {
+        if (! $this->pipelineSyncEnabled() || ! $projectId) {
             return null;
         }
 
-        $job = new EnrichmentJob();
+        $job = new EnrichmentJob;
         $job->project_id = $projectId;
         $job->discovery_run_id = $jobId;
         $job->platform = $platform;
@@ -860,12 +859,12 @@ public function getJobState(string $jobId): ?array
 
     private function finishEnrichmentJob(?string $enrichmentJobId, object $enrichment): void
     {
-        if (!$this->pipelineSyncEnabled() || !$enrichmentJobId) {
+        if (! $this->pipelineSyncEnabled() || ! $enrichmentJobId) {
             return;
         }
 
         $job = EnrichmentJob::query()->find($enrichmentJobId);
-        if (!$job) {
+        if (! $job) {
             return;
         }
 
@@ -880,12 +879,12 @@ public function getJobState(string $jobId): ?array
 
     private function failEnrichmentJob(?string $enrichmentJobId, string $message): void
     {
-        if (!$this->pipelineSyncEnabled() || !$enrichmentJobId) {
+        if (! $this->pipelineSyncEnabled() || ! $enrichmentJobId) {
             return;
         }
 
         $job = EnrichmentJob::query()->find($enrichmentJobId);
-        if (!$job) {
+        if (! $job) {
             return;
         }
 
@@ -898,7 +897,7 @@ public function getJobState(string $jobId): ?array
     private function cancelEnrichmentJob(string $enrichmentJobId): void
     {
         $job = EnrichmentJob::query()->find($enrichmentJobId);
-        if (!$job) {
+        if (! $job) {
             return;
         }
 
@@ -914,20 +913,21 @@ public function getJobState(string $jobId): ?array
             return 0;
         }
 
-        if (!$this->shouldSyncSheets($sheetId)) {
+        if (! $this->shouldSyncSheets($sheetId)) {
             return 0;
         }
 
         $this->sheets->appendRows($sheetId, $sheetName, $rows);
+
         return count($rows);
     }
 
     private function shouldSyncSheets(string $sheetId): bool
     {
-        return !str_starts_with($sheetId, 'workspace:') && !str_starts_with($sheetId, 'db:');
+        return ! str_starts_with($sheetId, 'workspace:') && ! str_starts_with($sheetId, 'db:');
     }
 
-private function selectProfilesFromRankedPosts(
+    private function selectProfilesFromRankedPosts(
         string $platform,
         array $items,
         array $inputHashtags,
@@ -941,7 +941,7 @@ private function selectProfilesFromRankedPosts(
         $matchedPostCounts = [];
 
         foreach ($items as $index => $item) {
-            if (!$this->passesDiscoveryThresholds($item, $criteria)) {
+            if (! $this->passesDiscoveryThresholds($item, $criteria)) {
                 continue;
             }
 
@@ -1101,9 +1101,9 @@ private function selectProfilesFromRankedPosts(
     private function resolveSelectionPoolLimit(int $enrichmentLimit, array $criteria = []): int
     {
         $base = max(1, $enrichmentLimit);
-        $needsQualityBuffer = !empty($criteria['minimumLikes']) || !empty($criteria['minimumComments']) || !empty($criteria['minimumViews']);
+        $needsQualityBuffer = ! empty($criteria['minimumLikes']) || ! empty($criteria['minimumComments']) || ! empty($criteria['minimumViews']);
 
-        if (!$needsQualityBuffer) {
+        if (! $needsQualityBuffer) {
             return $base;
         }
 
@@ -1312,7 +1312,7 @@ private function selectProfilesFromRankedPosts(
                     $existing[$dmLink] = true;
                 }
                 if ($handle !== '') {
-                    $existing['handle:' . $handle] = true;
+                    $existing['handle:'.$handle] = true;
                 }
             }
         } elseif ($this->shouldSyncSheets($sheetId)) {
@@ -1328,7 +1328,7 @@ private function selectProfilesFromRankedPosts(
                     $existing[$dm] = true;
                 }
                 if ($handle !== '') {
-                    $existing['handle:' . $handle] = true;
+                    $existing['handle:'.$handle] = true;
                 }
             }
         }
@@ -1336,7 +1336,7 @@ private function selectProfilesFromRankedPosts(
         $matches = [];
         foreach ($profiles as $profile) {
             $profileKey = $this->normalizeProfileUrlKey((string) ($profile['profileUrl'] ?? ''));
-            $handleKey = 'handle:' . strtolower(trim(ltrim((string) ($profile['handle'] ?? ''), '@')));
+            $handleKey = 'handle:'.strtolower(trim(ltrim((string) ($profile['handle'] ?? ''), '@')));
             if (($profileKey !== '' && isset($existing[$profileKey])) || ($handleKey !== 'handle:' && isset($existing[$handleKey]))) {
                 if ($profileKey !== '') {
                     $matches[$profileKey] = true;
@@ -1415,8 +1415,7 @@ private function selectProfilesFromRankedPosts(
         array $sourceHashtagsByUrl,
         array $inputHashtags,
         array $criteria = []
-    ): array
-    {
+    ): array {
         $creators = [];
 
         foreach ($enrichmentItems as $item) {
@@ -1424,7 +1423,7 @@ private function selectProfilesFromRankedPosts(
                 ? $this->normalizeInstagramCreator($item, $selectedProfilesByUrl, $sourceHashtagsByUrl, $inputHashtags)
                 : $this->normalizeTikTokCreator($item, $selectedProfilesByUrl, $sourceHashtagsByUrl, $inputHashtags);
 
-            if ($creator !== null && !$this->passesCreatorFollowerFloor($creator, $criteria)) {
+            if ($creator !== null && ! $this->passesCreatorFollowerFloor($creator, $criteria)) {
                 $creator = null;
             }
 
@@ -1468,57 +1467,57 @@ private function selectProfilesFromRankedPosts(
         }
         $selectedProfile = $selectedProfilesByUrl[$profileKey] ?? null;
 
-$bio = (string) Arr::get($item, 'biography', Arr::get($item, 'bio', ''));
-$fullName = (string) Arr::get($item, 'fullName', Arr::get($item, 'ownerFullName', ''));
-$latestPostAt = $this->resolveLatestPostAt($latestPosts, 'instagram');
-$locationHint = $this->resolveLocationHint($item, 'instagram');
-$languageHints = $this->inferLanguageHints($bio . ' ' . $this->flattenLatestPostText($latestPosts));
-$genderHint = $this->inferGenderHint($bio . ' ' . $fullName);
+        $bio = (string) Arr::get($item, 'biography', Arr::get($item, 'bio', ''));
+        $fullName = (string) Arr::get($item, 'fullName', Arr::get($item, 'ownerFullName', ''));
+        $latestPostAt = $this->resolveLatestPostAt($latestPosts, 'instagram');
+        $locationHint = $this->resolveLocationHint($item, 'instagram');
+        $languageHints = $this->inferLanguageHints($bio.' '.$this->flattenLatestPostText($latestPosts));
+        $genderHint = $this->inferGenderHint($bio.' '.$fullName);
 
-return [
-    'id' => (string) (Arr::get($item, 'id', $username ?: md5($profileUrl))),
-    'mergeRef' => 'instagram:source-url:' . rawurlencode(rtrim(strtolower($profileUrl), '/')),
-    'platform' => 'instagram',
-    'handle' => $this->normalizeHandle($username),
-    'fullName' => $this->nullableString($fullName),
-    'profileUrl' => $profileUrl,
-    'avatarUrl' => $this->nullableString(
-        Arr::get(
-            $item,
-            'profilePicUrl',
-            Arr::get(
-                $item,
-                'profile_pic_url',
+        return [
+            'id' => (string) (Arr::get($item, 'id', $username ?: md5($profileUrl))),
+            'mergeRef' => 'instagram:source-url:'.rawurlencode(rtrim(strtolower($profileUrl), '/')),
+            'platform' => 'instagram',
+            'handle' => $this->normalizeHandle($username),
+            'fullName' => $this->nullableString($fullName),
+            'profileUrl' => $profileUrl,
+            'avatarUrl' => $this->nullableString(
                 Arr::get(
                     $item,
-                    'profilePic',
-                    Arr::get($item, 'profile_pic')
+                    'profilePicUrl',
+                    Arr::get(
+                        $item,
+                        'profile_pic_url',
+                        Arr::get(
+                            $item,
+                            'profilePic',
+                            Arr::get($item, 'profile_pic')
+                        )
+                    )
                 )
-            )
-        )
-    ),
-    'followers' => $this->nullableInt(Arr::get($item, 'followersCount', Arr::get($item, 'followers'))),
-    'engagementRate' => $this->nullableFloat($this->estimateInstagramEngagementRate($item)),
-    'email' => $this->nullableString(Arr::get($item, 'email_from_bio', $this->extractEmailFromText($bio))),
-    'bio' => $this->nullableString($bio),
-    'postsCount' => $this->nullableInt(Arr::get($item, 'postsCount', Arr::get($item, 'posts_count'))),
-    'avgLikes' => $this->nullableFloat($this->averageFromLatestPosts($latestPosts, 'likesCount')),
-    'avgComments' => $this->nullableFloat($this->averageFromLatestPosts($latestPosts, 'commentsCount')),
-    'isVerified' => $this->nullableBool(Arr::get($item, 'verified', Arr::get($item, 'is_verified'))),
-    'latestPostAt' => $latestPostAt,
-    'locationHint' => $locationHint,
-    'languageHints' => $languageHints,
-    'genderHint' => $genderHint,
-    'nicheHints' => array_values(array_unique(array_slice(array_merge($sourceTags, $this->extractNicheHints($bio)), 0, 12))),
-    'readyToMerge' => true,
-    'sourceHashtags' => $sourceTags,
-    'sourcePostUrl' => $selectedProfile['sourcePostUrl'] ?? null,
-    'sourceMetricType' => $selectedProfile['sourceMetricType'] ?? null,
-    'sourceMetricValue' => $selectedProfile['sourceMetricValue'] ?? null,
-    'sourcePostMetrics' => $selectedProfile['sourcePostMetrics'] ?? null,
-    'matchedPostCount' => $selectedProfile['matchedPostCount'] ?? 1,
-    'alreadyInCrm' => (bool) ($selectedProfile['alreadyInCrm'] ?? false),
-];
+            ),
+            'followers' => $this->nullableInt(Arr::get($item, 'followersCount', Arr::get($item, 'followers'))),
+            'engagementRate' => $this->nullableFloat($this->estimateInstagramEngagementRate($item)),
+            'email' => $this->nullableString(Arr::get($item, 'email_from_bio', $this->extractEmailFromText($bio))),
+            'bio' => $this->nullableString($bio),
+            'postsCount' => $this->nullableInt(Arr::get($item, 'postsCount', Arr::get($item, 'posts_count'))),
+            'avgLikes' => $this->nullableFloat($this->averageFromLatestPosts($latestPosts, 'likesCount')),
+            'avgComments' => $this->nullableFloat($this->averageFromLatestPosts($latestPosts, 'commentsCount')),
+            'isVerified' => $this->nullableBool(Arr::get($item, 'verified', Arr::get($item, 'is_verified'))),
+            'latestPostAt' => $latestPostAt,
+            'locationHint' => $locationHint,
+            'languageHints' => $languageHints,
+            'genderHint' => $genderHint,
+            'nicheHints' => array_values(array_unique(array_slice(array_merge($sourceTags, $this->extractNicheHints($bio)), 0, 12))),
+            'readyToMerge' => true,
+            'sourceHashtags' => $sourceTags,
+            'sourcePostUrl' => $selectedProfile['sourcePostUrl'] ?? null,
+            'sourceMetricType' => $selectedProfile['sourceMetricType'] ?? null,
+            'sourceMetricValue' => $selectedProfile['sourceMetricValue'] ?? null,
+            'sourcePostMetrics' => $selectedProfile['sourcePostMetrics'] ?? null,
+            'matchedPostCount' => $selectedProfile['matchedPostCount'] ?? 1,
+            'alreadyInCrm' => (bool) ($selectedProfile['alreadyInCrm'] ?? false),
+        ];
     }
 
     private function normalizeTikTokCreator(
@@ -1550,57 +1549,57 @@ return [
             $engagementRate = round((((float) $avgLikes + (float) $avgComments) / (float) $followers) * 100, 2);
         }
 
-$bio = (string) Arr::get($item, 'bio', Arr::get($item, 'signature', ''));
-$fullName = (string) Arr::get($item, 'nickname', Arr::get($item, 'authorMeta.nickName', ''));
-$latestPostAt = $this->resolveLatestPostAt($latestPosts, 'tiktok');
-$locationHint = $this->resolveLocationHint($item, 'tiktok');
-$languageHints = $this->inferLanguageHints($bio . ' ' . $this->flattenLatestPostText($latestPosts));
-$genderHint = $this->inferGenderHint($bio . ' ' . $fullName);
+        $bio = (string) Arr::get($item, 'bio', Arr::get($item, 'signature', ''));
+        $fullName = (string) Arr::get($item, 'nickname', Arr::get($item, 'authorMeta.nickName', ''));
+        $latestPostAt = $this->resolveLatestPostAt($latestPosts, 'tiktok');
+        $locationHint = $this->resolveLocationHint($item, 'tiktok');
+        $languageHints = $this->inferLanguageHints($bio.' '.$this->flattenLatestPostText($latestPosts));
+        $genderHint = $this->inferGenderHint($bio.' '.$fullName);
 
-return [
-    'id' => (string) (Arr::get($item, 'id', $username ?: md5($profileUrl))),
-    'mergeRef' => 'tiktok:source-url:' . rawurlencode(rtrim(strtolower($profileUrl), '/')),
-    'platform' => 'tiktok',
-    'handle' => $this->normalizeHandle($username),
-    'fullName' => $this->nullableString($fullName),
-    'profileUrl' => $profileUrl,
-    'avatarUrl' => $this->nullableString(
-        Arr::get(
-            $item,
-            'avatarUrl',
-            Arr::get(
-                $item,
-                'avatar_url',
+        return [
+            'id' => (string) (Arr::get($item, 'id', $username ?: md5($profileUrl))),
+            'mergeRef' => 'tiktok:source-url:'.rawurlencode(rtrim(strtolower($profileUrl), '/')),
+            'platform' => 'tiktok',
+            'handle' => $this->normalizeHandle($username),
+            'fullName' => $this->nullableString($fullName),
+            'profileUrl' => $profileUrl,
+            'avatarUrl' => $this->nullableString(
                 Arr::get(
                     $item,
-                    'avatarLarger',
-                    Arr::get($item, 'authorMeta.avatar')
+                    'avatarUrl',
+                    Arr::get(
+                        $item,
+                        'avatar_url',
+                        Arr::get(
+                            $item,
+                            'avatarLarger',
+                            Arr::get($item, 'authorMeta.avatar')
+                        )
+                    )
                 )
-            )
-        )
-    ),
-    'followers' => $this->nullableInt($followers),
-    'engagementRate' => $this->nullableFloat($engagementRate),
-    'email' => $this->nullableString(Arr::get($item, 'email_from_bio', $this->extractEmailFromText($bio))),
-    'bio' => $this->nullableString($bio),
-    'postsCount' => $this->nullableInt(Arr::get($item, 'videoCount', Arr::get($item, 'authorStats.videoCount', Arr::get($item, 'posts')))),
-    'avgLikes' => $this->nullableFloat($avgLikes),
-    'avgComments' => $this->nullableFloat($avgComments),
-    'isVerified' => $this->nullableBool(Arr::get($item, 'verified', Arr::get($item, 'authorMeta.verified', Arr::get($item, 'isVerified')))),
-    'latestPostAt' => $latestPostAt,
-    'locationHint' => $locationHint,
-    'languageHints' => $languageHints,
-    'genderHint' => $genderHint,
-    'nicheHints' => array_values(array_unique(array_slice(array_merge($sourceTags, $this->extractNicheHints($bio)), 0, 12))),
-    'readyToMerge' => true,
-    'sourceHashtags' => $sourceTags,
-    'sourcePostUrl' => $selectedProfile['sourcePostUrl'] ?? null,
-    'sourceMetricType' => $selectedProfile['sourceMetricType'] ?? null,
-    'sourceMetricValue' => $selectedProfile['sourceMetricValue'] ?? null,
-    'sourcePostMetrics' => $selectedProfile['sourcePostMetrics'] ?? null,
-    'matchedPostCount' => $selectedProfile['matchedPostCount'] ?? 1,
-    'alreadyInCrm' => (bool) ($selectedProfile['alreadyInCrm'] ?? false),
-];
+            ),
+            'followers' => $this->nullableInt($followers),
+            'engagementRate' => $this->nullableFloat($engagementRate),
+            'email' => $this->nullableString(Arr::get($item, 'email_from_bio', $this->extractEmailFromText($bio))),
+            'bio' => $this->nullableString($bio),
+            'postsCount' => $this->nullableInt(Arr::get($item, 'videoCount', Arr::get($item, 'authorStats.videoCount', Arr::get($item, 'posts')))),
+            'avgLikes' => $this->nullableFloat($avgLikes),
+            'avgComments' => $this->nullableFloat($avgComments),
+            'isVerified' => $this->nullableBool(Arr::get($item, 'verified', Arr::get($item, 'authorMeta.verified', Arr::get($item, 'isVerified')))),
+            'latestPostAt' => $latestPostAt,
+            'locationHint' => $locationHint,
+            'languageHints' => $languageHints,
+            'genderHint' => $genderHint,
+            'nicheHints' => array_values(array_unique(array_slice(array_merge($sourceTags, $this->extractNicheHints($bio)), 0, 12))),
+            'readyToMerge' => true,
+            'sourceHashtags' => $sourceTags,
+            'sourcePostUrl' => $selectedProfile['sourcePostUrl'] ?? null,
+            'sourceMetricType' => $selectedProfile['sourceMetricType'] ?? null,
+            'sourceMetricValue' => $selectedProfile['sourceMetricValue'] ?? null,
+            'sourcePostMetrics' => $selectedProfile['sourcePostMetrics'] ?? null,
+            'matchedPostCount' => $selectedProfile['matchedPostCount'] ?? 1,
+            'alreadyInCrm' => (bool) ($selectedProfile['alreadyInCrm'] ?? false),
+        ];
     }
 
     private function rawSheetForPlatform(string $platform): string
@@ -1619,21 +1618,23 @@ return [
 
         if ($platform === 'instagram') {
             if ($candidate !== '' && str_contains(strtolower($candidate), 'instagram.com/')) {
-                if (preg_match('~instagram\.com/([^/?#]+)/?~i', $candidate, $matches) && !in_array(strtolower($matches[1]), ['p', 'reel', 'reels', 'tv', 'stories', 'explore'], true)) {
-                    return 'https://www.instagram.com/' . trim($matches[1]) . '/';
+                if (preg_match('~instagram\.com/([^/?#]+)/?~i', $candidate, $matches) && ! in_array(strtolower($matches[1]), ['p', 'reel', 'reels', 'tv', 'stories', 'explore'], true)) {
+                    return 'https://www.instagram.com/'.trim($matches[1]).'/';
                 }
             }
             $username = trim($username, '@/ ');
-            return $username !== '' ? 'https://www.instagram.com/' . $username . '/' : '';
+
+            return $username !== '' ? 'https://www.instagram.com/'.$username.'/' : '';
         }
 
         if ($candidate !== '' && str_contains(strtolower($candidate), 'tiktok.com/@')) {
             if (preg_match('~tiktok\.com/@([^/?#]+)~i', $candidate, $matches)) {
-                return 'https://www.tiktok.com/@' . trim($matches[1]);
+                return 'https://www.tiktok.com/@'.trim($matches[1]);
             }
         }
         $username = trim($username, '@/ ');
-        return $username !== '' ? 'https://www.tiktok.com/@' . $username : '';
+
+        return $username !== '' ? 'https://www.tiktok.com/@'.$username : '';
     }
 
     private function matchedHashtagsForItem(array $item, array $inputHashtags): array
@@ -1644,7 +1645,7 @@ return [
             $haystackParts[] = implode(' ', $hashtags);
         }
         $haystackParts[] = (string) Arr::get($item, 'caption', Arr::get($item, 'text', Arr::get($item, 'desc', '')));
-        $haystack = ' ' . strtolower(implode(' ', array_filter($haystackParts))) . ' ';
+        $haystack = ' '.strtolower(implode(' ', array_filter($haystackParts))).' ';
 
         $matches = [];
         foreach ($inputHashtags as $tag) {
@@ -1652,7 +1653,7 @@ return [
             if ($needle === '') {
                 continue;
             }
-            if (str_contains($haystack, '#' . strtolower($needle)) || preg_match('/\b' . preg_quote(strtolower($needle), '/') . '\b/', $haystack)) {
+            if (str_contains($haystack, '#'.strtolower($needle)) || preg_match('/\b'.preg_quote(strtolower($needle), '/').'\b/', $haystack)) {
                 $matches[] = $needle;
             }
         }
@@ -1660,12 +1661,11 @@ return [
         return array_values(array_unique($matches));
     }
 
-
     private function resolveLatestPostAt(array $latestPosts, string $platform): ?string
     {
         $candidates = [];
         foreach ($latestPosts as $post) {
-            if (!is_array($post)) {
+            if (! is_array($post)) {
                 continue;
             }
             $value = $platform === 'instagram'
@@ -1727,7 +1727,7 @@ return [
     {
         $parts = [];
         foreach ($latestPosts as $post) {
-            if (!is_array($post)) {
+            if (! is_array($post)) {
                 continue;
             }
             $parts[] = (string) Arr::get($post, 'caption', Arr::get($post, 'text', Arr::get($post, 'desc', '')));
@@ -1742,7 +1742,7 @@ return [
 
     private function inferLanguageHints(string $text): array
     {
-        $text = ' ' . strtolower($text) . ' ';
+        $text = ' '.strtolower($text).' ';
         $hints = [];
 
         $germanSignals = [' und ', ' mit ', ' nicht ', ' liebe ', ' für ', ' ä', ' ö', ' ü', ' ß', ' de '];
@@ -1766,7 +1766,7 @@ return [
 
     private function inferGenderHint(string $text): ?string
     {
-        $text = ' ' . strtolower($text) . ' ';
+        $text = ' '.strtolower($text).' ';
         $femaleSignals = [' she/her ', ' woman ', ' women ', ' girl ', ' female ', ' mama ', ' mom ', ' frau '];
         foreach ($femaleSignals as $signal) {
             if (str_contains($text, trim($signal))) {
@@ -1788,7 +1788,7 @@ return [
     {
         $text = strtolower($text);
         $dictionary = [
-            'beauty', 'fashion', 'travel', 'fitness', 'food', 'wellness', 'parenting', 'gaming', 'tech', 'home', 'design', 'lifestyle', 'art', 'music', 'photography', 'books', 'couples', 'wedding', 'skincare', 'makeup'
+            'beauty', 'fashion', 'travel', 'fitness', 'food', 'wellness', 'parenting', 'gaming', 'tech', 'home', 'design', 'lifestyle', 'art', 'music', 'photography', 'books', 'couples', 'wedding', 'skincare', 'makeup',
         ];
 
         $matches = [];
@@ -1812,12 +1812,14 @@ return [
         if ($username === '') {
             return '';
         }
-        return '@' . ltrim($username, '@');
+
+        return '@'.ltrim($username, '@');
     }
 
     private function nullableString(mixed $value): ?string
     {
         $value = trim((string) ($value ?? ''));
+
         return $value === '' ? null : $value;
     }
 
@@ -1826,9 +1828,10 @@ return [
         if ($value === null || $value === '') {
             return null;
         }
-        if (!is_numeric((string) $value)) {
+        if (! is_numeric((string) $value)) {
             return null;
         }
+
         return (int) round((float) $value);
     }
 
@@ -1837,9 +1840,10 @@ return [
         if ($value === null || $value === '') {
             return null;
         }
-        if (!is_numeric((string) $value)) {
+        if (! is_numeric((string) $value)) {
             return null;
         }
+
         return round((float) $value, 2);
     }
 
@@ -1852,6 +1856,7 @@ return [
             return $value;
         }
         $normalized = strtolower(trim((string) $value));
+
         return match ($normalized) {
             'true', '1', 'yes' => true,
             'false', '0', 'no' => false,
@@ -1864,12 +1869,13 @@ return [
         if (preg_match('/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i', $text, $matches)) {
             return $matches[0];
         }
+
         return '';
     }
 
     private function averageFromLatestPosts(array $posts, string $metric): string
     {
-        if ($posts === [] || !is_array($posts)) {
+        if ($posts === [] || ! is_array($posts)) {
             return '';
         }
         $values = [];
@@ -1882,6 +1888,7 @@ return [
         if ($values === []) {
             return '';
         }
+
         return (string) round(array_sum($values) / count($values), 2);
     }
 

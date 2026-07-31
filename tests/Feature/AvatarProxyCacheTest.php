@@ -21,7 +21,7 @@ class AvatarProxyCacheTest extends TestCase
         $url = 'https://scontent-lax3-1.cdninstagram.com/avatar.jpg?token=temporary';
         $hash = hash('sha256', $url);
 
-        $this->get('/api/avatar-proxy?url=' . urlencode($url))
+        $this->get('/api/avatar-proxy?url='.urlencode($url))
             ->assertOk()
             ->assertHeader('Content-Type', 'image/jpeg')
             ->assertHeader('X-Avatar-Cache', 'miss');
@@ -46,7 +46,7 @@ class AvatarProxyCacheTest extends TestCase
             'cachedAt' => now()->subDay()->toIso8601String(),
         ], JSON_THROW_ON_ERROR));
 
-        $this->get('/api/avatar-proxy?url=' . urlencode($url))
+        $this->get('/api/avatar-proxy?url='.urlencode($url))
             ->assertOk()
             ->assertHeader('Content-Type', 'image/jpeg')
             ->assertHeader('X-Avatar-Cache', 'hit')

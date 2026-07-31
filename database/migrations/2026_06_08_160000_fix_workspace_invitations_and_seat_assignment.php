@@ -10,10 +10,10 @@ return new class extends Migration
     {
         if (Schema::hasTable('workspace_invitations')) {
             Schema::table('workspace_invitations', function (Blueprint $table) {
-                if (!Schema::hasColumn('workspace_invitations', 'created_at')) {
+                if (! Schema::hasColumn('workspace_invitations', 'created_at')) {
                     $table->timestamp('created_at')->nullable();
                 }
-                if (!Schema::hasColumn('workspace_invitations', 'updated_at')) {
+                if (! Schema::hasColumn('workspace_invitations', 'updated_at')) {
                     $table->timestamp('updated_at')->nullable();
                 }
             });

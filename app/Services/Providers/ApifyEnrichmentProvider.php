@@ -15,8 +15,7 @@ class ApifyEnrichmentProvider implements EnrichmentProvider
         private ApifyRunExecutor $executor,
         private ScraperRegistryService $scrapers,
         private WorkspaceBillingService $billing,
-    ) {
-    }
+    ) {}
 
     public function enrich(string $platform, array $urls, array $hashtags, int $limit, array $context = []): ProviderRunResult
     {
@@ -161,6 +160,7 @@ class ApifyEnrichmentProvider implements EnrichmentProvider
             'profiles' => array_values(array_filter(array_map(function (string $url) {
                 $parts = explode('@', $url, 2);
                 $handle = $parts[1] ?? '';
+
                 return trim(explode('/', $handle)[0] ?? '');
             }, $urls))),
             'resultsLimit' => max(1, count($urls)),

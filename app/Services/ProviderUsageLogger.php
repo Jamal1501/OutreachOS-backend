@@ -11,7 +11,7 @@ class ProviderUsageLogger
 
     public function logAi(array $payload): void
     {
-        if (!DB::getSchemaBuilder()->hasTable('ai_usage_logs')) {
+        if (! DB::getSchemaBuilder()->hasTable('ai_usage_logs')) {
             return;
         }
 
@@ -38,7 +38,7 @@ class ProviderUsageLogger
 
     public function logApify(array $payload): void
     {
-        if (!DB::getSchemaBuilder()->hasTable('apify_usage_logs')) {
+        if (! DB::getSchemaBuilder()->hasTable('apify_usage_logs')) {
             return;
         }
 
@@ -89,7 +89,7 @@ class ProviderUsageLogger
 
     private function redact(mixed $value): mixed
     {
-        if (!is_array($value)) {
+        if (! is_array($value)) {
             return $value;
         }
 
@@ -106,6 +106,7 @@ class ProviderUsageLogger
             $keyString = strtolower((string) $key);
             if (in_array($keyString, $sensitiveKeys, true) || str_contains($keyString, 'token') || str_contains($keyString, 'secret')) {
                 $redacted[$key] = '[redacted]';
+
                 continue;
             }
 

@@ -140,8 +140,8 @@ class CreatorLifecycleService
             $toState,
             $actor,
             now()->toDateTimeString(),
-            $reason !== '' ? '; reason=' . $reason : '',
-            $notes !== '' ? '; note=' . str_replace(';', ',', $notes) : ''
+            $reason !== '' ? '; reason='.$reason : '',
+            $notes !== '' ? '; note='.str_replace(';', ',', $notes) : ''
         );
 
         $creatorRow['Notes'] = $this->appendNote((string) ($creatorRow['Notes'] ?? ''), $transitionNote);
@@ -205,6 +205,6 @@ class CreatorLifecycleService
             return $incoming;
         }
 
-        return $existing . ' | ' . $incoming;
+        return $existing.' | '.$incoming;
     }
 }

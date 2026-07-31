@@ -11,18 +11,18 @@ class ScraperRegistryService
     public function modules(bool $configuredOnly = false): array
     {
         $modules = config('scrapers.modules', []);
-        if (!is_array($modules)) {
+        if (! is_array($modules)) {
             return [];
         }
 
         $result = [];
         foreach ($modules as $key => $module) {
-            if (!is_array($module)) {
+            if (! is_array($module)) {
                 continue;
             }
 
             $normalized = $this->normalizeModule($module + ['key' => $key]);
-            if ($configuredOnly && !$normalized['isConfigured']) {
+            if ($configuredOnly && ! $normalized['isConfigured']) {
                 continue;
             }
 
@@ -35,17 +35,16 @@ class ScraperRegistryService
     public function module(string $moduleKey, bool $requireConfigured = false): ?array
     {
         $module = $this->modules()[$moduleKey] ?? null;
-        if (!$module) {
+        if (! $module) {
             return null;
         }
 
-        if ($requireConfigured && !$module['isConfigured']) {
+        if ($requireConfigured && ! $module['isConfigured']) {
             return null;
         }
 
         return $module;
     }
-
 
     public function estimatePipeline(
         string $planId,
@@ -55,8 +54,7 @@ class ScraperRegistryService
         int $seedCount = 1,
         ?string $discoveryModuleKey = null,
         ?string $enrichmentModuleKey = null,
-    ): array
-    {
+    ): array {
         $planId = $this->normalizePlanId($planId);
         $seedCount = max(1, $seedCount);
 
@@ -66,48 +64,48 @@ class ScraperRegistryService
         $effectiveDiscoveryLimit = $this->normalizeDiscoveryLimitForSeeds($discoveryLimit, $seedCount, $discoveryModule);
         $effectiveEnrichmentLimit = max(1, $enrichmentLimit);
 
-$discoveryEstimatePerSeed = $this->estimateCredits($discoveryModule['key'], null, null, [
-    'resultsLimit' => $effectiveDiscoveryLimit,
-]);
+        $discoveryEstimatePerSeed = $this->estimateCredits($discoveryModule['key'], null, null, [
+            'resultsLimit' => $effectiveDiscoveryLimit,
+        ]);
 
-$discoveryCreditPerSeed = (int) ($discoveryEstimatePerSeed['credit_cost'] ?? 0);
-$discoveryUnitsPerSeed = (int) ($discoveryEstimatePerSeed['units'] ?? 0);
+        $discoveryCreditPerSeed = (int) ($discoveryEstimatePerSeed['credit_cost'] ?? 0);
+        $discoveryUnitsPerSeed = (int) ($discoveryEstimatePerSeed['units'] ?? 0);
 
-$totalDiscoveryCreditCost = $discoveryCreditPerSeed * $seedCount;
-$totalDiscoveryUnits = $discoveryUnitsPerSeed * $seedCount;
+        $totalDiscoveryCreditCost = $discoveryCreditPerSeed * $seedCount;
+        $totalDiscoveryUnits = $discoveryUnitsPerSeed * $seedCount;
 
-$discoveryEstimate = $discoveryEstimatePerSeed;
-$discoveryEstimate['units_per_seed'] = $discoveryUnitsPerSeed;
-$discoveryEstimate['credit_cost_per_seed'] = $discoveryCreditPerSeed;
-$discoveryEstimate['units'] = $totalDiscoveryUnits;
-$discoveryEstimate['credit_cost'] = $totalDiscoveryCreditCost;
+        $discoveryEstimate = $discoveryEstimatePerSeed;
+        $discoveryEstimate['units_per_seed'] = $discoveryUnitsPerSeed;
+        $discoveryEstimate['credit_cost_per_seed'] = $discoveryCreditPerSeed;
+        $discoveryEstimate['units'] = $totalDiscoveryUnits;
+        $discoveryEstimate['credit_cost'] = $totalDiscoveryCreditCost;
 
-$enrichmentEstimate = $this->estimateCredits($enrichmentModule['key'], null, null, [
-    'directUrls' => array_fill(0, $effectiveEnrichmentLimit, 'profile-url'),
-    'resultsLimit' => $effectiveEnrichmentLimit,
-]);
+        $enrichmentEstimate = $this->estimateCredits($enrichmentModule['key'], null, null, [
+            'directUrls' => array_fill(0, $effectiveEnrichmentLimit, 'profile-url'),
+            'resultsLimit' => $effectiveEnrichmentLimit,
+        ]);
 
-return [
-    'planId' => $planId,
-    'platform' => $platform,
-    'seedCount' => $seedCount,
-    'discovery' => [
-        'requestedLimit' => max(1, $discoveryLimit),
-        'effectiveLimitPerSeed' => $effectiveDiscoveryLimit,
-        'effectiveTotalRequested' => $effectiveDiscoveryLimit * $seedCount,
-        'module' => $discoveryModule,
-        'estimate' => $discoveryEstimate,
-    ],
-    'enrichment' => [
-        'requestedLimit' => max(1, $enrichmentLimit),
-        'effectiveLimit' => $effectiveEnrichmentLimit,
-        'module' => $enrichmentModule,
-        'estimate' => $enrichmentEstimate,
-    ],
-    'totals' => [
-        'scrapeCredits' => $totalDiscoveryCreditCost + (int) ($enrichmentEstimate['credit_cost'] ?? 0),
-    ],
-];
+        return [
+            'planId' => $planId,
+            'platform' => $platform,
+            'seedCount' => $seedCount,
+            'discovery' => [
+                'requestedLimit' => max(1, $discoveryLimit),
+                'effectiveLimitPerSeed' => $effectiveDiscoveryLimit,
+                'effectiveTotalRequested' => $effectiveDiscoveryLimit * $seedCount,
+                'module' => $discoveryModule,
+                'estimate' => $discoveryEstimate,
+            ],
+            'enrichment' => [
+                'requestedLimit' => max(1, $enrichmentLimit),
+                'effectiveLimit' => $effectiveEnrichmentLimit,
+                'module' => $enrichmentModule,
+                'estimate' => $enrichmentEstimate,
+            ],
+            'totals' => [
+                'scrapeCredits' => $totalDiscoveryCreditCost + (int) ($enrichmentEstimate['credit_cost'] ?? 0),
+            ],
+        ];
     }
 
     public function resolvePipelineModule(string $planId, string $platform, string $stage, ?string $preferredModuleKey = null, bool $configuredOnly = true): array
@@ -150,11 +148,12 @@ return [
 
         return min($requestedLimit, $maxBatchSize);
     }
+
     public function configuredActorMap(): array
     {
         $map = [];
         foreach ($this->modules() as $module) {
-            if (!$module['isConfigured']) {
+            if (! $module['isConfigured']) {
                 continue;
             }
             $map[$module['actorKey']] = $module['actorId'];
@@ -208,7 +207,7 @@ return [
 
     public function systemDefaultModule(string $platform, string $stage, bool $configuredOnly = true): ?array
     {
-        $defaults = config('scrapers.defaults.' . $platform . '.' . $stage);
+        $defaults = config('scrapers.defaults.'.$platform.'.'.$stage);
         if (is_string($defaults) && trim($defaults) !== '') {
             $module = $this->module(trim($defaults), $configuredOnly);
             if ($module) {
@@ -232,11 +231,11 @@ return [
 
         if ($moduleKey) {
             $module = $this->module($moduleKey, true);
-            if (!$module) {
-                throw new RuntimeException('Unknown or unconfigured scraper module: ' . $moduleKey);
+            if (! $module) {
+                throw new RuntimeException('Unknown or unconfigured scraper module: '.$moduleKey);
             }
 
-            if (!in_array($planId, $module['allowedPlans'], true)) {
+            if (! in_array($planId, $module['allowedPlans'], true)) {
                 throw new RuntimeException(sprintf('Plan %s is not allowed to run scraper module %s.', $planId, $moduleKey));
             }
 
@@ -263,14 +262,14 @@ return [
     public function estimateCredits(?string $moduleKey, ?string $actorKey, ?string $actorId, array $input): array
     {
         $module = $moduleKey ? $this->module($moduleKey) : null;
-        if (!$module && $actorKey) {
+        if (! $module && $actorKey) {
             $module = $this->moduleByActorKey($actorKey);
         }
-        if (!$module && $actorId) {
+        if (! $module && $actorId) {
             $module = $this->moduleByActorId($actorId);
         }
 
-        if (!$module) {
+        if (! $module) {
             return [
                 'type' => 'scrape',
                 'bucket' => 'scrape',
@@ -282,7 +281,7 @@ return [
         }
 
         $costClass = (string) ($module['costClass'] ?? 'discovery_basic');
-        $costConfig = config('scrapers.cost_classes.' . $costClass, []);
+        $costConfig = config('scrapers.cost_classes.'.$costClass, []);
         $strategy = (string) Arr::get($costConfig, 'strategy', 'results_limit');
         $multiplier = max(1, (int) Arr::get($costConfig, 'multiplier', 1));
         $divisor = max(1, (int) Arr::get($costConfig, 'divisor', 1));
@@ -348,7 +347,7 @@ return [
     private function normalizeModule(array $module): array
     {
         $actorKey = (string) ($module['actor_key'] ?? '');
-        $actorId = trim((string) config('services.apify.actors.' . $actorKey));
+        $actorId = trim((string) config('services.apify.actors.'.$actorKey));
 
         return [
             'key' => (string) ($module['key'] ?? ''),
@@ -381,7 +380,7 @@ return [
                 continue;
             }
 
-            if ($planId && !in_array($this->normalizePlanId($planId), $module['allowedPlans'], true)) {
+            if ($planId && ! in_array($this->normalizePlanId($planId), $module['allowedPlans'], true)) {
                 continue;
             }
 
@@ -403,7 +402,7 @@ return [
                 continue;
             }
 
-            if ($planId && !in_array($this->normalizePlanId($planId), $module['allowedPlans'], true)) {
+            if ($planId && ! in_array($this->normalizePlanId($planId), $module['allowedPlans'], true)) {
                 continue;
             }
 

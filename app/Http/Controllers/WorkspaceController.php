@@ -17,9 +17,7 @@ use Illuminate\Validation\Rule;
 
 class WorkspaceController extends Controller
 {
-    public function __construct(private DataLifecycleService $dataLifecycle)
-    {
-    }
+    public function __construct(private DataLifecycleService $dataLifecycle) {}
 
     public function bootstrap(Request $request)
     {
@@ -39,7 +37,8 @@ class WorkspaceController extends Controller
             ->get()
             ->filter(function (WorkspaceMember $membership) {
                 $candidate = Workspace::query()->find($membership->workspace_id);
-                return $candidate && !$this->workspaceIsDeleted($candidate);
+
+                return $candidate && ! $this->workspaceIsDeleted($candidate);
             })
             ->values();
 
@@ -55,7 +54,7 @@ class WorkspaceController extends Controller
             ]);
         }
 
-        if ($requestedWorkspaceId !== '' && !$memberships->firstWhere('workspace_id', $requestedWorkspaceId)) {
+        if ($requestedWorkspaceId !== '' && ! $memberships->firstWhere('workspace_id', $requestedWorkspaceId)) {
             return response()->json([
                 'error' => 'workspace_not_available',
                 'message' => 'Requested workspace is not available for this user.',
@@ -67,7 +66,7 @@ class WorkspaceController extends Controller
             : $memberships->first();
 
         $workspace = Workspace::query()->find($membership->workspace_id);
-        if (!$workspace) {
+        if (! $workspace) {
             return response()->json([
                 'message' => 'Workspace membership exists but workspace is missing.',
                 'data' => [
@@ -105,7 +104,7 @@ class WorkspaceController extends Controller
             $name = trim((string) $validated['name']);
             $slug = $this->uniqueSlug($name);
             $workspaceId = (string) Str::uuid();
-            $workspaceDataKey = 'workspace:' . $slug;
+            $workspaceDataKey = 'workspace:'.$slug;
             $billingAccount = $this->ensureBillingAccountForOwner($supabaseUserId, $name, $workspaceId);
 
             $workspace = Workspace::query()->create([
@@ -146,12 +145,11 @@ class WorkspaceController extends Controller
         ], 201);
     }
 
-
     public function invite(Request $request)
     {
         /** @var Workspace|null $workspace */
         $workspace = $request->attributes->get('workspace');
-        if (!$workspace) {
+        if (! $workspace) {
             return response()->json(['error' => 'Missing workspace context.'], 400);
         }
         /** @var WorkspaceMember|null $currentMembership */
@@ -179,7 +177,7 @@ class WorkspaceController extends Controller
         }
 
         $existingUser = DB::table('users')->whereRaw('LOWER(email) = ?', [$email])->first();
-        if (!$this->canReserveSeatForEmail($workspace, $email, $existingUser)) {
+        if (! $this->canReserveSeatForEmail($workspace, $email, $existingUser)) {
             return response()->json([
                 'error' => 'seat_limit_reached',
                 'message' => 'Your current plan has no open team seats. Remove a member or upgrade before inviting another person.',
@@ -191,7 +189,7 @@ class WorkspaceController extends Controller
         $affectedUserIds = [];
         $pendingInvites = [];
 
-        DB::transaction(function () use ($workspaceIds, $email, $role, $existingUser, &$assigned, &$invited, &$affectedUserIds, &$pendingInvites, $workspace, $currentMembership) {
+        DB::transaction(function () use ($workspaceIds, $email, $role, $existingUser, &$assigned, &$invited, &$affectedUserIds, &$pendingInvites, $currentMembership) {
             foreach ($workspaceIds as $workspaceId) {
                 if ($existingUser && trim((string) ($existingUser->supabase_user_id ?? '')) !== '') {
                     $targetUserId = (string) $existingUser->supabase_user_id;
@@ -222,6 +220,7 @@ class WorkspaceController extends Controller
                         'role' => $role,
                         'email' => $email,
                     ]);
+
                     continue;
                 }
 
@@ -258,7 +257,7 @@ class WorkspaceController extends Controller
     {
         /** @var Workspace|null $workspace */
         $workspace = $request->attributes->get('workspace');
-        if (!$workspace) {
+        if (! $workspace) {
             return response()->json(['error' => 'Missing workspace context.'], 400);
         }
         /** @var WorkspaceMember|null $currentMembership */
@@ -323,6 +322,7 @@ class WorkspaceController extends Controller
                         $existing->joined_at = $existing->joined_at ?: now();
                         $existing->save();
                     }
+
                     continue;
                 }
 
@@ -365,11 +365,11 @@ class WorkspaceController extends Controller
         /** @var WorkspaceMember|null $currentMembership */
         $currentMembership = $request->attributes->get('workspace_membership');
 
-        if (!$workspace || !$currentMembership) {
+        if (! $workspace || ! $currentMembership) {
             return response()->json(['error' => 'Missing workspace context.'], 400);
         }
 
-        if (!Schema::hasTable('workspace_invitations')) {
+        if (! Schema::hasTable('workspace_invitations')) {
             return response()->json(['error' => 'Workspace invitations are not available.'], 404);
         }
 
@@ -380,7 +380,7 @@ class WorkspaceController extends Controller
             ->whereIn('workspace_id', $allowedWorkspaceIds ?: ['00000000-0000-0000-0000-000000000000'])
             ->first();
 
-        if (!$invitation) {
+        if (! $invitation) {
             return response()->json(['error' => 'Pending invitation not found.'], 404);
         }
 
@@ -403,11 +403,11 @@ class WorkspaceController extends Controller
         /** @var WorkspaceMember|null $currentMembership */
         $currentMembership = $request->attributes->get('workspace_membership');
 
-        if (!$workspace || !$currentMembership) {
+        if (! $workspace || ! $currentMembership) {
             return response()->json(['error' => 'Missing workspace context.'], 400);
         }
 
-        if (!Schema::hasTable('workspace_invitations')) {
+        if (! Schema::hasTable('workspace_invitations')) {
             return response()->json(['error' => 'Workspace invitations are not available.'], 404);
         }
 
@@ -418,7 +418,7 @@ class WorkspaceController extends Controller
             ->whereIn('workspace_id', $allowedWorkspaceIds ?: ['00000000-0000-0000-0000-000000000000'])
             ->first();
 
-        if (!$invitation) {
+        if (! $invitation) {
             return response()->json(['error' => 'Pending invitation not found.'], 404);
         }
 
@@ -454,7 +454,7 @@ class WorkspaceController extends Controller
         /** @var WorkspaceMember|null $currentMembership */
         $currentMembership = $request->attributes->get('workspace_membership');
 
-        if (!$workspace || !$currentMembership) {
+        if (! $workspace || ! $currentMembership) {
             return response()->json(['error' => 'Missing workspace context.'], 400);
         }
 
@@ -472,7 +472,7 @@ class WorkspaceController extends Controller
             ->where('user_id', $targetUserId)
             ->first();
 
-        if (!$targetMembership) {
+        if (! $targetMembership) {
             return response()->json(['error' => 'Target user must already be a member of this workspace.'], 422);
         }
 
@@ -521,7 +521,7 @@ class WorkspaceController extends Controller
     {
         $actorUserId = (string) $request->attributes->get('supabase_user_id');
         $workspace = Workspace::query()->find($workspaceId);
-        if (!$workspace || (string) $workspace->owner_id !== $actorUserId) {
+        if (! $workspace || (string) $workspace->owner_id !== $actorUserId) {
             return response()->json(['error' => 'Workspace not found.'], 404);
         }
         $settings = (array) ($workspace->settings ?? []);
@@ -540,23 +540,23 @@ class WorkspaceController extends Controller
         /** @var WorkspaceMember|null $currentMembership */
         $currentMembership = $request->attributes->get('workspace_membership');
 
-        if (!$workspace || !$currentMembership) {
+        if (! $workspace || ! $currentMembership) {
             return response()->json(['error' => 'Missing workspace context.'], 400);
         }
 
         $targetWorkspaceId = trim($workspaceId);
         $allowedWorkspaceIds = $this->accountWorkspaceIds($workspace, true);
-        if (!in_array($targetWorkspaceId, $allowedWorkspaceIds, true)) {
+        if (! in_array($targetWorkspaceId, $allowedWorkspaceIds, true)) {
             return response()->json(['error' => 'Workspace not available for this account.'], 404);
         }
 
         $targetWorkspace = Workspace::query()->find($targetWorkspaceId);
-        if (!$targetWorkspace) {
+        if (! $targetWorkspace) {
             return response()->json(['error' => 'Workspace not found.'], 404);
         }
 
         $settings = (array) ($targetWorkspace->settings ?? []);
-        if (!isset($settings['deletedAt'])) {
+        if (! isset($settings['deletedAt'])) {
             $settings['deletedAt'] = now()->toIso8601String();
             $settings['deletedBy'] = $currentMembership->user_id;
             $settings['archivedAt'] = $settings['archivedAt'] ?? $settings['deletedAt'];
@@ -597,6 +597,7 @@ class WorkspaceController extends Controller
                 ->get(['id', 'settings'])
                 ->filter(function ($row) {
                     $settings = is_string($row->settings ?? null) ? (json_decode($row->settings, true) ?: []) : ((array) ($row->settings ?? []));
+
                     return empty($settings['deletedAt']);
                 })
                 ->map(fn ($row) => (string) $row->id)
@@ -624,12 +625,12 @@ class WorkspaceController extends Controller
     public function exportWorkspace(Request $request, string $workspaceId)
     {
         $workspace = $request->attributes->get('workspace');
-        if (!$workspace || !in_array($workspaceId, $this->accountWorkspaceIds($workspace, true), true)) {
+        if (! $workspace || ! in_array($workspaceId, $this->accountWorkspaceIds($workspace, true), true)) {
             return response()->json(['error' => 'Workspace not found.'], 404);
         }
 
         return response()->json($this->dataLifecycle->exportWorkspace($workspaceId))
-            ->header('Content-Disposition', 'attachment; filename="socialcore-workspace-export-' . $workspaceId . '.json"');
+            ->header('Content-Disposition', 'attachment; filename="socialcore-workspace-export-'.$workspaceId.'.json"');
     }
 
     public function deleteAccount(Request $request)
@@ -660,11 +661,11 @@ class WorkspaceController extends Controller
         /** @var WorkspaceMember|null $currentMembership */
         $currentMembership = $request->attributes->get('workspace_membership');
 
-        if (!$workspace || !$currentMembership) {
+        if (! $workspace || ! $currentMembership) {
             return response()->json(['error' => 'Missing workspace context.'], 400);
         }
 
-        if (!Schema::hasTable('workspace_audit_events')) {
+        if (! Schema::hasTable('workspace_audit_events')) {
             return response()->json(['data' => ['events' => []]]);
         }
 
@@ -704,7 +705,7 @@ class WorkspaceController extends Controller
         /** @var WorkspaceMember|null $currentMembership */
         $currentMembership = $request->attributes->get('workspace_membership');
 
-        if (!$workspace || !$currentMembership) {
+        if (! $workspace || ! $currentMembership) {
             return response()->json(['error' => 'Missing workspace context.'], 400);
         }
 
@@ -713,7 +714,7 @@ class WorkspaceController extends Controller
             ->where('id', $memberId)
             ->first();
 
-        if (!$member) {
+        if (! $member) {
             return response()->json(['error' => 'Workspace member not found.'], 404);
         }
 
@@ -746,7 +747,7 @@ class WorkspaceController extends Controller
     {
         /** @var Workspace|null $workspace */
         $workspace = $request->attributes->get('workspace');
-        if (!$workspace) {
+        if (! $workspace) {
             return response()->json(['error' => 'Missing workspace context.'], 400);
         }
 
@@ -763,8 +764,8 @@ class WorkspaceController extends Controller
 
         $incoming = array_diff_key((array) $validated['settings'], array_flip($protectedKeys));
         $settings = array_merge((array) ($workspace->settings ?? []), $incoming, [
-            'workspaceDataKey' => (string) data_get($workspace->settings, 'workspaceDataKey', 'workspace:' . $workspace->slug),
-            'workbookId' => (string) data_get($workspace->settings, 'workbookId', data_get($workspace->settings, 'workspaceDataKey', 'workspace:' . $workspace->slug)),
+            'workspaceDataKey' => (string) data_get($workspace->settings, 'workspaceDataKey', 'workspace:'.$workspace->slug),
+            'workbookId' => (string) data_get($workspace->settings, 'workbookId', data_get($workspace->settings, 'workspaceDataKey', 'workspace:'.$workspace->slug)),
             'dataSource' => 'internal_database',
             'legacyLegacyWorkbooksDisabled' => true,
         ]);
@@ -788,7 +789,7 @@ class WorkspaceController extends Controller
         /** @var WorkspaceMember|null $membership */
         $membership = $request->attributes->get('workspace_membership');
 
-        if (!$workspace || !$membership) {
+        if (! $workspace || ! $membership) {
             return response()->json(['error' => 'Missing workspace context.'], 400);
         }
 
@@ -817,18 +818,18 @@ class WorkspaceController extends Controller
         /** @var WorkspaceMember|null $currentMembership */
         $currentMembership = $request->attributes->get('workspace_membership');
 
-        if (!$workspace || !$currentMembership) {
+        if (! $workspace || ! $currentMembership) {
             return response()->json(['error' => 'Missing workspace context.'], 400);
         }
 
         $targetWorkspaceId = trim($workspaceId);
         $allowedWorkspaceIds = $this->accountWorkspaceIds($workspace);
-        if (!in_array($targetWorkspaceId, $allowedWorkspaceIds, true)) {
+        if (! in_array($targetWorkspaceId, $allowedWorkspaceIds, true)) {
             return response()->json(['error' => 'Workspace not available for this account.'], 404);
         }
 
         $targetWorkspace = Workspace::query()->find($targetWorkspaceId);
-        if (!$targetWorkspace) {
+        if (! $targetWorkspace) {
             return response()->json(['error' => 'Workspace not found.'], 404);
         }
 
@@ -859,7 +860,7 @@ class WorkspaceController extends Controller
         $billingAccountId = trim((string) ($workspace->billing_account_id ?? ''));
 
         if ($billingAccountId === '') {
-            return $includeDeleted || !$this->workspaceIsDeleted($workspace) ? [(string) $workspace->id] : [];
+            return $includeDeleted || ! $this->workspaceIsDeleted($workspace) ? [(string) $workspace->id] : [];
         }
 
         return DB::table('workspaces')
@@ -871,6 +872,7 @@ class WorkspaceController extends Controller
                 }
 
                 $settings = is_string($row->settings ?? null) ? (json_decode($row->settings, true) ?: []) : ((array) ($row->settings ?? []));
+
                 return empty($settings['deletedAt']);
             })
             ->map(fn ($row) => (string) $row->id)
@@ -880,7 +882,8 @@ class WorkspaceController extends Controller
     private function workspaceIsDeleted(Workspace $workspace): bool
     {
         $settings = (array) ($workspace->settings ?? []);
-        return !empty($settings['deletedAt']);
+
+        return ! empty($settings['deletedAt']);
     }
 
     private function authorizedWorkspaceIdsForAccount(Workspace $workspace, array $requestedWorkspaceIds): array
@@ -898,7 +901,7 @@ class WorkspaceController extends Controller
 
     private function manageableWorkspaceIdsForActor(Workspace $workspace, ?WorkspaceMember $membership): array
     {
-        if (!$membership) {
+        if (! $membership) {
             return [];
         }
 
@@ -1004,6 +1007,7 @@ class WorkspaceController extends Controller
         $existing = DB::table('workspace_invitations')->where($match)->first();
         if ($existing) {
             DB::table('workspace_invitations')->where('id', $existing->id)->update($values);
+
             return DB::table('workspace_invitations')->where('id', $existing->id)->first();
         }
 
@@ -1023,7 +1027,7 @@ class WorkspaceController extends Controller
     private function sendWorkspaceInvitationEmail(object $invite): void
     {
         $workspace = Workspace::query()->find((string) $invite->workspace_id);
-        if (!$workspace) {
+        if (! $workspace) {
             return;
         }
 
@@ -1033,7 +1037,7 @@ class WorkspaceController extends Controller
         }
 
         $frontendUrl = rtrim((string) config('app.frontend_url', config('app.url')), '/');
-        $inviteUrl = $frontendUrl . '/auth?mode=signup&email=' . urlencode($email);
+        $inviteUrl = $frontendUrl.'/auth?mode=signup&email='.urlencode($email);
 
         try {
             Mail::to($email)->send(new WorkspaceInvitationMail(
@@ -1054,7 +1058,7 @@ class WorkspaceController extends Controller
 
     private function logWorkspaceAudit(string $workspaceId, ?string $actorUserId, string $eventType, ?string $subjectType = null, ?string $subjectId = null, array $metadata = []): void
     {
-        if (!Schema::hasTable('workspace_audit_events')) {
+        if (! Schema::hasTable('workspace_audit_events')) {
             return;
         }
 
@@ -1072,7 +1076,7 @@ class WorkspaceController extends Controller
 
     private function workspacePayload(?Workspace $workspace, ?WorkspaceMember $membership): array
     {
-        if (!$workspace || !$membership) {
+        if (! $workspace || ! $membership) {
             return [
                 'workspace' => null,
                 'membership' => null,
@@ -1088,7 +1092,7 @@ class WorkspaceController extends Controller
         $settings = (array) ($workspace->settings ?? []);
         $workspaceDataKey = trim((string) ($settings['workspaceDataKey'] ?? $settings['workbookId'] ?? ''));
         if ($workspaceDataKey === '') {
-            $workspaceDataKey = 'workspace:' . ($workspace->slug ?: $workspace->id);
+            $workspaceDataKey = 'workspace:'.($workspace->slug ?: $workspace->id);
         }
         $settings['workspaceDataKey'] = $workspaceDataKey;
         $settings['workbookId'] = $workspaceDataKey;
@@ -1128,6 +1132,7 @@ class WorkspaceController extends Controller
             ])
             ->map(function ($row) {
                 $settings = is_string($row->settings) ? (json_decode($row->settings, true) ?: []) : ((array) $row->settings);
+
                 return [
                     'id' => (string) $row->id,
                     'name' => (string) $row->name,
@@ -1155,6 +1160,7 @@ class WorkspaceController extends Controller
 
         $accountWorkspaces = $accountWorkspaceRows->map(function ($row) {
             $rowSettings = is_string($row->settings ?? null) ? (json_decode($row->settings, true) ?: []) : ((array) ($row->settings ?? []));
+
             return [
                 'id' => (string) $row->id,
                 'name' => (string) $row->name,
@@ -1213,7 +1219,7 @@ class WorkspaceController extends Controller
             ->values()
             ->all();
 
-        $pendingInvitations = empty($teamVisibleWorkspaceIds) || !Schema::hasTable('workspace_invitations')
+        $pendingInvitations = empty($teamVisibleWorkspaceIds) || ! Schema::hasTable('workspace_invitations')
             ? []
             : DB::table('workspace_invitations')
                 ->whereIn('workspace_id', $teamVisibleWorkspaceIds)
@@ -1273,7 +1279,7 @@ class WorkspaceController extends Controller
             'id' => $accountId,
             'owner_user_id' => $ownerUserId,
             'primary_workspace_id' => $workspaceId,
-            'name' => $workspaceName . ' billing',
+            'name' => $workspaceName.' billing',
             'plan_id' => 'free',
             'status' => 'active',
             'metadata' => json_encode([

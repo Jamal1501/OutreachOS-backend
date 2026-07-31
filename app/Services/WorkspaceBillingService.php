@@ -62,12 +62,10 @@ class WorkspaceBillingService
         ],
     ];
 
-
     public function __construct(
         private ScraperRegistryService $scrapers,
         private ObservabilityService $observability,
-    ) {
-    }
+    ) {}
 
     public function summary(string $workspaceId): array
     {
@@ -183,7 +181,7 @@ class WorkspaceBillingService
             ->get()
             ->map(function (CreditPackage $package) use ($multiplier, $currentPlanId) {
                 $allowed = $this->normalizeJsonArray($package->allowed_plan_ids ?? []);
-                if ($allowed !== [] && !in_array($currentPlanId, $allowed, true)) {
+                if ($allowed !== [] && ! in_array($currentPlanId, $allowed, true)) {
                     return null;
                 }
 
@@ -226,7 +224,7 @@ class WorkspaceBillingService
 
     public function reserveApify(?string $workspaceId, ?string $moduleKey, ?string $actorKey, ?string $actorId, array $input, ?float $maxChargeUsd = null): array
     {
-        if (!$workspaceId) {
+        if (! $workspaceId) {
             throw new RuntimeException('Workspace billing requires a valid workspace context.');
         }
 
@@ -253,7 +251,7 @@ class WorkspaceBillingService
 
     public function reserveAi(?string $workspaceId, string $operation, array $context = []): array
     {
-        if (!$workspaceId) {
+        if (! $workspaceId) {
             throw new RuntimeException('Workspace billing requires a valid workspace context.');
         }
 
@@ -276,7 +274,7 @@ class WorkspaceBillingService
     {
         DB::transaction(function () use ($usageEventId, $providerCostUsd, $metadata, $referenceId) {
             $event = WorkspaceUsageEvent::query()->lockForUpdate()->find($usageEventId);
-            if (!$event || $event->status !== 'reserved') {
+            if (! $event || $event->status !== 'reserved') {
                 return;
             }
 
@@ -289,11 +287,11 @@ class WorkspaceBillingService
 
             $wallet = WorkspaceCreditWallet::query()
                 ->when($event->billing_account_id, fn ($query) => $query->where('billing_account_id', $event->billing_account_id))
-                ->when(!$event->billing_account_id, fn ($query) => $query->where('workspace_id', $event->workspace_id))
+                ->when(! $event->billing_account_id, fn ($query) => $query->where('workspace_id', $event->workspace_id))
                 ->lockForUpdate()
                 ->first();
 
-            if (!$wallet) {
+            if (! $wallet) {
                 return;
             }
 
@@ -311,13 +309,13 @@ class WorkspaceBillingService
     {
         DB::transaction(function () use ($usageEventId, $reason, $metadata) {
             $event = WorkspaceUsageEvent::query()->lockForUpdate()->find($usageEventId);
-            if (!$event || $event->status !== 'reserved') {
+            if (! $event || $event->status !== 'reserved') {
                 return;
             }
 
             $wallet = WorkspaceCreditWallet::query()
                 ->when($event->billing_account_id, fn ($query) => $query->where('billing_account_id', $event->billing_account_id))
-                ->when(!$event->billing_account_id, fn ($query) => $query->where('workspace_id', $event->workspace_id))
+                ->when(! $event->billing_account_id, fn ($query) => $query->where('workspace_id', $event->workspace_id))
                 ->lockForUpdate()
                 ->first();
 
@@ -353,7 +351,7 @@ class WorkspaceBillingService
     ): void {
         DB::transaction(function () use ($usageEventId, $billableUnits, $providerCostUsd, $metadata, $referenceId) {
             $event = WorkspaceUsageEvent::query()->lockForUpdate()->find($usageEventId);
-            if (!$event || $event->status !== 'reserved') {
+            if (! $event || $event->status !== 'reserved') {
                 return;
             }
 
@@ -361,6 +359,7 @@ class WorkspaceBillingService
             $settledUnits = min($originalUnits, max(0, $billableUnits));
             if ($settledUnits === 0) {
                 $this->refundReservation($usageEventId, 'No billable units completed', $metadata);
+
                 return;
             }
 
@@ -376,7 +375,7 @@ class WorkspaceBillingService
 
             $wallet = WorkspaceCreditWallet::query()
                 ->when($event->billing_account_id, fn ($query) => $query->where('billing_account_id', $event->billing_account_id))
-                ->when(!$event->billing_account_id, fn ($query) => $query->where('workspace_id', $event->workspace_id))
+                ->when(! $event->billing_account_id, fn ($query) => $query->where('workspace_id', $event->workspace_id))
                 ->lockForUpdate()
                 ->first();
 
@@ -413,7 +412,6 @@ class WorkspaceBillingService
         });
     }
 
-
     private function readWorkspaceBillingSnapshot(string $workspaceId): array
     {
         // Billing reads must not return stale subscription/wallet rows. Existing
@@ -442,14 +440,14 @@ class WorkspaceBillingService
                 ->lockForUpdate()
                 ->first();
 
-            if (!$subscription) {
+            if (! $subscription) {
                 $subscription = WorkspaceSubscription::query()
                     ->where('workspace_id', $canonicalWorkspaceId)
                     ->lockForUpdate()
                     ->first();
             }
 
-            if (!$subscription) {
+            if (! $subscription) {
                 $subscription = WorkspaceSubscription::query()->create([
                     'id' => (string) Str::uuid(),
                     'workspace_id' => $canonicalWorkspaceId,
@@ -463,7 +461,7 @@ class WorkspaceBillingService
                         ? ['bootstrap' => true, 'billing_scope' => 'shared_account']
                         : ['bootstrap' => true, 'billing_scope' => 'shared_account', 'last_refill_period_key' => $now->toIso8601String()],
                 ]);
-            } elseif (!$subscription->billing_account_id) {
+            } elseif (! $subscription->billing_account_id) {
                 $subscription->billing_account_id = $billingAccountId;
                 $subscription->workspace_id = $canonicalWorkspaceId;
                 $subscription->save();
@@ -479,7 +477,7 @@ class WorkspaceBillingService
 
             if ($subscriptionPlanId !== $targetPlanId || $subscription->plan_id !== $targetPlanId) {
                 $subscription->plan_id = $targetPlanId;
-                if (!$hasStripeSubscription && $targetPlanId !== 'free') {
+                if (! $hasStripeSubscription && $targetPlanId !== 'free') {
                     $subscription->trial_ends_at = null;
                 }
                 $subscription->save();
@@ -499,14 +497,14 @@ class WorkspaceBillingService
                 ->lockForUpdate()
                 ->first();
 
-            if (!$wallet) {
+            if (! $wallet) {
                 $wallet = WorkspaceCreditWallet::query()
                     ->where('workspace_id', $canonicalWorkspaceId)
                     ->lockForUpdate()
                     ->first();
             }
 
-            if (!$wallet) {
+            if (! $wallet) {
                 $wallet = WorkspaceCreditWallet::query()->create([
                     'id' => (string) Str::uuid(),
                     'workspace_id' => $canonicalWorkspaceId,
@@ -527,7 +525,7 @@ class WorkspaceBillingService
                         'welcome_credits_granted_at' => $targetPlanId === 'free' ? $now->toIso8601String() : null,
                     ],
                 ]);
-            } elseif (!$wallet->billing_account_id) {
+            } elseif (! $wallet->billing_account_id) {
                 $wallet->billing_account_id = $billingAccountId;
                 $wallet->workspace_id = $canonicalWorkspaceId;
                 $wallet->save();
@@ -588,7 +586,7 @@ class WorkspaceBillingService
                 ->lockForUpdate()
                 ->first();
 
-            if (!$subscription) {
+            if (! $subscription) {
                 $this->ensureWorkspaceBilling($workspaceId);
                 $subscription = WorkspaceSubscription::query()->where('billing_account_id', $billingAccountId)->lockForUpdate()->firstOrFail();
             }
@@ -598,7 +596,7 @@ class WorkspaceBillingService
                 ->lockForUpdate()
                 ->first();
 
-            if (!$wallet) {
+            if (! $wallet) {
                 $this->ensureWorkspaceBilling($workspaceId);
                 $wallet = WorkspaceCreditWallet::query()->where('billing_account_id', $billingAccountId)->lockForUpdate()->firstOrFail();
             }
@@ -609,7 +607,7 @@ class WorkspaceBillingService
             $periodKey = $periodStart->toIso8601String();
             $metadata = (array) ($subscription->metadata ?? []);
 
-            if (!$resetBaseBalances && ($metadata['last_refill_period_key'] ?? null) === $periodKey) {
+            if (! $resetBaseBalances && ($metadata['last_refill_period_key'] ?? null) === $periodKey) {
                 return;
             }
 
@@ -670,7 +668,7 @@ class WorkspaceBillingService
                 ->lockForUpdate()
                 ->first();
 
-            if (!$wallet) {
+            if (! $wallet) {
                 [, $wallet] = $this->ensureWorkspaceBilling($workspaceId);
                 $wallet = WorkspaceCreditWallet::query()->where('billing_account_id', $billingAccountId)->lockForUpdate()->firstOrFail();
             }
@@ -795,6 +793,7 @@ class WorkspaceBillingService
         return $query->get()->map(function ($row) use ($customerCreditValue) {
             $scrape = (int) ($row->consumed_scrape_credits ?? 0);
             $ai = (int) ($row->consumed_ai_credits ?? 0);
+
             return [
                 'workspaceId' => (string) $row->workspace_id,
                 'workspaceName' => (string) $row->workspace_name,
@@ -841,13 +840,13 @@ class WorkspaceBillingService
         [, , $plan] = $this->ensureWorkspaceBilling($workspaceId);
 
         $package = CreditPackage::query()->find($packageId);
-        if (!$package || !$package->active) {
+        if (! $package || ! $package->active) {
             throw new RuntimeException('Credit package not found.');
         }
 
         $allowed = $this->normalizeJsonArray($package->allowed_plan_ids ?? []);
         $currentPlanId = $this->normalizePlanId((string) Arr::get($plan, 'id', 'free'));
-        if ($allowed !== [] && !in_array($currentPlanId, $allowed, true)) {
+        if ($allowed !== [] && ! in_array($currentPlanId, $allowed, true)) {
             throw new RuntimeException('This credit package is not available on the current plan.');
         }
 
@@ -876,7 +875,7 @@ class WorkspaceBillingService
         }
 
         $plan = $this->resolvePlan($planId);
-        if (!$plan || (isset($plan['is_active']) && !(bool) $plan['is_active'])) {
+        if (! $plan || (isset($plan['is_active']) && ! (bool) $plan['is_active'])) {
             throw new RuntimeException('Plan not available for checkout.');
         }
 
@@ -993,11 +992,11 @@ class WorkspaceBillingService
     private function billingAccountForWorkspaceLocked(string $workspaceId): array
     {
         $workspace = DB::table('workspaces')->where('id', $workspaceId)->lockForUpdate()->first();
-        if (!$workspace) {
+        if (! $workspace) {
             throw new RuntimeException('Workspace not found for billing.');
         }
 
-        if (!Schema::hasTable('billing_accounts') || !Schema::hasColumn('workspaces', 'billing_account_id')) {
+        if (! Schema::hasTable('billing_accounts') || ! Schema::hasColumn('workspaces', 'billing_account_id')) {
             $fallback = (object) [
                 'id' => $workspace->id,
                 'owner_user_id' => (string) ($workspace->owner_id ?: 'legacy'),
@@ -1007,6 +1006,7 @@ class WorkspaceBillingService
                 'status' => 'active',
                 'metadata' => [],
             ];
+
             return [$workspace, $fallback];
         }
 
@@ -1018,16 +1018,16 @@ class WorkspaceBillingService
             }
         }
 
-        $ownerUserId = trim((string) ($workspace->owner_id ?? '')) ?: 'workspace:' . $workspaceId;
+        $ownerUserId = trim((string) ($workspace->owner_id ?? '')) ?: 'workspace:'.$workspaceId;
         $account = DB::table('billing_accounts')->where('owner_user_id', $ownerUserId)->lockForUpdate()->first();
 
-        if (!$account) {
+        if (! $account) {
             $accountId = (string) Str::uuid();
             DB::table('billing_accounts')->insert([
                 'id' => $accountId,
                 'owner_user_id' => $ownerUserId,
                 'primary_workspace_id' => $workspaceId,
-                'name' => ((string) ($workspace->name ?? 'SocialCore')) . ' billing',
+                'name' => ((string) ($workspace->name ?? 'SocialCore')).' billing',
                 'plan_id' => $this->normalizePlanId((string) ($workspace->plan_id ?? 'free')),
                 'status' => 'active',
                 'metadata' => json_encode([
@@ -1047,12 +1047,13 @@ class WorkspaceBillingService
             'updated_at' => now(),
         ]);
 
-        if (!$account->primary_workspace_id) {
+        if (! $account->primary_workspace_id) {
             DB::table('billing_accounts')->where('id', $account->id)->update(['primary_workspace_id' => $workspaceId, 'updated_at' => now()]);
             $account = DB::table('billing_accounts')->where('id', $account->id)->lockForUpdate()->first();
         }
 
         $workspace = DB::table('workspaces')->where('id', $workspaceId)->lockForUpdate()->first();
+
         return [$workspace, $account];
     }
 
@@ -1073,11 +1074,11 @@ class WorkspaceBillingService
                 $subscriptionChanged = true;
             }
         } else {
-            if (!$subscription->current_period_start) {
+            if (! $subscription->current_period_start) {
                 $subscription->current_period_start = $now;
                 $subscriptionChanged = true;
             }
-            if (!$subscription->current_period_end) {
+            if (! $subscription->current_period_end) {
                 $subscription->current_period_end = CarbonImmutable::instance($subscription->current_period_start ?: $now)->addMonth();
                 $subscriptionChanged = true;
             }
@@ -1117,7 +1118,7 @@ class WorkspaceBillingService
                 $baseBalanceResetThisPass = true;
             }
 
-            if (!$this->subscriptionCanUseIncludedCredits((string) $subscription->status)) {
+            if (! $this->subscriptionCanUseIncludedCredits((string) $subscription->status)) {
                 if ((int) $wallet->scrape_credits_balance !== 0) {
                     $wallet->scrape_credits_balance = 0;
                     $walletChanged = true;
@@ -1153,7 +1154,7 @@ class WorkspaceBillingService
                 $safety++;
             }
 
-            if (!$baseBalanceResetThisPass) {
+            if (! $baseBalanceResetThisPass) {
                 $baseDeductions = $this->currentPeriodBaseDeductions($workspaceId, $currentPeriodStart, $currentPeriodEnd);
                 $expectedScrapeBaseBalance = max(0, $monthlyScrapeCredits - $baseDeductions['scrape']);
                 $expectedAiBaseBalance = max(0, $monthlyAiCredits - $baseDeductions['ai']);
@@ -1211,7 +1212,7 @@ class WorkspaceBillingService
 
     private function ensureCatalogSeeded(): void
     {
-        if (!DB::getSchemaBuilder()->hasTable('credit_packages')) {
+        if (! DB::getSchemaBuilder()->hasTable('credit_packages')) {
             return;
         }
 
@@ -1245,7 +1246,6 @@ class WorkspaceBillingService
 
         return self::DEFAULT_CREDIT_PACKAGES;
     }
-
 
     private function publicPlanFeatures(string $planId, array $features): array
     {
@@ -1369,6 +1369,7 @@ class WorkspaceBillingService
     private function normalizePlanId(string $planId): string
     {
         $planId = strtolower(trim($planId));
+
         return self::PLAN_ALIASES[$planId] ?? ($planId !== '' ? $planId : 'free');
     }
 

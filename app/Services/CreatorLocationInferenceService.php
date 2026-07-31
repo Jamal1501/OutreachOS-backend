@@ -67,7 +67,7 @@ class CreatorLocationInferenceService
         $current = is_array($metadata['creator_location'] ?? null) ? $metadata['creator_location'] : [];
         $currentConfidence = (float) ($current['confidence'] ?? $metadata['location_confidence'] ?? 0);
 
-        if (!$overwrite && $currentConfidence > 0 && ($confidence + 0.02) < $currentConfidence) {
+        if (! $overwrite && $currentConfidence > 0 && ($confidence + 0.02) < $currentConfidence) {
             return $current !== [] ? $current : null;
         }
 
@@ -113,7 +113,7 @@ class CreatorLocationInferenceService
 
     public function confidenceFromCreator(?Creator $creator): ?float
     {
-        if (!$creator) {
+        if (! $creator) {
             return null;
         }
 
@@ -125,7 +125,7 @@ class CreatorLocationInferenceService
 
     public function sourcesFromCreator(?Creator $creator): array
     {
-        if (!$creator) {
+        if (! $creator) {
             return [];
         }
 
@@ -168,7 +168,7 @@ class CreatorLocationInferenceService
                 'country' => $normalizedCountry ?: $cityCountry,
                 'city' => $normalizedCity,
                 'confidence' => $normalizedCountry && $normalizedCity ? 0.92 : ($normalizedCity ? 0.86 : 0.78),
-                'source' => 'structured_profile_location' . ($sourceDetail !== '' ? ': ' . $sourceDetail : ''),
+                'source' => 'structured_profile_location'.($sourceDetail !== '' ? ': '.$sourceDetail : ''),
             ];
         }
     }
@@ -193,13 +193,13 @@ class CreatorLocationInferenceService
                 continue;
             }
 
-            $dedupeKey = $sourceName . ':' . Str::lower($value);
+            $dedupeKey = $sourceName.':'.Str::lower($value);
             if (isset($seen[$dedupeKey])) {
                 continue;
             }
             $seen[$dedupeKey] = true;
 
-            $signal = $this->signalFromFreeText($value, $sourceName . ': ' . Str::limit($value, 80, ''));
+            $signal = $this->signalFromFreeText($value, $sourceName.': '.Str::limit($value, 80, ''));
             if ($signal !== null) {
                 $signal['confidence'] = max((float) $signal['confidence'], 0.72);
                 $signals[] = $signal;
@@ -243,7 +243,7 @@ class CreatorLocationInferenceService
                     'city' => $location['city'],
                     'confidence' => 0.7,
                     'source' => $source === 'bio_or_profile_text'
-                        ? 'bio_or_profile_text: ' . $location['city']
+                        ? 'bio_or_profile_text: '.$location['city']
                         : $source,
                 ];
             }
@@ -259,7 +259,7 @@ class CreatorLocationInferenceService
                     'city' => null,
                     'confidence' => 0.62,
                     'source' => $source === 'bio_or_profile_text'
-                        ? 'bio_or_profile_text: ' . $country
+                        ? 'bio_or_profile_text: '.$country
                         : $source,
                 ];
             }
@@ -330,7 +330,7 @@ class CreatorLocationInferenceService
             return false;
         }
 
-        return preg_match('/(^|[^a-z0-9])' . preg_quote($needle, '/') . '([^a-z0-9]|$)/u', $haystack) === 1;
+        return preg_match('/(^|[^a-z0-9])'.preg_quote($needle, '/').'([^a-z0-9]|$)/u', $haystack) === 1;
     }
 
     private function normalizeText(string $text): string

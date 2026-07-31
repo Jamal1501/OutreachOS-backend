@@ -10,6 +10,7 @@ use Illuminate\Support\Str;
 class AvatarCacheService
 {
     private const MAX_AVATAR_BYTES = 2097152;
+
     private const FAILURE_CACHE_SECONDS = 21600;
 
     public function responseForUrl(string $url)
@@ -38,6 +39,7 @@ class AvatarCacheService
         $fetchedAvatar = $this->fetchAvatar($url, $host, $cacheKey);
         if ($fetchedAvatar === null) {
             $this->writeCachedAvatarFailure($metaPath, 'fetch_failed');
+
             return $this->fallbackAvatarResponse('fetch_failed', 200, 'failure-miss');
         }
 
@@ -95,6 +97,7 @@ class AvatarCacheService
         $fetchedAvatar = $this->fetchAvatar($url, $host, $cacheKey, 5);
         if ($fetchedAvatar === null) {
             $this->writeCachedAvatarFailure($metaPath, 'fetch_failed');
+
             return false;
         }
 
@@ -107,7 +110,7 @@ class AvatarCacheService
     {
         $url = trim($url);
 
-        if (!filter_var($url, FILTER_VALIDATE_URL)) {
+        if (! filter_var($url, FILTER_VALIDATE_URL)) {
             return [
                 'response' => $this->fallbackAvatarResponse('invalid_url', 422),
             ];
@@ -134,7 +137,7 @@ class AvatarCacheService
         ];
 
         foreach ($allowedHostSuffixes as $suffix) {
-            if ($host === $suffix || Str::endsWith($host, '.' . $suffix)) {
+            if ($host === $suffix || Str::endsWith($host, '.'.$suffix)) {
                 return [
                     'url' => $url,
                     'host' => $host,
@@ -171,7 +174,7 @@ class AvatarCacheService
             return null;
         }
 
-        if (!$upstream->ok()) {
+        if (! $upstream->ok()) {
             Log::debug('avatar proxy upstream not ok', [
                 'host' => $host,
                 'url_hash' => $cacheKey,
@@ -189,7 +192,7 @@ class AvatarCacheService
             return null;
         }
 
-        if (!Str::startsWith(Str::lower($contentType), 'image/')) {
+        if (! Str::startsWith(Str::lower($contentType), 'image/')) {
             return null;
         }
 
@@ -203,19 +206,19 @@ class AvatarCacheService
     {
         $disk = $this->disk();
 
-        if (!$disk->exists($avatarPath) || !$disk->exists($metaPath)) {
+        if (! $disk->exists($avatarPath) || ! $disk->exists($metaPath)) {
             return null;
         }
 
         $meta = json_decode((string) $disk->get($metaPath), true);
         $contentType = is_array($meta) ? (string) ($meta['contentType'] ?? '') : '';
 
-        if (!Str::startsWith(Str::lower($contentType), 'image/')) {
+        if (! Str::startsWith(Str::lower($contentType), 'image/')) {
             return null;
         }
 
         $body = $disk->get($avatarPath);
-        if (!is_string($body) || $body === '') {
+        if (! is_string($body) || $body === '') {
             return null;
         }
 
@@ -228,17 +231,17 @@ class AvatarCacheService
     private function readCachedAvatarFailure(string $metaPath): ?string
     {
         $disk = $this->disk();
-        if (!$disk->exists($metaPath)) {
+        if (! $disk->exists($metaPath)) {
             return null;
         }
 
         $meta = json_decode((string) $disk->get($metaPath), true);
-        if (!is_array($meta) || !($meta['failed'] ?? false)) {
+        if (! is_array($meta) || ! ($meta['failed'] ?? false)) {
             return null;
         }
 
         $failedAt = strtotime((string) ($meta['failedAt'] ?? ''));
-        if (!$failedAt || $failedAt < time() - self::FAILURE_CACHE_SECONDS) {
+        if (! $failedAt || $failedAt < time() - self::FAILURE_CACHE_SECONDS) {
             return null;
         }
 

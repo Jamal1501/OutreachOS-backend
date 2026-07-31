@@ -31,30 +31,30 @@ return new class extends Migration
 
     private function extendPlansTable(): void
     {
-        if (!Schema::hasTable('plans')) {
+        if (! Schema::hasTable('plans')) {
             return;
         }
 
         Schema::table('plans', function (Blueprint $table) {
-            if (!Schema::hasColumn('plans', 'monthly_scrape_credits')) {
+            if (! Schema::hasColumn('plans', 'monthly_scrape_credits')) {
                 $table->unsignedInteger('monthly_scrape_credits')->default(0)->after('max_creators');
             }
-            if (!Schema::hasColumn('plans', 'monthly_ai_credits')) {
+            if (! Schema::hasColumn('plans', 'monthly_ai_credits')) {
                 $table->unsignedInteger('monthly_ai_credits')->default(0)->after('monthly_scrape_credits');
             }
-            if (!Schema::hasColumn('plans', 'trial_scrape_credits')) {
+            if (! Schema::hasColumn('plans', 'trial_scrape_credits')) {
                 $table->unsignedInteger('trial_scrape_credits')->default(0)->after('monthly_ai_credits');
             }
-            if (!Schema::hasColumn('plans', 'trial_ai_credits')) {
+            if (! Schema::hasColumn('plans', 'trial_ai_credits')) {
                 $table->unsignedInteger('trial_ai_credits')->default(0)->after('trial_scrape_credits');
             }
-            if (!Schema::hasColumn('plans', 'topup_price_multiplier')) {
+            if (! Schema::hasColumn('plans', 'topup_price_multiplier')) {
                 $table->decimal('topup_price_multiplier', 8, 2)->default(1.00)->after('trial_ai_credits');
             }
-            if (!Schema::hasColumn('plans', 'stripe_price_id_monthly')) {
+            if (! Schema::hasColumn('plans', 'stripe_price_id_monthly')) {
                 $table->string('stripe_price_id_monthly')->nullable()->after('topup_price_multiplier');
             }
-            if (!Schema::hasColumn('plans', 'is_active')) {
+            if (! Schema::hasColumn('plans', 'is_active')) {
                 $table->boolean('is_active')->default(true)->after('stripe_price_id_monthly');
             }
         });
@@ -164,74 +164,74 @@ return new class extends Migration
         });
     }
 
-private function seedPlans(): void
-{
-    if (!Schema::hasTable('plans')) {
-        return;
-    }
-
-    $now = now();
-    $hasCreatedAt = Schema::hasColumn('plans', 'created_at');
-    $hasUpdatedAt = Schema::hasColumn('plans', 'updated_at');
-
-    $rows = [
-        [
-            'id'                      => 'free',
-            'name'                    => 'Free',
-            'max_members'             => 1,
-            'max_creators'            => 100,
-            'monthly_scrape_credits'  => 0,
-            'monthly_ai_credits'      => 0,
-            'trial_scrape_credits'    => 200,
-            'trial_ai_credits'        => 20,
-            'topup_price_multiplier'  => 1.25,
-            'features'                => json_encode(['welcome_credits', 'pay_as_you_go_topups']),
-            'is_active'               => true,
-        ],
-        [
-            'id'                      => 'pro',
-            'name'                    => 'Pro',
-            'max_members'             => 5,
-            'max_creators'            => 5000,
-            'monthly_scrape_credits'  => 1500,
-            'monthly_ai_credits'      => 250,
-            'trial_scrape_credits'    => 0,
-            'trial_ai_credits'        => 0,
-            'topup_price_multiplier'  => 1.00,
-            'features'                => json_encode(['team_workspace', 'analytics_basic']),
-            'is_active'               => true,
-        ],
-        [
-            'id'                      => 'enterprise',
-            'name'                    => 'Enterprise',
-            'max_members'             => 25,
-            'max_creators'            => 25000,
-            'monthly_scrape_credits'  => 3000,
-            'monthly_ai_credits'      => 800,
-            'trial_scrape_credits'    => 0,
-            'trial_ai_credits'        => 0,
-            'topup_price_multiplier'  => 0.80,
-            'features'                => json_encode(['team_workspace', 'analytics_advanced', 'priority_support']),
-            'is_active'               => true,
-        ],
-    ];
-
-    foreach ($rows as $row) {
-        if ($hasCreatedAt) {
-            $row['created_at'] = $now;
+    private function seedPlans(): void
+    {
+        if (! Schema::hasTable('plans')) {
+            return;
         }
 
-        if ($hasUpdatedAt) {
-            $row['updated_at'] = $now;
-        }
+        $now = now();
+        $hasCreatedAt = Schema::hasColumn('plans', 'created_at');
+        $hasUpdatedAt = Schema::hasColumn('plans', 'updated_at');
 
-        DB::table('plans')->updateOrInsert(['id' => $row['id']], $row);
+        $rows = [
+            [
+                'id' => 'free',
+                'name' => 'Free',
+                'max_members' => 1,
+                'max_creators' => 100,
+                'monthly_scrape_credits' => 0,
+                'monthly_ai_credits' => 0,
+                'trial_scrape_credits' => 200,
+                'trial_ai_credits' => 20,
+                'topup_price_multiplier' => 1.25,
+                'features' => json_encode(['welcome_credits', 'pay_as_you_go_topups']),
+                'is_active' => true,
+            ],
+            [
+                'id' => 'pro',
+                'name' => 'Pro',
+                'max_members' => 5,
+                'max_creators' => 5000,
+                'monthly_scrape_credits' => 1500,
+                'monthly_ai_credits' => 250,
+                'trial_scrape_credits' => 0,
+                'trial_ai_credits' => 0,
+                'topup_price_multiplier' => 1.00,
+                'features' => json_encode(['team_workspace', 'analytics_basic']),
+                'is_active' => true,
+            ],
+            [
+                'id' => 'enterprise',
+                'name' => 'Enterprise',
+                'max_members' => 25,
+                'max_creators' => 25000,
+                'monthly_scrape_credits' => 3000,
+                'monthly_ai_credits' => 800,
+                'trial_scrape_credits' => 0,
+                'trial_ai_credits' => 0,
+                'topup_price_multiplier' => 0.80,
+                'features' => json_encode(['team_workspace', 'analytics_advanced', 'priority_support']),
+                'is_active' => true,
+            ],
+        ];
+
+        foreach ($rows as $row) {
+            if ($hasCreatedAt) {
+                $row['created_at'] = $now;
+            }
+
+            if ($hasUpdatedAt) {
+                $row['updated_at'] = $now;
+            }
+
+            DB::table('plans')->updateOrInsert(['id' => $row['id']], $row);
+        }
     }
-}
 
     private function bootstrapExistingWorkspaces(): void
     {
-        if (!Schema::hasTable('workspaces')) {
+        if (! Schema::hasTable('workspaces')) {
             return;
         }
 
@@ -247,7 +247,7 @@ private function seedPlans(): void
             }
             $plan = $plans->get($planId) ?: $plans->get('free');
 
-            if (!DB::table('workspace_subscriptions')->where('workspace_id', $workspace->id)->exists()) {
+            if (! DB::table('workspace_subscriptions')->where('workspace_id', $workspace->id)->exists()) {
                 DB::table('workspace_subscriptions')->insert([
                     'id' => (string) Str::uuid(),
                     'workspace_id' => $workspace->id,
@@ -262,7 +262,7 @@ private function seedPlans(): void
                 ]);
             }
 
-            if (!DB::table('workspace_credit_wallets')->where('workspace_id', $workspace->id)->exists()) {
+            if (! DB::table('workspace_credit_wallets')->where('workspace_id', $workspace->id)->exists()) {
                 DB::table('workspace_credit_wallets')->insert([
                     'id' => (string) Str::uuid(),
                     'workspace_id' => $workspace->id,

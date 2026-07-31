@@ -16,7 +16,7 @@ class CreatorRelationshipTimelineService
 {
     public function recordOutreachEvent(OutreachEvent $event, Project $project): void
     {
-        if (!$event->creator_profile_id || !$project->workspace_id) {
+        if (! $event->creator_profile_id || ! $project->workspace_id) {
             return;
         }
 
@@ -134,7 +134,7 @@ class CreatorRelationshipTimelineService
             ->limit(max($limit * 5, 100))
             ->get()
             ->each(function (OutreachEvent $event) use (&$seenProfiles, $items, $limit) {
-                if ($items->count() >= $limit || !$event->creatorProfile) {
+                if ($items->count() >= $limit || ! $event->creatorProfile) {
                     return;
                 }
 
@@ -190,7 +190,7 @@ class CreatorRelationshipTimelineService
             $metadata = is_array($event->metadata) ? $event->metadata : [];
             $dirty = false;
 
-            if (!$event->creator_profile_id) {
+            if (! $event->creator_profile_id) {
                 $profile = $this->resolveProfileForEvent($event);
                 if ($profile) {
                     $event->creator_profile_id = $profile->id;
@@ -341,6 +341,7 @@ class CreatorRelationshipTimelineService
 
         if (Str::contains($eventType, ['sent', 'outreach', 'dm', 'email', 'followup'])) {
             $channel = trim((string) ($event->channel ?: $event->platform));
+
             return $channel !== '' ? sprintf('%s outreach sent', Str::title($channel)) : 'Outreach sent';
         }
 
@@ -356,7 +357,7 @@ class CreatorRelationshipTimelineService
         $parts = [];
 
         if ($event->status) {
-            $parts[] = 'Status: ' . $event->status;
+            $parts[] = 'Status: '.$event->status;
         }
 
         if ($event->notes) {

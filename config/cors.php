@@ -11,7 +11,6 @@ return [
         'https://socialcore.app',
         'https://www.socialcore.app',
 
-
         'http://127.0.0.1:8080',
         'http://localhost:8080',
         'http://192.168.2.218:8080',

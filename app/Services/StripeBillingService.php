@@ -16,87 +16,84 @@ class StripeBillingService
     public function __construct(
         private WorkspaceBillingService $billing,
         private ObservabilityService $observability,
-    )
-    {
-    }
+    ) {}
 
-public function createSubscriptionCheckoutSession(
-    string $workspaceId,
-    string $planId,
-    string $successUrl,
-    string $cancelUrl
-): array {
-    $config = $this->billing->getPlanCheckoutConfig($workspaceId, $planId);
-    [$currentSubscription] = $this->billing->ensureWorkspaceBilling($workspaceId);
-    $billingAccountId = (string) ($currentSubscription->billing_account_id ?: '');
-    $customerId = $this->ensureStripeCustomer($workspaceId);
+    public function createSubscriptionCheckoutSession(
+        string $workspaceId,
+        string $planId,
+        string $successUrl,
+        string $cancelUrl
+    ): array {
+        $config = $this->billing->getPlanCheckoutConfig($workspaceId, $planId);
+        [$currentSubscription] = $this->billing->ensureWorkspaceBilling($workspaceId);
+        $billingAccountId = (string) ($currentSubscription->billing_account_id ?: '');
+        $customerId = $this->ensureStripeCustomer($workspaceId);
 
-    $trialDays = 0;
+        $trialDays = 0;
 
-    $payload = [
-        'customer'               => $customerId,
-        'client_reference_id'    => $workspaceId,
-        'mode'                   => 'subscription',
-        'payment_method_collection' => 'always',
-        'allow_promotion_codes'  => 'true',
-        'success_url'            => $successUrl,
-        'cancel_url'             => $cancelUrl,
-        'metadata' => [
-            'billing_type' => 'subscription_checkout',
-            'workspace_id' => $workspaceId,
-            'billing_account_id' => $billingAccountId,
-            'plan_id'      => $config['id'],
-        ],
-        'subscription_data' => [
+        $payload = [
+            'customer' => $customerId,
+            'client_reference_id' => $workspaceId,
+            'mode' => 'subscription',
+            'payment_method_collection' => 'always',
+            'allow_promotion_codes' => 'true',
+            'success_url' => $successUrl,
+            'cancel_url' => $cancelUrl,
             'metadata' => [
+                'billing_type' => 'subscription_checkout',
                 'workspace_id' => $workspaceId,
                 'billing_account_id' => $billingAccountId,
-                'plan_id'      => $config['id'],
+                'plan_id' => $config['id'],
             ],
-        ],
-        'line_items' => [[
-            'quantity'   => 1,
-            'price_data' => [
-                'currency'   => $config['currency'],
-                'unit_amount' => $config['price_cents'],
-                'recurring'  => ['interval' => 'month'],
-                'product_data' => [
-                    'name'        => 'Social CORE ' . ($config['id'] === 'enterprise' ? 'Agency' : $config['name']),
-                    'description' => sprintf(
-                        'Monthly discovery, enrichment and outreach capacity (%d workflow credits and %d AI drafts).',
-                        $config['monthly_scrape_credits'],
-                        $config['monthly_ai_credits'],
-                    ),
+            'subscription_data' => [
+                'metadata' => [
+                    'workspace_id' => $workspaceId,
+                    'billing_account_id' => $billingAccountId,
+                    'plan_id' => $config['id'],
                 ],
             ],
-        ]],
-    ];
+            'line_items' => [[
+                'quantity' => 1,
+                'price_data' => [
+                    'currency' => $config['currency'],
+                    'unit_amount' => $config['price_cents'],
+                    'recurring' => ['interval' => 'month'],
+                    'product_data' => [
+                        'name' => 'Social CORE '.($config['id'] === 'enterprise' ? 'Agency' : $config['name']),
+                        'description' => sprintf(
+                            'Monthly discovery, enrichment and outreach capacity (%d workflow credits and %d AI drafts).',
+                            $config['monthly_scrape_credits'],
+                            $config['monthly_ai_credits'],
+                        ),
+                    ],
+                ],
+            ]],
+        ];
 
-    $response = $this->request('POST', '/checkout/sessions', $payload);
-    $this->observability->reportBillingEvent($workspaceId, 'subscription_checkout_created', [
-        'stripe_checkout_session_id' => (string) ($response['id'] ?? ''),
-        'plan_id' => $config['id'],
-        'trial_days' => $trialDays,
-        'price_cents' => $config['price_cents'],
-        'currency' => $config['currency'],
-    ], $billingAccountId, (string) ($response['id'] ?? ''));
+        $response = $this->request('POST', '/checkout/sessions', $payload);
+        $this->observability->reportBillingEvent($workspaceId, 'subscription_checkout_created', [
+            'stripe_checkout_session_id' => (string) ($response['id'] ?? ''),
+            'plan_id' => $config['id'],
+            'trial_days' => $trialDays,
+            'price_cents' => $config['price_cents'],
+            'currency' => $config['currency'],
+        ], $billingAccountId, (string) ($response['id'] ?? ''));
 
-    return [
-        'id'  => (string) ($response['id'] ?? ''),
-        'url' => (string) ($response['url'] ?? ''),
-    ];
-}
+        return [
+            'id' => (string) ($response['id'] ?? ''),
+            'url' => (string) ($response['url'] ?? ''),
+        ];
+    }
 
     private function workspaceEligibleForPaidTrial(string $workspaceId, string $planId): bool
-{
-    [$subscription] = $this->billing->ensureWorkspaceBilling($workspaceId);
+    {
+        [$subscription] = $this->billing->ensureWorkspaceBilling($workspaceId);
 
-    $meta   = (array) ($subscription?->metadata ?? []);
-    $usedKey = 'paid_plan_trial_used_' . strtolower($planId);
+        $meta = (array) ($subscription?->metadata ?? []);
+        $usedKey = 'paid_plan_trial_used_'.strtolower($planId);
 
-    return !($meta[$usedKey] ?? false);
-}
-
+        return ! ($meta[$usedKey] ?? false);
+    }
 
     public function createTopupCheckoutSession(string $workspaceId, string $packageId, string $successUrl, string $cancelUrl): array
     {
@@ -167,7 +164,7 @@ public function createSubscriptionCheckoutSession(
     {
         $this->verifyWebhookSignature($payload, $signatureHeader);
         $event = json_decode($payload, true);
-        if (!is_array($event)) {
+        if (! is_array($event)) {
             throw new RuntimeException('Invalid Stripe webhook payload.');
         }
 
@@ -175,7 +172,7 @@ public function createSubscriptionCheckoutSession(
         $type = (string) ($event['type'] ?? '');
         $object = (array) Arr::get($event, 'data.object', []);
 
-        if ($eventId !== '' && !$this->claimWebhookEvent($eventId, $type)) {
+        if ($eventId !== '' && ! $this->claimWebhookEvent($eventId, $type)) {
             return [
                 'received' => true,
                 'type' => $type,
@@ -248,6 +245,7 @@ public function createSubscriptionCheckoutSession(
 
         if ($billingType === 'credit_topup') {
             $this->fulfillTopup($session);
+
             return;
         }
 
@@ -334,7 +332,7 @@ public function createSubscriptionCheckoutSession(
             ->where('stripe_subscription_id', $subscriptionId)
             ->first();
 
-        if (!$existing && $customerId !== '') {
+        if (! $existing && $customerId !== '') {
             $existing = WorkspaceSubscription::query()
                 ->where('stripe_customer_id', $customerId)
                 ->first();
@@ -381,16 +379,16 @@ public function createSubscriptionCheckoutSession(
             $record->current_period_start = $periodStart;
             $record->current_period_end = $periodEnd;
             $record->trial_ends_at = $trialEndsAt;
-$metadata = (array) ($record->metadata ?? []);
-$metadata['stripe_synced_at'] = now()->toIso8601String();
+            $metadata = (array) ($record->metadata ?? []);
+            $metadata['stripe_synced_at'] = now()->toIso8601String();
 
-if ($trialEndsAt !== null && in_array($planId, ['pro', 'enterprise'], true)) {
-    $metadata['paid_plan_trial_used_' . $planId] = true;
-}
+            if ($trialEndsAt !== null && in_array($planId, ['pro', 'enterprise'], true)) {
+                $metadata['paid_plan_trial_used_'.$planId] = true;
+            }
 
-$record->metadata = $metadata;
-$record->billing_account_id = $effectiveBillingAccountId ?: $record->billing_account_id;
-$record->save();
+            $record->metadata = $metadata;
+            $record->billing_account_id = $effectiveBillingAccountId ?: $record->billing_account_id;
+            $record->save();
 
             if ($effectiveBillingAccountId !== '') {
                 DB::table('billing_accounts')->where('id', $effectiveBillingAccountId)->update(['plan_id' => $planId, 'updated_at' => now()]);
@@ -432,7 +430,7 @@ $record->save();
         }
 
         $workspace = DB::table('workspaces')->where('id', $workspaceId)->first();
-        if (!$workspace) {
+        if (! $workspace) {
             throw new RuntimeException('Workspace not found for Stripe billing.');
         }
 
@@ -470,38 +468,38 @@ $record->save();
     }
 
     private function resolveWorkspaceContact(string $workspaceId): array
-{
-    $workspace = DB::table('workspaces')->where('id', $workspaceId)->first();
-    if (!$workspace) {
-        return [];
-    }
+    {
+        $workspace = DB::table('workspaces')->where('id', $workspaceId)->first();
+        if (! $workspace) {
+            return [];
+        }
 
-    if (!empty($workspace->owner_id)) {
-        $owner = DB::table('users')
-            ->where('supabase_user_id', $workspace->owner_id)
+        if (! empty($workspace->owner_id)) {
+            $owner = DB::table('users')
+                ->where('supabase_user_id', $workspace->owner_id)
+                ->first();
+
+            if ($owner) {
+                return [
+                    'email' => $owner->email,
+                    'name' => $owner->name,
+                ];
+            }
+        }
+
+        $member = DB::table('workspace_members')
+            ->join('users', function ($join) {
+                $join->on('users.supabase_user_id', '=', 'workspace_members.user_id');
+            })
+            ->where('workspace_members.workspace_id', $workspaceId)
+            ->orderByRaw("CASE workspace_members.role WHEN 'owner' THEN 1 WHEN 'admin' THEN 2 ELSE 3 END")
+            ->select('users.email', 'users.name')
             ->first();
 
-        if ($owner) {
-            return [
-                'email' => $owner->email,
-                'name' => $owner->name,
-            ];
-        }
+        return $member
+            ? ['email' => $member->email, 'name' => $member->name]
+            : [];
     }
-
-    $member = DB::table('workspace_members')
-        ->join('users', function ($join) {
-            $join->on('users.supabase_user_id', '=', 'workspace_members.user_id');
-        })
-        ->where('workspace_members.workspace_id', $workspaceId)
-        ->orderByRaw("CASE workspace_members.role WHEN 'owner' THEN 1 WHEN 'admin' THEN 2 ELSE 3 END")
-        ->select('users.email', 'users.name')
-        ->first();
-
-    return $member
-        ? ['email' => $member->email, 'name' => $member->name]
-        : [];
-}
 
     private function assertStripeMetadataMatchesWorkspace(string $workspaceId, string $billingAccountId): void
     {
@@ -532,7 +530,7 @@ $record->save();
 
         $timestamp = Arr::first($parts['t'] ?? []);
         $signatures = $parts['v1'] ?? [];
-        if (!$timestamp || $signatures === []) {
+        if (! $timestamp || $signatures === []) {
             throw new RuntimeException('Invalid Stripe signature header.');
         }
 
@@ -541,7 +539,7 @@ $record->save();
             throw new RuntimeException('Stripe webhook timestamp outside tolerance.');
         }
 
-        $signedPayload = $timestamp . '.' . $payload;
+        $signedPayload = $timestamp.'.'.$payload;
         $expected = hash_hmac('sha256', $signedPayload, $secret);
         foreach ($signatures as $signature) {
             if (hash_equals($expected, $signature)) {
@@ -619,12 +617,13 @@ $record->save();
 
     private function retrieveSubscription(string $subscriptionId): array
     {
-        return $this->request('GET', '/subscriptions/' . urlencode($subscriptionId));
+        return $this->request('GET', '/subscriptions/'.urlencode($subscriptionId));
     }
 
     private function normalizeSubscriptionStatus(string $status): string
     {
         $status = strtolower(trim($status));
+
         return match ($status) {
             'active', 'trialing', 'past_due', 'unpaid', 'canceled', 'incomplete', 'incomplete_expired' => $status,
             default => 'active',
@@ -636,7 +635,7 @@ $record->save();
         if ($timestamp === null || $timestamp === '') {
             return null;
         }
-        if (!is_numeric($timestamp)) {
+        if (! is_numeric($timestamp)) {
             return null;
         }
 
@@ -661,13 +660,13 @@ $record->save();
             $response = $client->asForm()->post($path, $this->flatten($payload));
         }
 
-        if (!$response->successful()) {
+        if (! $response->successful()) {
             $message = (string) ($response->json('error.message') ?: $response->body());
-            throw new RuntimeException('Stripe API request failed: ' . $message);
+            throw new RuntimeException('Stripe API request failed: '.$message);
         }
 
         $json = $response->json();
-        if (!is_array($json)) {
+        if (! is_array($json)) {
             throw new RuntimeException('Stripe API returned an invalid response.');
         }
 
@@ -681,7 +680,7 @@ $record->save();
             if ($value === null || $value === '') {
                 continue;
             }
-            $composite = $prefix === '' ? (string) $key : $prefix . '[' . $key . ']';
+            $composite = $prefix === '' ? (string) $key : $prefix.'['.$key.']';
             if (is_array($value)) {
                 $flat += $this->flatten($value, $composite);
             } elseif (is_bool($value)) {
@@ -690,6 +689,7 @@ $record->save();
                 $flat[$composite] = (string) $value;
             }
         }
+
         return $flat;
     }
 }

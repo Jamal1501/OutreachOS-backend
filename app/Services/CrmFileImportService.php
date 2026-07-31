@@ -4,7 +4,6 @@ namespace App\Services;
 
 use App\Models\Creator;
 use App\Models\CreatorProfile;
-use App\Models\Project;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -38,9 +37,7 @@ class CrmFileImportService
     public function __construct(
         private ProjectResolverService $projects,
         private AvatarCacheService $avatarCache,
-    )
-    {
-    }
+    ) {}
 
     public function previewCreatorsCsv(UploadedFile $file): array
     {
@@ -75,6 +72,7 @@ class CrmFileImportService
 
                 if ($platform === '' || $handle === '') {
                     $skipped++;
+
                     continue;
                 }
 
@@ -87,14 +85,14 @@ class CrmFileImportService
                     ->where('external_identity_key', $identityKey)
                     ->first();
 
-                if (!$creator && $email) {
+                if (! $creator && $email) {
                     $creator = Creator::query()
                         ->where('project_id', $project->id)
                         ->where('primary_email', $email)
                         ->first();
                 }
 
-                if (!$creator) {
+                if (! $creator) {
                     $creator = new Creator([
                         'project_id' => $project->id,
                         'external_identity_key' => $identityKey,
@@ -123,7 +121,7 @@ class CrmFileImportService
                     ->where('handle', $handle)
                     ->first();
 
-                $wasNewProfile = !$profile;
+                $wasNewProfile = ! $profile;
                 $profile ??= new CreatorProfile([
                     'project_id' => $project->id,
                     'platform' => $platform,
@@ -150,7 +148,7 @@ class CrmFileImportService
                 $profile->accepted_flag = $this->parseYesNo($this->value($row, 'accepted', $mapping)) ?? (bool) $profile->accepted_flag;
                 $profile->follow_up_needed = $this->parseYesNo($this->value($row, 'follow_up_needed', $mapping)) ?? (bool) $profile->follow_up_needed;
                 $profile->source_provider = 'file_upload';
-                $profile->source_reference = 'csv:' . $file->getClientOriginalName() . ':' . ($index + 2);
+                $profile->source_reference = 'csv:'.$file->getClientOriginalName().':'.($index + 2);
                 $profile->source_metadata = array_filter(array_merge((array) ($profile->source_metadata ?? []), [
                     'import_filename' => $file->getClientOriginalName(),
                     'import_row_number' => $index + 2,
@@ -182,12 +180,12 @@ class CrmFileImportService
     private function readCsvData(UploadedFile $file): array
     {
         $path = $file->getRealPath();
-        if (!$path || !is_readable($path)) {
+        if (! $path || ! is_readable($path)) {
             throw new RuntimeException('Uploaded file could not be read.');
         }
 
         $handle = fopen($path, 'rb');
-        if (!$handle) {
+        if (! $handle) {
             throw new RuntimeException('Uploaded file could not be opened.');
         }
 
@@ -200,7 +198,7 @@ class CrmFileImportService
             rewind($handle);
 
             $headers = fgetcsv($handle, 0, $delimiter);
-            if (!is_array($headers) || $headers === []) {
+            if (! is_array($headers) || $headers === []) {
                 return [];
             }
 
@@ -356,20 +354,20 @@ class CrmFileImportService
         $handle = preg_replace('#^https?://(www\.)?(instagram\.com/|tiktok\.com/@?)#i', '', $handle) ?? $handle;
         $handle = trim($handle, "/ \t\n\r\0\x0B");
 
-        return Str::startsWith($handle, '@') ? $handle : '@' . $handle;
+        return Str::startsWith($handle, '@') ? $handle : '@'.$handle;
     }
 
     private function creatorIdentityKey(string $platform, string $handle, ?string $email, ?string $displayName): string
     {
         if ($email) {
-            return 'email:' . Str::lower($email);
+            return 'email:'.Str::lower($email);
         }
 
         if ($displayName) {
-            return 'name:' . Str::lower($displayName);
+            return 'name:'.Str::lower($displayName);
         }
 
-        return 'profile:' . $platform . '|' . Str::lower($handle);
+        return 'profile:'.$platform.'|'.Str::lower($handle);
     }
 
     private function normalizeLifecycleState(string $status): string

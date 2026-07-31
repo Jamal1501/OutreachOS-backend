@@ -14,6 +14,7 @@ class CreatorProfile extends Model
     use HasUuids;
 
     public $incrementing = false;
+
     protected $keyType = 'string';
 
     protected $fillable = [
@@ -58,23 +59,23 @@ class CreatorProfile extends Model
     protected function casts(): array
     {
         return [
-            'followers_count'      => 'integer',
-            'engagement_rate_pct'  => 'decimal:2',
-            'last_content_at'      => 'datetime',
-            'value_score'          => 'integer',
-            'accepted_flag'        => 'boolean',
-            'follow_up_needed'     => 'boolean',
-            'dm_sent_at'           => 'datetime',
-            'responded_at'         => 'datetime',
+            'followers_count' => 'integer',
+            'engagement_rate_pct' => 'decimal:2',
+            'last_content_at' => 'datetime',
+            'value_score' => 'integer',
+            'accepted_flag' => 'boolean',
+            'follow_up_needed' => 'boolean',
+            'dm_sent_at' => 'datetime',
+            'responded_at' => 'datetime',
             'comment_attempted_at' => 'datetime',
-            'automation_state'      => 'array',
-            'last_outreach_at'      => 'datetime',
-            'follow_up_due_at'      => 'datetime',
-            'next_action_at'        => 'datetime',
-            'waiting_until'         => 'datetime',
+            'automation_state' => 'array',
+            'last_outreach_at' => 'datetime',
+            'follow_up_due_at' => 'datetime',
+            'next_action_at' => 'datetime',
+            'waiting_until' => 'datetime',
             'task_suppressed_until' => 'datetime',
-            'source_metadata'      => 'array',
-            'last_synced_at'       => 'datetime',
+            'source_metadata' => 'array',
+            'last_synced_at' => 'datetime',
         ];
     }
 

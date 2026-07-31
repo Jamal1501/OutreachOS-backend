@@ -4,9 +4,7 @@ namespace App\Services;
 
 class AiDiscoveryBriefService
 {
-    public function __construct(private AiGatewayService $ai)
-    {
-    }
+    public function __construct(private AiGatewayService $ai) {}
 
     public function parse(string $brief, array $context = []): array
     {
@@ -112,12 +110,12 @@ Rules:
 PROMPT;
 
         $userPrompt = "Platform: {$platform}\n"
-            . ($projectContext !== '' ? "Brand / project context:\n{$projectContext}\n\n" : '')
-            . "User brief:\n{$brief}\n\n"
-            . "Return structured discovery criteria for a creator discovery pipeline."
-            . "If activity recency is missing, use 30 days."
-            . "If gender or location is not explicit, only infer them when the wording strongly implies it."
-            . "Give one clear primary hashtag and up to four stronger optional hashtags, not just bland surface-level tags.";
+            .($projectContext !== '' ? "Brand / project context:\n{$projectContext}\n\n" : '')
+            ."User brief:\n{$brief}\n\n"
+            .'Return structured discovery criteria for a creator discovery pipeline.'
+            .'If activity recency is missing, use 30 days.'
+            .'If gender or location is not explicit, only infer them when the wording strongly implies it.'
+            .'Give one clear primary hashtag and up to four stronger optional hashtags, not just bland surface-level tags.';
 
         try {
             $result = $this->ai->structured(
@@ -240,7 +238,7 @@ PROMPT;
 
         $notes = ['Fallback parsing was used. Review generated hashtags before trusting them blindly.'];
         if ($failureMessage) {
-            $notes[] = 'Parser fallback reason: ' . $failureMessage;
+            $notes[] = 'Parser fallback reason: '.$failureMessage;
         }
 
         return [
@@ -283,7 +281,7 @@ PROMPT;
             return [$min, $max];
         }
 
-        $haystack = strtolower(trim($brief . ' ' . (string) ($context['projectContext'] ?? '')));
+        $haystack = strtolower(trim($brief.' '.(string) ($context['projectContext'] ?? '')));
         $bands = [
             ['tokens' => ['nano creator', 'nano creators', 'under 10k', 'under 10000'], 'min' => 1000, 'max' => 10000],
             ['tokens' => ['micro creator', 'micro creators', 'micro-influencer', 'micro influencers'], 'min' => 5000, 'max' => 50000],
@@ -338,7 +336,7 @@ PROMPT;
     {
         $items = [];
         foreach ($values as $value) {
-            if (!is_scalar($value)) {
+            if (! is_scalar($value)) {
                 continue;
             }
             $item = trim((string) $value);
@@ -362,7 +360,7 @@ PROMPT;
     {
         $normalized = [];
         foreach ($values as $value) {
-            if (!is_scalar($value)) {
+            if (! is_scalar($value)) {
                 continue;
             }
             $token = strtolower(trim((string) $value));
@@ -395,7 +393,7 @@ PROMPT;
     {
         $hashtags = [];
         foreach ($terms as $term) {
-            if (!is_scalar($term)) {
+            if (! is_scalar($term)) {
                 continue;
             }
             $clean = strtolower(trim((string) $term));
@@ -412,7 +410,7 @@ PROMPT;
             }
 
             if (count($parts) >= 2) {
-                $hashtags[] = $parts[0] . $parts[1];
+                $hashtags[] = $parts[0].$parts[1];
             }
         }
 

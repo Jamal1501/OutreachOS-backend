@@ -3,11 +3,11 @@
 namespace App\Services;
 
 use Illuminate\Queue\Events\JobFailed;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
 use Throwable;
 
@@ -15,7 +15,7 @@ class ObservabilityService
 {
     public function reportException(Throwable $exception, array $context = []): void
     {
-        if (!$this->errorTrackingEnabled()) {
+        if (! $this->errorTrackingEnabled()) {
             return;
         }
 
@@ -40,7 +40,7 @@ class ObservabilityService
 
     public function reportWebhookFailure(string $provider, string $eventId, string $type, Throwable|string $error, array $context = []): void
     {
-        $this->sendAlert('webhook.failed', ucfirst($provider) . ' webhook failed', [
+        $this->sendAlert('webhook.failed', ucfirst($provider).' webhook failed', [
             'provider' => $provider,
             'event_id' => $eventId,
             'type' => $type,
@@ -56,12 +56,12 @@ class ObservabilityService
             'observed_at' => now()->toIso8601String(),
         ], $metadata);
 
-        $this->audit($workspaceId, 'billing_' . $eventType, 'billing', $subjectId, $metadata);
+        $this->audit($workspaceId, 'billing_'.$eventType, 'billing', $subjectId, $metadata);
     }
 
     public function audit(string $workspaceId, string $eventType, ?string $subjectType = null, ?string $subjectId = null, array $metadata = [], ?string $actorUserId = null): void
     {
-        if ($workspaceId === '' || !Schema::hasTable('workspace_audit_events')) {
+        if ($workspaceId === '' || ! Schema::hasTable('workspace_audit_events')) {
             return;
         }
 
@@ -99,7 +99,7 @@ class ObservabilityService
 
         Log::channel(config('logging.default'))->log($severity === 'critical' ? 'critical' : ($severity === 'error' ? 'error' : 'warning'), $message, $alert);
 
-        if (!$this->alertsEnabled()) {
+        if (! $this->alertsEnabled()) {
             return;
         }
 
@@ -149,6 +149,7 @@ class ObservabilityService
             $normalizedKey = Str::lower((string) $key);
             if (Str::contains($normalizedKey, ['token', 'secret', 'password', 'authorization', 'api_key', 'apikey'])) {
                 $redacted[$key] = '[redacted]';
+
                 continue;
             }
 

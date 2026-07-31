@@ -12,8 +12,7 @@ class AiGatewayService
     public function __construct(
         private ProviderUsageLogger $usageLogger,
         private WorkspaceBillingService $billing,
-    ) {
-    }
+    ) {}
 
     public function structured(string $systemPrompt, string $userPrompt, string $toolName, string $description, array $schema, float $temperature = 0.2): array
     {
@@ -81,7 +80,7 @@ class AiGatewayService
             throw new RuntimeException('AI rate limit exceeded. Try again in a minute.');
         }
 
-        if (!$response->successful()) {
+        if (! $response->successful()) {
             if ($usageReservationId) {
                 $this->billing->refundReservation($usageReservationId, 'AI request failed', [
                     'status' => $response->status(),
@@ -92,10 +91,10 @@ class AiGatewayService
                 'model' => $model,
                 'operation' => $toolName,
                 'request_payload' => $this->redactRequestPayload($requestPayload),
-                'error_message' => 'AI request failed: ' . $response->status() . ' ' . $response->body(),
+                'error_message' => 'AI request failed: '.$response->status().' '.$response->body(),
             ]);
 
-            throw new RuntimeException('AI request failed: ' . $response->status() . ' ' . $response->body());
+            throw new RuntimeException('AI request failed: '.$response->status().' '.$response->body());
         }
 
         $payload = $response->json();
@@ -104,7 +103,7 @@ class AiGatewayService
 
         $arguments = Arr::get($payload, 'choices.0.message.tool_calls.0.function.arguments');
 
-        if (!is_string($arguments) || trim($arguments) === '') {
+        if (! is_string($arguments) || trim($arguments) === '') {
             if ($usageReservationId) {
                 $this->billing->refundReservation($usageReservationId, 'AI response missing structured output', [
                     'openai_id' => $payload['id'] ?? null,
@@ -114,7 +113,7 @@ class AiGatewayService
         }
 
         $decoded = json_decode($arguments, true);
-        if (!is_array($decoded)) {
+        if (! is_array($decoded)) {
             if ($usageReservationId) {
                 $this->billing->refundReservation($usageReservationId, 'AI response contained invalid structured output', [
                     'openai_id' => $payload['id'] ?? null,
@@ -151,32 +150,32 @@ class AiGatewayService
 
     private function redactRequestPayload(array $requestPayload): array
     {
-        $messages = (array) ($requestPayload["messages"] ?? []);
+        $messages = (array) ($requestPayload['messages'] ?? []);
         $messageSummaries = [];
 
         foreach ($messages as $message) {
-            $content = (string) ($message["content"] ?? "");
+            $content = (string) ($message['content'] ?? '');
             $messageSummaries[] = [
-                "role" => $message["role"] ?? null,
-                "content_sha256" => $content !== "" ? hash("sha256", $content) : null,
-                "content_length" => strlen($content),
+                'role' => $message['role'] ?? null,
+                'content_sha256' => $content !== '' ? hash('sha256', $content) : null,
+                'content_length' => strlen($content),
             ];
         }
 
         return [
-            "model" => $requestPayload["model"] ?? null,
-            "temperature" => $requestPayload["temperature"] ?? null,
-            "tool_choice" => $requestPayload["tool_choice"]["function"]["name"] ?? null,
-            "tools" => array_map(fn ($tool) => [
-                "type" => $tool["type"] ?? null,
-                "function" => [
-                    "name" => $tool["function"]["name"] ?? null,
-                    "description" => $tool["function"]["description"] ?? null,
+            'model' => $requestPayload['model'] ?? null,
+            'temperature' => $requestPayload['temperature'] ?? null,
+            'tool_choice' => $requestPayload['tool_choice']['function']['name'] ?? null,
+            'tools' => array_map(fn ($tool) => [
+                'type' => $tool['type'] ?? null,
+                'function' => [
+                    'name' => $tool['function']['name'] ?? null,
+                    'description' => $tool['function']['description'] ?? null,
                 ],
-            ], (array) ($requestPayload["tools"] ?? [])),
-            "messages" => $messageSummaries,
-            "redacted" => true,
-            "redaction_reason" => "Prompt content may contain customer, creator, or project personal data.",
+            ], (array) ($requestPayload['tools'] ?? [])),
+            'messages' => $messageSummaries,
+            'redacted' => true,
+            'redaction_reason' => 'Prompt content may contain customer, creator, or project personal data.',
         ];
     }
 

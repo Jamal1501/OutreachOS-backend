@@ -101,7 +101,7 @@ class ApifyRowMapper
     {
         $platform = $context['platform'] ?? null;
 
-        if (!$platform) {
+        if (! $platform) {
             $url = (string) Arr::get($item, 'url', Arr::get($item, 'profile_url', Arr::get($item, 'input_url', '')));
             $platform = Str::contains($url, 'instagram.com') ? 'instagram' : (Str::contains($url, 'tiktok.com') ? 'tiktok' : null);
         }
@@ -183,14 +183,14 @@ class ApifyRowMapper
     {
         $posts = array_is_list($itemOrPosts) ? $itemOrPosts : Arr::get($itemOrPosts, 'latestPosts', Arr::get($itemOrPosts, 'latest_posts', []));
 
-        if (!is_array($posts) || count($posts) === 0) {
+        if (! is_array($posts) || count($posts) === 0) {
             return '';
         }
 
         $values = [];
 
         foreach ($posts as $post) {
-            $value = Arr::get($post, $metric, Arr::get($post, 'stats.' . $metric));
+            $value = Arr::get($post, $metric, Arr::get($post, 'stats.'.$metric));
             if (is_numeric($value)) {
                 $values[] = (float) $value;
             }
@@ -237,7 +237,7 @@ class ApifyRowMapper
             return '';
         }
 
-        return str_starts_with($value, '@') ? $value : '@' . $value;
+        return str_starts_with($value, '@') ? $value : '@'.$value;
     }
 
     private function extractProfileUrl(array $item, string $platform, ?string $username = null): string
@@ -286,12 +286,13 @@ class ApifyRowMapper
             return '';
         }
 
-        if (!Str::contains($candidate, 'tiktok.com')) {
+        if (! Str::contains($candidate, 'tiktok.com')) {
             return '';
         }
 
         if (Str::contains($candidate, '/video/')) {
             $username = trim($username);
+
             return $username !== '' ? "https://www.tiktok.com/@{$username}" : '';
         }
 
@@ -336,7 +337,7 @@ class ApifyRowMapper
 
         foreach ($rows as $row) {
             $key = match ($sheetName) {
-                'IG_Profile_URL_Queue', 'TikTok_Profile_URL_Queue', 'Profile_URL_Queue_All' => strtolower(trim((string) ($row[0] ?? ''))) . '|' . strtolower(trim((string) ($row[1] ?? ''))) . '|' . strtolower(trim((string) ($row[2] ?? ''))),
+                'IG_Profile_URL_Queue', 'TikTok_Profile_URL_Queue', 'Profile_URL_Queue_All' => strtolower(trim((string) ($row[0] ?? ''))).'|'.strtolower(trim((string) ($row[1] ?? ''))).'|'.strtolower(trim((string) ($row[2] ?? ''))),
                 'Instagram_Profile_Enriched', 'TikTok_Profile_Enriched' => strtolower(trim((string) ($row[1] ?? $row[2] ?? $row[0] ?? ''))),
                 default => md5(json_encode($row)),
             };
@@ -345,9 +346,10 @@ class ApifyRowMapper
                 $key = md5(json_encode($row));
             }
 
-            if (!isset($seen[$key])) {
+            if (! isset($seen[$key])) {
                 $seen[$key] = count($unique);
                 $unique[] = $row;
+
                 continue;
             }
 

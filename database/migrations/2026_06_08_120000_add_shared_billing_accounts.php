@@ -50,7 +50,7 @@ return new class extends Migration
     {
         $tables = ['workspaces', 'workspace_subscriptions', 'workspace_credit_wallets', 'workspace_usage_events', 'credit_purchases'];
         foreach ($tables as $tableName) {
-            if (!Schema::hasTable($tableName) || Schema::hasColumn($tableName, 'billing_account_id')) {
+            if (! Schema::hasTable($tableName) || Schema::hasColumn($tableName, 'billing_account_id')) {
                 continue;
             }
 
@@ -63,7 +63,7 @@ return new class extends Migration
 
     private function backfillBillingAccounts(): void
     {
-        if (!Schema::hasTable('workspaces') || !Schema::hasTable('billing_accounts')) {
+        if (! Schema::hasTable('workspaces') || ! Schema::hasTable('billing_accounts')) {
             return;
         }
 
@@ -71,7 +71,7 @@ return new class extends Migration
         $groups = [];
 
         foreach ($workspaces as $workspace) {
-            $owner = trim((string) ($workspace->owner_id ?? '')) ?: 'workspace:' . $workspace->id;
+            $owner = trim((string) ($workspace->owner_id ?? '')) ?: 'workspace:'.$workspace->id;
             $groups[$owner][] = $workspace;
         }
 
@@ -88,7 +88,7 @@ return new class extends Migration
                 [
                     'owner_user_id' => $owner,
                     'primary_workspace_id' => $primary->id,
-                    'name' => ($primary->name ?? 'SocialCore') . ' billing',
+                    'name' => ($primary->name ?? 'SocialCore').' billing',
                     'plan_id' => $planId,
                     'status' => 'active',
                     'metadata' => json_encode([
@@ -134,12 +134,13 @@ return new class extends Migration
                 $best = $plan;
             }
         }
+
         return in_array($best, ['free', 'pro', 'enterprise'], true) ? $best : 'free';
     }
 
     private function consolidateSubscription(string $accountId, string $primaryWorkspaceId, array $workspaceIds, string $planId, $now): void
     {
-        if (!Schema::hasTable('workspace_subscriptions')) {
+        if (! Schema::hasTable('workspace_subscriptions')) {
             return;
         }
 
@@ -172,7 +173,7 @@ return new class extends Migration
 
     private function consolidateWallet(string $accountId, string $primaryWorkspaceId, array $workspaceIds, $now): void
     {
-        if (!Schema::hasTable('workspace_credit_wallets')) {
+        if (! Schema::hasTable('workspace_credit_wallets')) {
             return;
         }
 

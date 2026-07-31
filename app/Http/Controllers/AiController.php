@@ -10,7 +10,6 @@ use Illuminate\Http\Request;
 
 class AiController extends Controller
 {
-
     public function parseDiscoveryBrief(Request $request)
     {
         $validated = $request->validate([
@@ -26,13 +25,13 @@ class AiController extends Controller
             ]),
         ]);
     }
+
     public function __construct(
         private AiScoringService $scoring,
         private AiPersonalizationService $personalization,
         private AiDuplicateDetectionService $duplicates,
         private AiDiscoveryBriefService $briefs,
-    ) {
-    }
+    ) {}
 
     public function scoreCreators(Request $request)
     {

@@ -56,14 +56,14 @@ class ResolveWorkspaceContext
             30,
             fn () => Workspace::query()->find($workspaceId)
         );
-        if (!$workspace) {
+        if (! $workspace) {
             return response()->json([
                 'error' => 'Workspace not found.',
             ], 404);
         }
 
         $settings = (array) ($workspace->settings ?? []);
-        if (!empty($settings['deletedAt'])) {
+        if (! empty($settings['deletedAt'])) {
             return response()->json([
                 'error' => 'Workspace not found.',
             ], 404);
@@ -80,7 +80,7 @@ class ResolveWorkspaceContext
                     ->first()
             );
 
-            if (!$membership) {
+            if (! $membership) {
                 return response()->json([
                     'error' => 'You do not have access to this workspace.',
                 ], 403);
@@ -94,7 +94,7 @@ class ResolveWorkspaceContext
         $workbookId = trim((string) ($settings['workspaceDataKey'] ?? $settings['workbookId'] ?? ''));
 
         if ($workbookId === '') {
-            $workbookId = 'workspace:' . ($workspace->slug ?: $workspace->id);
+            $workbookId = 'workspace:'.($workspace->slug ?: $workspace->id);
         }
 
         $request->attributes->set('workspace', $workspace);

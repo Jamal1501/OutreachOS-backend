@@ -16,8 +16,7 @@ class OperationalMirrorService
     public function __construct(
         private LegacyWorkbookStore $sheets,
         private ProjectResolverService $projects,
-    ) {
-    }
+    ) {}
 
     public function enabled(): bool
     {
@@ -31,7 +30,7 @@ class OperationalMirrorService
 
     public function syncCreators(string $sheetId, ?array $rowNumbers = null): array
     {
-        if (!$this->enabled() || !config('outreach.sync.crm', true)) {
+        if (! $this->enabled() || ! config('outreach.sync.crm', true)) {
             return ['synced' => 0];
         }
 
@@ -74,7 +73,7 @@ class OperationalMirrorService
                         'dm_sent_at' => $this->parseDateTime($row['DM_Sent_Date'] ?? null),
                         'responded_at' => $this->parseDateTime($row['Response_Date'] ?? null),
                         'source_provider' => 'legacy_workbook',
-                        'source_reference' => 'Creators_CRM:' . (int) ($row['_row_number'] ?? 0),
+                        'source_reference' => 'Creators_CRM:'.(int) ($row['_row_number'] ?? 0),
                         'source_metadata' => [
                             'sheet_row_number' => (int) ($row['_row_number'] ?? 0),
                             'angle_assigned' => $this->nullableString($row['Angle_Assigned'] ?? null),
@@ -98,7 +97,7 @@ class OperationalMirrorService
 
     public function syncMessageTemplates(string $sheetId, ?array $rowNumbers = null): array
     {
-        if (!$this->enabled() || !config('outreach.sync.messages', true)) {
+        if (! $this->enabled() || ! config('outreach.sync.messages', true)) {
             return ['synced' => 0];
         }
 
@@ -120,7 +119,7 @@ class OperationalMirrorService
                 MessageTemplate::updateOrCreate(
                     [
                         'project_id' => $project->id,
-                        'angle_id' => $angleId !== '' ? $angleId : 'sheet-row:' . $rowNumber,
+                        'angle_id' => $angleId !== '' ? $angleId : 'sheet-row:'.$rowNumber,
                         'platform' => strtolower(trim((string) ($row['Best_For_Platform'] ?? 'instagram'))),
                         'stage' => (string) ($meta['stage'] ?? 'cold_invite'),
                     ],
@@ -130,7 +129,7 @@ class OperationalMirrorService
                         'notes' => (string) ($meta['notes'] ?? ''),
                         'psychological_trigger' => (string) ($meta['trigger'] ?? ''),
                         'metadata' => [
-                            'source_reference' => 'Message_Library:' . $rowNumber,
+                            'source_reference' => 'Message_Library:'.$rowNumber,
                             'source_row_number' => $rowNumber,
                         ],
                     ],
@@ -145,7 +144,7 @@ class OperationalMirrorService
 
     public function deleteMessageTemplateByRowNumber(string $sheetId, int $rowNumber): void
     {
-        if (!$this->enabled() || !config('outreach.sync.messages', true) || $rowNumber <= 0) {
+        if (! $this->enabled() || ! config('outreach.sync.messages', true) || $rowNumber <= 0) {
             return;
         }
 
@@ -155,14 +154,14 @@ class OperationalMirrorService
             ->where('project_id', $project->id)
             ->where(function ($query) use ($rowNumber) {
                 $query->where('metadata->source_row_number', $rowNumber)
-                    ->orWhere('metadata->source_reference', 'Message_Library:' . $rowNumber);
+                    ->orWhere('metadata->source_reference', 'Message_Library:'.$rowNumber);
             })
             ->delete();
     }
 
     public function syncTasks(string $sheetId, ?array $taskIds = null): array
     {
-        if (!$this->enabled() || !config('outreach.sync.tasks', true)) {
+        if (! $this->enabled() || ! config('outreach.sync.tasks', true)) {
             return ['synced' => 0];
         }
 
@@ -189,7 +188,7 @@ class OperationalMirrorService
                 Task::updateOrCreate(
                     [
                         'project_id' => $project->id,
-                        'external_task_key' => $externalTaskKey !== '' ? $externalTaskKey : 'sheet-row:' . (int) ($row['_row_number'] ?? 0),
+                        'external_task_key' => $externalTaskKey !== '' ? $externalTaskKey : 'sheet-row:'.(int) ($row['_row_number'] ?? 0),
                     ],
                     [
                         'creator_profile_id' => $profile?->id,
@@ -203,7 +202,7 @@ class OperationalMirrorService
                         'open_url' => trim((string) ($row['Open_URL'] ?? '')) ?: null,
                         'message_draft' => trim((string) ($row['Message_Draft'] ?? '')) ?: null,
                         'source_provider' => 'legacy_workbook',
-                        'source_reference' => 'Task_Queue:' . (int) ($row['_row_number'] ?? 0),
+                        'source_reference' => 'Task_Queue:'.(int) ($row['_row_number'] ?? 0),
                         'notes' => trim((string) ($row['Notes'] ?? '')) ?: null,
                         'completed_at' => $this->parseDateTime($row['Completed_At'] ?? null),
                         'metadata' => [
@@ -222,7 +221,7 @@ class OperationalMirrorService
 
     public function syncOutreachEvents(string $sheetId, ?array $eventIds = null): array
     {
-        if (!$this->enabled() || !config('outreach.sync.outreach', true)) {
+        if (! $this->enabled() || ! config('outreach.sync.outreach', true)) {
             return ['synced' => 0];
         }
 
@@ -236,7 +235,7 @@ class OperationalMirrorService
 
             $synced = 0;
             foreach ($rows as $row) {
-                $eventKey = trim((string) ($row['Event_ID'] ?? '')) ?: 'sheet-row:' . (int) ($row['_row_number'] ?? 0);
+                $eventKey = trim((string) ($row['Event_ID'] ?? '')) ?: 'sheet-row:'.(int) ($row['_row_number'] ?? 0);
                 $platform = strtolower(trim((string) ($row['Platform'] ?? '')));
                 $handle = $this->normalizeHandle((string) ($row['Handle'] ?? ''));
                 $profile = $this->findCreatorProfile($project, $platform, $handle);
@@ -267,7 +266,7 @@ class OperationalMirrorService
                         'url' => trim((string) ($row['URL'] ?? '')) ?: null,
                         'notes' => trim((string) ($row['Notes'] ?? '')) ?: null,
                         'metadata' => [
-                            'source_reference' => 'Outreach_Log:' . (int) ($row['_row_number'] ?? 0),
+                            'source_reference' => 'Outreach_Log:'.(int) ($row['_row_number'] ?? 0),
                             'sheet_row_number' => (int) ($row['_row_number'] ?? 0),
                         ],
                     ],
@@ -287,7 +286,7 @@ class OperationalMirrorService
 
     private function filterRowsByNumbers(array $rows, ?array $rowNumbers): array
     {
-        if (!is_array($rowNumbers) || $rowNumbers === []) {
+        if (! is_array($rowNumbers) || $rowNumbers === []) {
             return $rows;
         }
 
@@ -306,14 +305,14 @@ class OperationalMirrorService
             ->where('external_identity_key', $identityKey)
             ->first();
 
-        if (!$creator && $email !== '') {
+        if (! $creator && $email !== '') {
             $creator = Creator::where('project_id', $project->id)
                 ->where('primary_email', $email)
                 ->first();
         }
 
-        if (!$creator) {
-            $creator = new Creator();
+        if (! $creator) {
+            $creator = new Creator;
             $creator->project_id = $project->id;
             $creator->external_identity_key = $identityKey;
         }
@@ -328,7 +327,7 @@ class OperationalMirrorService
         $creator->metadata = array_filter([
             'linked_profiles' => $this->extractTaggedValue((string) ($row['Notes'] ?? ''), 'linked_profiles'),
             'identity_primary' => $this->extractTaggedValue((string) ($row['Notes'] ?? ''), 'identity_primary'),
-            'imported_from' => 'Creators_CRM:' . (int) ($row['_row_number'] ?? 0),
+            'imported_from' => 'Creators_CRM:'.(int) ($row['_row_number'] ?? 0),
         ], fn ($value) => $value !== null && $value !== '');
         $creator->save();
 
@@ -366,25 +365,25 @@ class OperationalMirrorService
         $notes = (string) ($row['Notes'] ?? '');
         $explicitIdentity = $this->extractTaggedValue($notes, 'creator_identity_id');
         if ($explicitIdentity) {
-            return 'sheet_identity:' . strtolower($explicitIdentity);
+            return 'sheet_identity:'.strtolower($explicitIdentity);
         }
 
         $email = strtolower(trim((string) ($row['Contact_Email'] ?? '')));
         if ($email !== '') {
-            return 'email:' . $email;
+            return 'email:'.$email;
         }
 
         $name = strtolower(trim((string) ($row['Name'] ?? '')));
         if ($name !== '') {
-            return 'name:' . $name;
+            return 'name:'.$name;
         }
 
-        return 'profile:' . strtolower(trim((string) ($row['Platform'] ?? ''))) . '|' . strtolower($this->normalizeHandle((string) ($row['Handle'] ?? '')));
+        return 'profile:'.strtolower(trim((string) ($row['Platform'] ?? ''))).'|'.strtolower($this->normalizeHandle((string) ($row['Handle'] ?? '')));
     }
 
     private function extractTaggedValue(string $text, string $key): ?string
     {
-        if (preg_match('/(?:^|[;|\s])' . preg_quote($key, '/') . '=([^;|]+)/i', $text, $matches)) {
+        if (preg_match('/(?:^|[;|\s])'.preg_quote($key, '/').'=([^;|]+)/i', $text, $matches)) {
             return trim($matches[1]);
         }
 
@@ -401,14 +400,15 @@ class OperationalMirrorService
             'notes' => '',
         ];
 
-        if (!str_contains($text, '|| META:')) {
+        if (! str_contains($text, '|| META:')) {
             return $result;
         }
 
         [$trigger, $metaJson] = explode('|| META:', $text, 2);
         $decoded = json_decode(trim($metaJson), true);
-        if (!is_array($decoded)) {
+        if (! is_array($decoded)) {
             $result['trigger'] = trim($trigger);
+
             return $result;
         }
 
@@ -437,6 +437,7 @@ class OperationalMirrorService
     private function parseYesNo(mixed $value): bool
     {
         $normalized = strtolower(trim((string) ($value ?? '')));
+
         return in_array($normalized, ['y', 'yes', 'true', '1'], true);
     }
 
@@ -447,7 +448,7 @@ class OperationalMirrorService
         }
 
         $normalized = preg_replace('/[^0-9.-]/', '', trim((string) $value));
-        if ($normalized === '' || !is_numeric($normalized)) {
+        if ($normalized === '' || ! is_numeric($normalized)) {
             return null;
         }
 
@@ -461,7 +462,7 @@ class OperationalMirrorService
         }
 
         $normalized = preg_replace('/[^0-9.-]/', '', trim((string) $value));
-        if ($normalized === '' || !is_numeric($normalized)) {
+        if ($normalized === '' || ! is_numeric($normalized)) {
             return null;
         }
 
@@ -471,6 +472,7 @@ class OperationalMirrorService
     private function nullableString(mixed $value): ?string
     {
         $value = trim((string) ($value ?? ''));
+
         return $value === '' ? null : $value;
     }
 
@@ -480,6 +482,7 @@ class OperationalMirrorService
         if ($handle === '') {
             return '';
         }
-        return str_starts_with($handle, '@') ? $handle : '@' . $handle;
+
+        return str_starts_with($handle, '@') ? $handle : '@'.$handle;
     }
 }

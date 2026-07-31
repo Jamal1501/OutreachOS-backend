@@ -14,6 +14,7 @@ class Task extends Model
     use HasUuids;
 
     public $incrementing = false;
+
     protected $keyType = 'string';
 
     protected $fillable = [
@@ -53,12 +54,12 @@ class Task extends Model
     protected function casts(): array
     {
         return [
-            'due_at'          => 'datetime',
-            'snoozed_until'   => 'datetime',
-            'waiting_until'    => 'datetime',
-            'completed_at'    => 'datetime',
+            'due_at' => 'datetime',
+            'snoozed_until' => 'datetime',
+            'waiting_until' => 'datetime',
+            'completed_at' => 'datetime',
             'follow_up_count' => 'integer',
-            'metadata'        => 'array',
+            'metadata' => 'array',
         ];
     }
 
@@ -70,10 +71,10 @@ class Task extends Model
     public function scopeVisible($query): void
     {
         $query->whereNotIn('status', ['COMPLETED', 'DONE', 'SKIPPED', 'ARCHIVED'])
-              ->where(function ($q) {
-                  $q->whereNull('snoozed_until')
+            ->where(function ($q) {
+                $q->whereNull('snoozed_until')
                     ->orWhere('snoozed_until', '<=', now());
-              });
+            });
     }
 
     /**
@@ -82,7 +83,7 @@ class Task extends Model
     public function scopeSnoozed($query): void
     {
         $query->where('status', 'SNOOZED')
-              ->where('snoozed_until', '>', now());
+            ->where('snoozed_until', '>', now());
     }
 
     /**
@@ -92,13 +93,13 @@ class Task extends Model
     public function scopeColdRetry($query): void
     {
         $query->where('tasks.status', 'ARCHIVED')
-              ->whereNotNull('tasks.creator_profile_id')
-              ->join('creator_profiles', 'creator_profiles.id', '=', 'tasks.creator_profile_id')
-              ->whereNotNull('creator_profiles.value_score')
-              ->orderByDesc('creator_profiles.value_score')
-              ->select('tasks.*', 'creator_profiles.value_score as cp_value_score',
-                       'creator_profiles.followers_count as cp_followers_count',
-                       'creator_profiles.profile_pic_url as cp_profile_pic_url');
+            ->whereNotNull('tasks.creator_profile_id')
+            ->join('creator_profiles', 'creator_profiles.id', '=', 'tasks.creator_profile_id')
+            ->whereNotNull('creator_profiles.value_score')
+            ->orderByDesc('creator_profiles.value_score')
+            ->select('tasks.*', 'creator_profiles.value_score as cp_value_score',
+                'creator_profiles.followers_count as cp_followers_count',
+                'creator_profiles.profile_pic_url as cp_profile_pic_url');
     }
 
     // ─── Relations ────────────────────────────────────────────────────────────

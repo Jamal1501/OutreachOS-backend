@@ -31,7 +31,7 @@ class TaskEnginePolicyTest extends TestCase
         ]);
         $profile->setRelation('creator', new Creator(['primary_email' => 'unknown']));
 
-        $metadata = (new TaskDecisionPolicy())->buildMetadata(
+        $metadata = (new TaskDecisionPolicy)->buildMetadata(
             $profile,
             'EMAIL_SEND',
             'HIGH',
@@ -51,7 +51,7 @@ class TaskEnginePolicyTest extends TestCase
 
     public function test_task_automation_settings_sanitize_values_and_permissions(): void
     {
-        $settings = new TaskAutomationSettings();
+        $settings = new TaskAutomationSettings;
 
         $sanitized = $settings->sanitize([
             'max_active_tasks' => -10,

@@ -18,8 +18,7 @@ class WorkspaceInvitationMail extends Mailable
         public string $role,
         public string $inviteUrl,
         public string $expiresAt
-    ) {
-    }
+    ) {}
 
     public function envelope(): Envelope
     {

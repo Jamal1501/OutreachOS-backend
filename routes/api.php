@@ -3,15 +3,15 @@
 use App\Http\Controllers\AiController;
 use App\Http\Controllers\ApifyController;
 use App\Http\Controllers\BillingController;
-use App\Http\Controllers\CspReportController;
 use App\Http\Controllers\CreatorRelationshipController;
 use App\Http\Controllers\CrmImportController;
+use App\Http\Controllers\CspReportController;
 use App\Http\Controllers\DuplicateLinkController;
 use App\Http\Controllers\HealthController;
+use App\Http\Controllers\MessagePerformanceController;
+use App\Http\Controllers\PipelineController;
 use App\Http\Controllers\SheetDataController;
 use App\Http\Controllers\WorkspaceController;
-use App\Http\Controllers\PipelineController;
-use App\Http\Controllers\MessagePerformanceController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', function () {
@@ -26,7 +26,6 @@ Route::get('/health/ready', [HealthController::class, 'ready']);
 Route::get('/avatar-proxy', [SheetDataController::class, 'avatarProxy'])->middleware('throttle:avatar');
 Route::post('/csp-report', [CspReportController::class, 'store'])->middleware('throttle:60,1');
 Route::post('/billing/webhooks/stripe', [BillingController::class, 'stripeWebhook'])->middleware('throttle:60,1');
-
 
 Route::middleware(['api.auth', 'throttle:api'])->group(function () {
     Route::get('/workspaces/bootstrap', [WorkspaceController::class, 'bootstrap']);

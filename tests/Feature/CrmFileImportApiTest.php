@@ -127,14 +127,14 @@ class CrmFileImportApiTest extends TestCase
         $user = User::query()->create([
             'supabase_user_id' => (string) Str::uuid(),
             'name' => 'Test User',
-            'email' => Str::random(8) . '@example.test',
+            'email' => Str::random(8).'@example.test',
             'password' => 'password',
         ]);
 
         $workspace = Workspace::query()->create([
             'id' => (string) Str::uuid(),
             'name' => 'Test Workspace',
-            'slug' => 'workspace-' . Str::random(8),
+            'slug' => 'workspace-'.Str::random(8),
             'owner_id' => $user->supabase_user_id,
             'plan_id' => 'free',
             'settings' => ['workspaceDataKey' => 'workspace:test-import'],

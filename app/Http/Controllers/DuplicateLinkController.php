@@ -15,9 +15,7 @@ class DuplicateLinkController extends Controller
 {
     private const ALLOWED_STATUSES = ['pending', 'confirmed', 'rejected', 'merged', 'linked'];
 
-    public function __construct(private AiDuplicateDetectionService $duplicates)
-    {
-    }
+    public function __construct(private AiDuplicateDetectionService $duplicates) {}
 
     public function index(Request $request): JsonResponse
     {
@@ -108,7 +106,7 @@ class DuplicateLinkController extends Controller
                 ->where('creator_b_platform', $pair['b']['platform'])
                 ->first();
 
-            if (!$link) {
+            if (! $link) {
                 $link = new DuplicateLink([
                     'workspace_id' => $workspaceId,
                     'project_id' => (string) $project->id,
@@ -239,7 +237,7 @@ class DuplicateLinkController extends Controller
         }
 
         $items = [$a, $b];
-        usort($items, fn (array $left, array $right) => strcmp($left['platform'] . '|' . $left['handle'], $right['platform'] . '|' . $right['handle']));
+        usort($items, fn (array $left, array $right) => strcmp($left['platform'].'|'.$left['handle'], $right['platform'].'|'.$right['handle']));
 
         return ['a' => $items[0], 'b' => $items[1]];
     }
@@ -270,6 +268,6 @@ class DuplicateLinkController extends Controller
 
     private function profileLookupKey(string $projectId, string $platform, string $handle): string
     {
-        return $projectId . '|' . strtolower(trim($platform)) . '|' . strtolower($this->normalizeHandle($handle));
+        return $projectId.'|'.strtolower(trim($platform)).'|'.strtolower($this->normalizeHandle($handle));
     }
 }

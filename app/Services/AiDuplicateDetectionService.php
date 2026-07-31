@@ -4,9 +4,7 @@ namespace App\Services;
 
 class AiDuplicateDetectionService
 {
-    public function __construct(private AiGatewayService $ai)
-    {
-    }
+    public function __construct(private AiGatewayService $ai) {}
 
     public function detect(array $creators): array
     {
@@ -77,12 +75,12 @@ class AiDuplicateDetectionService
         ];
 
         $systemPrompt = 'You are a strict cross-platform duplicate detector. Be conservative. Only report likely same-person matches with confidence 70 or higher. Weak name similarity alone is not enough.';
-        $userPrompt = "Creators:
-" . json_encode(array_values($creators), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
-            . "
+        $userPrompt = 'Creators:
+'.json_encode(array_values($creators), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+            .'
 
 Candidate pairs:
-" . json_encode($candidates, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+'.json_encode($candidates, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 
         $result = $this->ai->structured(
             $systemPrompt,
@@ -95,12 +93,12 @@ Candidate pairs:
 
         $output = [];
         foreach ((array) ($result['duplicates'] ?? []) as $row) {
-            if (!is_array($row)) {
+            if (! is_array($row)) {
                 continue;
             }
             $indexA = (int) ($row['indexA'] ?? -1);
             $indexB = (int) ($row['indexB'] ?? -1);
-            if (!isset($creators[$indexA], $creators[$indexB])) {
+            if (! isset($creators[$indexA], $creators[$indexB])) {
                 continue;
             }
             if ((float) ($row['confidence'] ?? 0) < 70) {

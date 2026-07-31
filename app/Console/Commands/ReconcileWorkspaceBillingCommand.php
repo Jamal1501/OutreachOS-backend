@@ -16,7 +16,8 @@ class ReconcileWorkspaceBillingCommand extends Command
         $workspaceId = trim((string) $this->option('workspace'));
         if ($workspaceId !== '') {
             $billing->reconcileWorkspace($workspaceId);
-            $this->info('Workspace billing reconciled: ' . $workspaceId);
+            $this->info('Workspace billing reconciled: '.$workspaceId);
+
             return self::SUCCESS;
         }
 

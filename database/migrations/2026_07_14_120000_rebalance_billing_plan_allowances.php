@@ -8,7 +8,7 @@ return new class extends Migration
 {
     public function up(): void
     {
-        if (!Schema::hasTable('plans')) {
+        if (! Schema::hasTable('plans')) {
             return;
         }
 
@@ -33,7 +33,7 @@ return new class extends Migration
             DB::table('plans')->where('id', $planId)->update($values);
         }
 
-        if (!Schema::hasTable('workspace_credit_wallets') || !Schema::hasTable('workspace_subscriptions')) {
+        if (! Schema::hasTable('workspace_credit_wallets') || ! Schema::hasTable('workspace_subscriptions')) {
             return;
         }
 
@@ -67,7 +67,7 @@ return new class extends Migration
 
     public function down(): void
     {
-        if (!Schema::hasTable('plans')) {
+        if (! Schema::hasTable('plans')) {
             return;
         }
 

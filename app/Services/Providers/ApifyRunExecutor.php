@@ -16,20 +16,21 @@ class ApifyRunExecutor
         private ProviderUsageLogger $usageLogger,
         private \App\Services\ScraperRegistryService $scrapers,
         private WorkspaceBillingService $billing,
-    ) {
-    }
+    ) {}
 
     private const TERMINAL_RUN_STATUSES = ['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT', 'TIMED_OUT'];
+
     private const DEFAULT_POLL_SECONDS = 3;
+
     private const DEFAULT_TIMEOUT_SECONDS = 300;
 
     public function run(string $actorKey, string $platform, array $input, array $context = []): ProviderRunResult
     {
         $token = (string) config('services.apify.token');
-        $actorId = (string) config('services.apify.actors.' . $actorKey);
+        $actorId = (string) config('services.apify.actors.'.$actorKey);
 
         if ($token === '' || $actorId === '') {
-            throw new RuntimeException('Missing Apify config for actor: ' . $actorKey);
+            throw new RuntimeException('Missing Apify config for actor: '.$actorKey);
         }
 
         $usageReservationId = null;
@@ -51,7 +52,7 @@ class ApifyRunExecutor
         ], fn ($value) => $value !== null && $value !== '');
 
         try {
-            if ($workspaceId && $moduleKey && !$billingManagedExternally) {
+            if ($workspaceId && $moduleKey && ! $billingManagedExternally) {
                 $reservation = $this->billing->reserveApify(
                     workspaceId: $workspaceId,
                     moduleKey: $moduleKey,
@@ -66,7 +67,7 @@ class ApifyRunExecutor
 
             $url = "https://api.apify.com/v2/acts/{$actorId}/runs";
             if ($query !== []) {
-                $url .= '?' . http_build_query($query);
+                $url .= '?'.http_build_query($query);
             }
 
             $startResponse = Http::withToken($token)
@@ -74,7 +75,7 @@ class ApifyRunExecutor
                 ->timeout(90)
                 ->post($url, $input);
 
-            if (!$startResponse->successful()) {
+            if (! $startResponse->successful()) {
                 $providerMessage = $this->providerErrorMessage($startResponse->json(), $startResponse->body());
                 if ($usageReservationId) {
                     $this->billing->refundReservation($usageReservationId, 'Failed to start Apify actor', [
@@ -93,7 +94,7 @@ class ApifyRunExecutor
                     'error_message' => 'Failed to start Apify actor',
                 ]);
 
-                throw new RuntimeException('Apify could not start the run: ' . $providerMessage);
+                throw new RuntimeException('Apify could not start the run: '.$providerMessage);
             }
 
             $startData = $startResponse->json('data') ?? [];
@@ -214,8 +215,8 @@ class ApifyRunExecutor
                 ->timeout(30)
                 ->get("https://api.apify.com/v2/actor-runs/{$runId}");
 
-            if (!$response->successful()) {
-                throw new RuntimeException('Failed to poll Apify run: ' . $response->body());
+            if (! $response->successful()) {
+                throw new RuntimeException('Failed to poll Apify run: '.$response->body());
             }
 
             $run = $response->json('data') ?? [];
@@ -223,7 +224,7 @@ class ApifyRunExecutor
 
             if (in_array($status, self::TERMINAL_RUN_STATUSES, true)) {
                 if ($status !== 'SUCCEEDED') {
-                    throw new RuntimeException('Apify run ended with status ' . $status);
+                    throw new RuntimeException('Apify run ended with status '.$status);
                 }
 
                 return $run;
@@ -232,7 +233,7 @@ class ApifyRunExecutor
             sleep(self::DEFAULT_POLL_SECONDS);
         } while (time() < $deadline);
 
-        throw new RuntimeException('Timed out while waiting for Apify run ' . $runId);
+        throw new RuntimeException('Timed out while waiting for Apify run '.$runId);
     }
 
     private function extractApifyRunCostUsd(array $runData): ?float
@@ -291,8 +292,8 @@ class ApifyRunExecutor
             ->timeout(90)
             ->get("https://api.apify.com/v2/datasets/{$datasetId}/items", $query);
 
-        if (!$response->successful()) {
-            throw new RuntimeException('Failed to fetch dataset items: ' . $response->body());
+        if (! $response->successful()) {
+            throw new RuntimeException('Failed to fetch dataset items: '.$response->body());
         }
 
         $items = json_decode($response->body(), true);

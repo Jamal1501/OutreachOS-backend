@@ -16,9 +16,7 @@ use Illuminate\Support\Facades\DB;
 
 class OperationalDataImportService
 {
-    public function __construct(private GoogleSheetsService $sheets)
-    {
-    }
+    public function __construct(private GoogleSheetsService $sheets) {}
 
     public function importWorkbook(string $sheetId, ?string $projectName = null, bool $truncate = false): array
     {
@@ -26,7 +24,7 @@ class OperationalDataImportService
             $project = Project::firstOrCreate(
                 ['workbook_id' => $sheetId],
                 [
-                    'name' => $projectName ?: 'Imported workbook ' . substr($sheetId, 0, 8),
+                    'name' => $projectName ?: 'Imported workbook '.substr($sheetId, 0, 8),
                     'status' => 'active',
                     'metadata' => ['import_source' => 'google_sheets'],
                 ],
@@ -106,7 +104,7 @@ class OperationalDataImportService
                     'dm_sent_at' => $this->parseDateTime($row['DM_Sent_Date'] ?? null),
                     'responded_at' => $this->parseDateTime($row['Response_Date'] ?? null),
                     'source_provider' => 'google_sheets',
-                    'source_reference' => 'Creators_CRM:' . (int) ($row['_row_number'] ?? 0),
+                    'source_reference' => 'Creators_CRM:'.(int) ($row['_row_number'] ?? 0),
                     'source_metadata' => [
                         'angle_assigned' => $this->nullableString($row['Angle_Assigned'] ?? null),
                         'commission_model' => $this->nullableString($row['Commission_Model'] ?? null),
@@ -125,7 +123,7 @@ class OperationalDataImportService
                 $createdProfiles++;
             }
 
-            $creatorProfileMap[$platform . '|' . strtolower($handle)] = $profile->id;
+            $creatorProfileMap[$platform.'|'.strtolower($handle)] = $profile->id;
         }
 
         return [
@@ -147,14 +145,14 @@ class OperationalDataImportService
             ->where('external_identity_key', $identityKey)
             ->first();
 
-        if (!$creator && $email !== '') {
+        if (! $creator && $email !== '') {
             $creator = Creator::where('project_id', $project->id)
                 ->where('primary_email', $email)
                 ->first();
         }
 
-        if (!$creator) {
-            $creator = new Creator();
+        if (! $creator) {
+            $creator = new Creator;
             $creator->project_id = $project->id;
             $creator->external_identity_key = $identityKey;
             $createdCreators++;
@@ -170,7 +168,7 @@ class OperationalDataImportService
         $creator->metadata = array_filter([
             'linked_profiles' => $this->extractTaggedValue((string) ($row['Notes'] ?? ''), 'linked_profiles'),
             'identity_primary' => $this->extractTaggedValue((string) ($row['Notes'] ?? ''), 'identity_primary'),
-            'imported_from' => 'Creators_CRM:' . (int) ($row['_row_number'] ?? 0),
+            'imported_from' => 'Creators_CRM:'.(int) ($row['_row_number'] ?? 0),
         ], fn ($value) => $value !== null && $value !== '');
         $creator->save();
 
@@ -228,7 +226,7 @@ class OperationalDataImportService
             $externalTaskKey = trim((string) ($row['Task_ID'] ?? ''));
             $platform = strtolower(trim((string) ($row['Platform'] ?? '')));
             $handle = $this->normalizeHandle((string) ($row['Handle'] ?? ''));
-            $profileId = $creatorProfileMap[$platform . '|' . strtolower($handle)] ?? null;
+            $profileId = $creatorProfileMap[$platform.'|'.strtolower($handle)] ?? null;
             $template = null;
 
             if (trim((string) ($row['Template_ID'] ?? '')) !== '') {
@@ -240,7 +238,7 @@ class OperationalDataImportService
             $task = Task::updateOrCreate(
                 [
                     'project_id' => $project->id,
-                    'external_task_key' => $externalTaskKey !== '' ? $externalTaskKey : 'sheet-row:' . (int) ($row['_row_number'] ?? 0),
+                    'external_task_key' => $externalTaskKey !== '' ? $externalTaskKey : 'sheet-row:'.(int) ($row['_row_number'] ?? 0),
                 ],
                 [
                     'creator_profile_id' => $profileId,
@@ -254,7 +252,7 @@ class OperationalDataImportService
                     'open_url' => trim((string) ($row['Open_URL'] ?? '')) ?: null,
                     'message_draft' => trim((string) ($row['Message_Draft'] ?? '')) ?: null,
                     'source_provider' => 'google_sheets',
-                    'source_reference' => 'Task_Queue:' . (int) ($row['_row_number'] ?? 0),
+                    'source_reference' => 'Task_Queue:'.(int) ($row['_row_number'] ?? 0),
                     'notes' => trim((string) ($row['Notes'] ?? '')) ?: null,
                     'completed_at' => $this->parseDateTime($row['Completed_At'] ?? null),
                     'metadata' => ['created_at_source' => $this->nullableString($row['Created_At'] ?? null)],
@@ -281,12 +279,12 @@ class OperationalDataImportService
         foreach ($rows as $row) {
             $platform = strtolower(trim((string) ($row['Platform'] ?? '')));
             $handle = $this->normalizeHandle((string) ($row['Handle'] ?? ''));
-            $profileId = $creatorProfileMap[$platform . '|' . strtolower($handle)] ?? null;
+            $profileId = $creatorProfileMap[$platform.'|'.strtolower($handle)] ?? null;
 
             $event = OutreachEvent::updateOrCreate(
                 [
                     'project_id' => $project->id,
-                    'external_event_key' => trim((string) ($row['Event_ID'] ?? '')) ?: 'sheet-row:' . (int) ($row['_row_number'] ?? 0),
+                    'external_event_key' => trim((string) ($row['Event_ID'] ?? '')) ?: 'sheet-row:'.(int) ($row['_row_number'] ?? 0),
                 ],
                 [
                     'creator_profile_id' => $profileId,
@@ -299,7 +297,7 @@ class OperationalDataImportService
                     'status' => trim((string) ($row['Status'] ?? '')) ?: null,
                     'url' => trim((string) ($row['URL'] ?? '')) ?: null,
                     'notes' => trim((string) ($row['Notes'] ?? '')) ?: null,
-                    'metadata' => ['source_reference' => 'Outreach_Log:' . (int) ($row['_row_number'] ?? 0)],
+                    'metadata' => ['source_reference' => 'Outreach_Log:'.(int) ($row['_row_number'] ?? 0)],
                 ],
             );
 
@@ -350,7 +348,7 @@ class OperationalDataImportService
                     continue;
                 }
 
-                $profileUrl = $handle !== '' ? $config['profile_base'] . ltrim($handle, '@') . ($platform === 'instagram' ? '/' : '') : null;
+                $profileUrl = $handle !== '' ? $config['profile_base'].ltrim($handle, '@').($platform === 'instagram' ? '/' : '') : null;
                 $hashtags = $this->parseHashtags($row['hashtags'] ?? null, $caption);
                 $metrics = array_filter([
                     'likes' => $this->nullableInt($row['likesCount'] ?? $row['diggCount'] ?? null),
@@ -364,7 +362,7 @@ class OperationalDataImportService
                     [
                         'project_id' => $project->id,
                         'platform' => $platform,
-                        'post_url' => $postUrl !== '' ? $postUrl : ('sheet-row:' . (int) ($row['_row_number'] ?? 0)),
+                        'post_url' => $postUrl !== '' ? $postUrl : ('sheet-row:'.(int) ($row['_row_number'] ?? 0)),
                     ],
                     [
                         'discovery_run_id' => $run->id,
@@ -375,7 +373,7 @@ class OperationalDataImportService
                         'caption' => $caption ?: null,
                         'hashtags' => $hashtags,
                         'metrics' => $metrics,
-                        'duplicate_key' => strtolower($platform . '|' . ($handle ?: $postUrl)),
+                        'duplicate_key' => strtolower($platform.'|'.($handle ?: $postUrl)),
                         'recommended_action' => trim((string) ($row['Recommended_Action'] ?? '')) ?: null,
                         'raw_payload' => $row,
                         'discovered_at' => $this->parseDateTime($row[$config['timestamp_column']] ?? null),
@@ -436,25 +434,25 @@ class OperationalDataImportService
         $notes = (string) ($row['Notes'] ?? '');
         $explicitIdentity = $this->extractTaggedValue($notes, 'creator_identity_id');
         if ($explicitIdentity) {
-            return 'sheet_identity:' . strtolower($explicitIdentity);
+            return 'sheet_identity:'.strtolower($explicitIdentity);
         }
 
         $email = strtolower(trim((string) ($row['Contact_Email'] ?? '')));
         if ($email !== '') {
-            return 'email:' . $email;
+            return 'email:'.$email;
         }
 
         $name = strtolower(trim((string) ($row['Name'] ?? '')));
         if ($name !== '') {
-            return 'name:' . $name;
+            return 'name:'.$name;
         }
 
-        return 'profile:' . strtolower(trim((string) ($row['Platform'] ?? ''))) . '|' . strtolower($this->normalizeHandle((string) ($row['Handle'] ?? '')));
+        return 'profile:'.strtolower(trim((string) ($row['Platform'] ?? ''))).'|'.strtolower($this->normalizeHandle((string) ($row['Handle'] ?? '')));
     }
 
     private function extractTaggedValue(string $text, string $key): ?string
     {
-        if (preg_match('/(?:^|[;|\s])' . preg_quote($key, '/') . '=([^;|]+)/i', $text, $matches)) {
+        if (preg_match('/(?:^|[;|\s])'.preg_quote($key, '/').'=([^;|]+)/i', $text, $matches)) {
             return trim($matches[1]);
         }
 
@@ -471,14 +469,14 @@ class OperationalDataImportService
             'notes' => '',
         ];
 
-        if (!str_contains($text, '|| META:')) {
+        if (! str_contains($text, '|| META:')) {
             return $result;
         }
 
         [$trigger, $metaJson] = explode('|| META:', $text, 2);
         $decoded = json_decode(trim($metaJson), true);
 
-        if (!is_array($decoded)) {
+        if (! is_array($decoded)) {
             $result['trigger'] = trim($trigger);
 
             return $result;
@@ -541,7 +539,7 @@ class OperationalDataImportService
         }
 
         $normalized = preg_replace('/[^0-9.-]/', '', trim((string) $value));
-        if ($normalized === '' || !is_numeric($normalized)) {
+        if ($normalized === '' || ! is_numeric($normalized)) {
             return null;
         }
 
@@ -555,7 +553,7 @@ class OperationalDataImportService
         }
 
         $normalized = preg_replace('/[^0-9.-]/', '', trim((string) $value));
-        if ($normalized === '' || !is_numeric($normalized)) {
+        if ($normalized === '' || ! is_numeric($normalized)) {
             return null;
         }
 
@@ -577,6 +575,6 @@ class OperationalDataImportService
             return '';
         }
 
-        return str_starts_with($handle, '@') ? $handle : '@' . $handle;
+        return str_starts_with($handle, '@') ? $handle : '@'.$handle;
     }
 }

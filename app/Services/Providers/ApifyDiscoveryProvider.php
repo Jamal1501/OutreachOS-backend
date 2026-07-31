@@ -11,8 +11,7 @@ class ApifyDiscoveryProvider implements DiscoveryProvider
     public function __construct(
         private ApifyRunExecutor $executor,
         private ScraperRegistryService $scrapers,
-    ) {
-    }
+    ) {}
 
     public function discover(string $platform, array $hashtags, int $limit, array $context = []): ProviderRunResult
     {

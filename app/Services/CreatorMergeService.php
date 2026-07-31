@@ -22,8 +22,7 @@ class CreatorMergeService
         private ProjectResolverService $projects,
         private CreatorLocationInferenceService $locationInference,
         private AvatarCacheService $avatarCache,
-    ) {
-    }
+    ) {}
 
     public function mergeFromEnrichedSheet(string $sheetId, string $sourceSheet): array
     {
@@ -98,6 +97,7 @@ class CreatorMergeService
                     'status' => 'SKIPPED_NO_HANDLE',
                     'note' => 'Missing handle in enriched source row',
                 ];
+
                 continue;
             }
 
@@ -115,6 +115,7 @@ class CreatorMergeService
                 $updated++;
                 $affectedRowNumbers[] = $rowNumber;
                 $updatedRowNumbers[] = $rowNumber;
+
                 continue;
             }
 
@@ -178,6 +179,7 @@ class CreatorMergeService
 
                 if ($platform === '' || $handle === '') {
                     $skipped++;
+
                     continue;
                 }
 
@@ -194,11 +196,11 @@ class CreatorMergeService
                     })
                     ->first();
 
-                $isNewProfile = !$profile;
+                $isNewProfile = ! $profile;
                 $creator = $this->resolveDatabaseCreator($project, $creatorRecord, $sourceRow, $profile);
 
-                if (!$profile) {
-                    $profile = new CreatorProfile();
+                if (! $profile) {
+                    $profile = new CreatorProfile;
                     $profile->project_id = $project->id;
                     $profile->platform = $platform;
                     $profile->handle = $handle;
@@ -269,7 +271,7 @@ class CreatorMergeService
             $creator = Creator::query()->find($existingProfile->creator_id);
         }
 
-        if (!$creator) {
+        if (! $creator) {
             $creator = Creator::query()
                 ->where('project_id', $project->id)
                 ->where('external_identity_key', $identityKey)
@@ -277,15 +279,15 @@ class CreatorMergeService
         }
 
         $email = trim((string) ($creatorRecord['Contact_Email'] ?? ''));
-        if (!$creator && $email !== '') {
+        if (! $creator && $email !== '') {
             $creator = Creator::query()
                 ->where('project_id', $project->id)
                 ->where('primary_email', $email)
                 ->first();
         }
 
-        if (!$creator) {
-            $creator = new Creator();
+        if (! $creator) {
+            $creator = new Creator;
             $creator->project_id = $project->id;
             $creator->external_identity_key = $identityKey;
         }
@@ -302,7 +304,7 @@ class CreatorMergeService
         $creator->notes = $this->appendNote((string) ($creator->notes ?? ''), $incomingNotes);
         $this->locationInference->applyToCreator($creator, array_merge($sourceRow, $creatorRecord), (string) ($creatorRecord['Platform'] ?? ''));
         $metadata = is_array($creator->metadata) ? $creator->metadata : [];
-        $metadata['last_merged_from'] = ($sourceRow['_row_number'] ?? null) ? 'enriched:' . (int) $sourceRow['_row_number'] : 'enriched';
+        $metadata['last_merged_from'] = ($sourceRow['_row_number'] ?? null) ? 'enriched:'.(int) $sourceRow['_row_number'] : 'enriched';
         $metadata['last_merged_at'] = now()->toDateTimeString();
         $creator->metadata = $metadata;
         $creator->save();
@@ -315,20 +317,20 @@ class CreatorMergeService
         $existingStatus = strtoupper(trim((string) ($profile->status ?? '')));
         $incomingStatus = trim((string) ($creatorRecord['Status'] ?? 'NEW')) ?: 'NEW';
         $incomingProfilePicUrl = trim((string) (
-    $sourceRow['profilePicUrl']
-    ?? $sourceRow['avatarUrl']
-    ?? $sourceRow['profile_pic_url']
-    ?? ''
-));
+            $sourceRow['profilePicUrl']
+            ?? $sourceRow['avatarUrl']
+            ?? $sourceRow['profile_pic_url']
+            ?? ''
+        ));
 
-$profile->creator_id = $creator->id;
-$profile->username = ltrim($this->normalizeHandle((string) ($creatorRecord['Handle'] ?? '')), '@');
-$profile->profile_url = trim((string) ($creatorRecord['DM_Link'] ?? '')) ?: ($profile->profile_url ?: null);
-$profile->dm_link = trim((string) ($creatorRecord['DM_Link'] ?? '')) ?: ($profile->dm_link ?: null);
-$profile->profile_pic_url = $incomingProfilePicUrl !== '' ? $incomingProfilePicUrl : ($profile->profile_pic_url ?: null);
-$profile->status = $existingStatus !== '' && !in_array($existingStatus, ['NEW', 'DISCOVERED', 'ENRICHED'], true)
-    ? $profile->status
-    : $incomingStatus;
+        $profile->creator_id = $creator->id;
+        $profile->username = ltrim($this->normalizeHandle((string) ($creatorRecord['Handle'] ?? '')), '@');
+        $profile->profile_url = trim((string) ($creatorRecord['DM_Link'] ?? '')) ?: ($profile->profile_url ?: null);
+        $profile->dm_link = trim((string) ($creatorRecord['DM_Link'] ?? '')) ?: ($profile->dm_link ?: null);
+        $profile->profile_pic_url = $incomingProfilePicUrl !== '' ? $incomingProfilePicUrl : ($profile->profile_pic_url ?: null);
+        $profile->status = $existingStatus !== '' && ! in_array($existingStatus, ['NEW', 'DISCOVERED', 'ENRICHED'], true)
+            ? $profile->status
+            : $incomingStatus;
         $profile->lifecycle_state = strtolower(str_replace(' ', '_', trim((string) ($profile->status ?: $incomingStatus))));
         $profile->followers_count = is_numeric((string) ($creatorRecord['Followers'] ?? '')) ? (int) round((float) $creatorRecord['Followers']) : $profile->followers_count;
         $profile->engagement_rate_pct = is_numeric((string) ($creatorRecord['Engagement_Rate_%'] ?? '')) ? (float) $creatorRecord['Engagement_Rate_%'] : $profile->engagement_rate_pct;
@@ -337,7 +339,7 @@ $profile->status = $existingStatus !== '' && !in_array($existingStatus, ['NEW', 
         $profile->value_bar = $this->scoring->bar((float) $profile->value_score);
         $profile->duplicate_flag = $profile->duplicate_flag ?: null;
         $profile->source_provider = 'database';
-        $profile->source_reference = $profile->source_reference ?: ('creator_profile:' . ($profile->id ?: 'pending'));
+        $profile->source_reference = $profile->source_reference ?: ('creator_profile:'.($profile->id ?: 'pending'));
         $metadata = is_array($profile->source_metadata) ? $profile->source_metadata : [];
         $metadata['merged_from_source_sheet'] = $sourceRow['_row_number'] ?? null;
         $metadata['merged_from_platform'] = strtolower(trim((string) ($creatorRecord['Platform'] ?? '')));
@@ -384,7 +386,7 @@ $profile->status = $existingStatus !== '' && !in_array($existingStatus, ['NEW', 
 
             foreach ($affectedProfiles as $item) {
                 $profile = CreatorProfile::query()->with('creator')->find($item['profile_id']);
-                if (!$profile || !$profile->creator) {
+                if (! $profile || ! $profile->creator) {
                     continue;
                 }
 
@@ -422,18 +424,18 @@ $profile->status = $existingStatus !== '' && !in_array($existingStatus, ['NEW', 
             if ($newProfileIds !== []) {
                 foreach (array_values($newProfileIds) as $idx => $profileId) {
                     $rowNumber = $createdRowNumbers[$idx] ?? null;
-                    if (!$rowNumber) {
+                    if (! $rowNumber) {
                         continue;
                     }
                     $profile = CreatorProfile::query()->find($profileId);
-                    if (!$profile) {
+                    if (! $profile) {
                         continue;
                     }
                     $metadata = is_array($profile->source_metadata) ? $profile->source_metadata : [];
                     $metadata['sheet_row_number'] = $rowNumber;
                     $metadata['last_sheet_sync_at'] = now()->toDateTimeString();
                     $profile->source_provider = 'database';
-                    $profile->source_reference = 'Creators_CRM:' . $rowNumber;
+                    $profile->source_reference = 'Creators_CRM:'.$rowNumber;
                     $profile->source_metadata = $metadata;
                     $profile->last_synced_at = now();
                     $profile->save();
@@ -450,6 +452,7 @@ $profile->status = $existingStatus !== '' && !in_array($existingStatus, ['NEW', 
             ];
         } catch (\Throwable $e) {
             report($e);
+
             return [
                 'updated' => 0,
                 'appended' => 0,
@@ -512,20 +515,20 @@ $profile->status = $existingStatus !== '' && !in_array($existingStatus, ['NEW', 
     {
         $email = strtolower(trim((string) ($creatorRecord['Contact_Email'] ?? '')));
         if ($email !== '') {
-            return 'email:' . $email;
+            return 'email:'.$email;
         }
 
         $name = strtolower(trim((string) ($creatorRecord['Name'] ?? '')));
         if ($name !== '') {
-            return 'name:' . $name;
+            return 'name:'.$name;
         }
 
         $externalId = strtolower(trim((string) ($sourceRow['id'] ?? '')));
         if ($externalId !== '') {
-            return 'source:' . $externalId;
+            return 'source:'.$externalId;
         }
 
-        return 'profile:' . strtolower(trim((string) ($creatorRecord['Platform'] ?? ''))) . '|' . strtolower($this->normalizeHandle((string) ($creatorRecord['Handle'] ?? '')));
+        return 'profile:'.strtolower(trim((string) ($creatorRecord['Platform'] ?? ''))).'|'.strtolower($this->normalizeHandle((string) ($creatorRecord['Handle'] ?? '')));
     }
 
     private function sourceRowToCreatorRecord(string $sourceSheet, array $sourceRow): array
@@ -634,14 +637,14 @@ $profile->status = $existingStatus !== '' && !in_array($existingStatus, ['NEW', 
         $score = $this->scoring->score($record, $sourceRow);
         $record['Value_Score'] = (string) $score;
         $record['Value_Bar'] = $this->scoring->bar($score);
-        $record['Duplicate_Flag'] = '=IF(COUNTIFS($A:$A,$A' . $rowNumber . ',$B:$B,$B' . $rowNumber . ')>1,"DUP","")';
+        $record['Duplicate_Flag'] = '=IF(COUNTIFS($A:$A,$A'.$rowNumber.',$B:$B,$B'.$rowNumber.')>1,"DUP","")';
 
         return $record;
     }
 
     private function formulaLastContentDate(int $rowNumber): string
     {
-        return '=IF($A' . $rowNumber . '="TikTok",IFERROR(DATEVALUE(LEFT(VLOOKUP($B' . $rowNumber . ',\'TikTok_Creators\'!$B:$N,13,FALSE),10)),""),IF($A' . $rowNumber . '="Instagram",IFERROR(DATEVALUE(LEFT(VLOOKUP($B' . $rowNumber . ',\'Instagram_Creators\'!$B:$F,5,FALSE),10)),""),""))';
+        return '=IF($A'.$rowNumber.'="TikTok",IFERROR(DATEVALUE(LEFT(VLOOKUP($B'.$rowNumber.',\'TikTok_Creators\'!$B:$N,13,FALSE),10)),""),IF($A'.$rowNumber.'="Instagram",IFERROR(DATEVALUE(LEFT(VLOOKUP($B'.$rowNumber.',\'Instagram_Creators\'!$B:$F,5,FALSE),10)),""),""))';
     }
 
     private function estimateTikTokEngagement(array $sourceRow): string
@@ -674,12 +677,12 @@ $profile->status = $existingStatus !== '' && !in_array($existingStatus, ['NEW', 
             return $existing;
         }
 
-        return $existing . ' | ' . $incoming;
+        return $existing.' | '.$incoming;
     }
 
     private function crmKey(string $platform, string $handle): string
     {
-        return strtolower(trim($platform)) . '|' . strtolower(trim($this->normalizeHandle($handle)));
+        return strtolower(trim($platform)).'|'.strtolower(trim($this->normalizeHandle($handle)));
     }
 
     private function normalizeHandle(string $handle): string
@@ -690,12 +693,12 @@ $profile->status = $existingStatus !== '' && !in_array($existingStatus, ['NEW', 
             return '';
         }
 
-        return str_starts_with($handle, '@') ? $handle : '@' . $handle;
+        return str_starts_with($handle, '@') ? $handle : '@'.$handle;
     }
 
     private function assertSourceSheet(string $sourceSheet): void
     {
-        if (!in_array($sourceSheet, self::SOURCE_SHEETS, true)) {
+        if (! in_array($sourceSheet, self::SOURCE_SHEETS, true)) {
             throw new RuntimeException('Invalid source sheet for merge');
         }
     }

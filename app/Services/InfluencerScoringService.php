@@ -154,7 +154,8 @@ class InfluencerScoringService
     {
         $score = max(0, min(100, (float) $score));
         $filled = (int) round($score / 10);
-        return str_repeat('█', $filled) . str_repeat('░', max(0, 10 - $filled));
+
+        return str_repeat('█', $filled).str_repeat('░', max(0, 10 - $filled));
     }
 
     private function scoreFollowerFit(float $followers, array $criteria): array
@@ -212,6 +213,7 @@ class InfluencerScoringService
         foreach ($avoidSet as $avoid) {
             if ($avoid !== '' && str_contains($haystack, $avoid)) {
                 $risks[] = 'Profile text contains avoid-signal terms.';
+
                 return [0, $signals, $risks];
             }
         }
@@ -293,7 +295,7 @@ class InfluencerScoringService
     {
         $keywords = [];
         foreach ($values as $value) {
-            if (!is_scalar($value)) {
+            if (! is_scalar($value)) {
                 continue;
             }
             $value = strtolower(trim((string) $value));
@@ -305,7 +307,7 @@ class InfluencerScoringService
             $value = preg_replace('/\s+/', ' ', $value) ?? $value;
             foreach (preg_split('/\s+/', $value) ?: [] as $part) {
                 $part = trim($part);
-                if ($part !== '' && strlen($part) >= 3 && !in_array($part, ['and', 'with', 'for', 'the', 'und', 'mit'], true)) {
+                if ($part !== '' && strlen($part) >= 3 && ! in_array($part, ['and', 'with', 'for', 'the', 'und', 'mit'], true)) {
                     $keywords[] = $part;
                 }
             }
@@ -399,6 +401,7 @@ class InfluencerScoringService
         }
 
         $normalized = preg_replace('/[^0-9.\-]/', '', $value ?? '');
+
         return is_numeric($normalized) ? (float) $normalized : 0;
     }
 }

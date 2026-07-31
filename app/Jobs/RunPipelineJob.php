@@ -15,7 +15,9 @@ class RunPipelineJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public int $timeout = 3600;
+
     public int $tries = 1;
+
     public bool $failOnTimeout = true;
 
     public function __construct(
@@ -25,7 +27,7 @@ class RunPipelineJob implements ShouldQueue
 
     public function handle(PipelineDiscoveryService $pipeline): void
     {
-        if (!$pipeline->claimJobExecution($this->jobId, (string) ($this->job?->getJobId() ?: 'direct'))) {
+        if (! $pipeline->claimJobExecution($this->jobId, (string) ($this->job?->getJobId() ?: 'direct'))) {
             return;
         }
 

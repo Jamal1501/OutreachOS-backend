@@ -11,8 +11,7 @@ class CrmImportController extends Controller
     public function __construct(
         private WorkspaceContextService $workspaceContext,
         private CrmFileImportService $importer,
-    ) {
-    }
+    ) {}
 
     public function previewCreators(Request $request)
     {

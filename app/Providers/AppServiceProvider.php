@@ -9,13 +9,13 @@ use App\Services\Providers\ApifyDiscoveryProvider;
 use App\Services\Providers\ApifyEnrichmentProvider;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
-use Illuminate\Queue\Events\QueueBusy;
 use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Queue\Events\Looping;
+use Illuminate\Queue\Events\QueueBusy;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
 
@@ -66,7 +66,7 @@ class AppServiceProvider extends ServiceProvider
 
         $this->app['events']->listen(Looping::class, function (): void {
             static $lastHeartbeatAt = 0;
-            if (time() - $lastHeartbeatAt < 30 || !Schema::hasTable('operational_heartbeats')) {
+            if (time() - $lastHeartbeatAt < 30 || ! Schema::hasTable('operational_heartbeats')) {
                 return;
             }
             $lastHeartbeatAt = time();

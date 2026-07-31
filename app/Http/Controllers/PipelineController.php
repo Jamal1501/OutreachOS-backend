@@ -18,8 +18,7 @@ class PipelineController extends Controller
         private WorkspaceContextService $workspaceContext,
         private AiDiscoveryBriefService $briefs,
         private WorkspaceBillingService $billing,
-    ) {
-    }
+    ) {}
 
     public function discover(Request $request)
     {
@@ -142,7 +141,7 @@ class PipelineController extends Controller
         ]);
 
         $state = $this->pipeline->getJobState($validated['jobId']);
-        if (!$state) {
+        if (! $state) {
             return response()->json([
                 'error' => 'Pipeline job not found',
             ], 404);
@@ -192,7 +191,7 @@ class PipelineController extends Controller
 
         $state = $jobId !== '' ? $this->pipeline->getJobState($jobId) : null;
         $jobWorkspaceId = (string) data_get($state, 'request.workspaceId', '');
-        if (!$state || ($jobWorkspaceId !== '' && $workspaceId !== '' && $jobWorkspaceId !== $workspaceId)) {
+        if (! $state || ($jobWorkspaceId !== '' && $workspaceId !== '' && $jobWorkspaceId !== $workspaceId)) {
             return response()->json(['error' => 'Pipeline job not found'], 404);
         }
 
@@ -242,8 +241,8 @@ class PipelineController extends Controller
                 'label' => 'Finding public creator signals',
                 'status' => $this->progressStageStatus('discovery_scrape', $currentStep, $completedSteps, $status),
                 'detail' => $foundPosts !== null
-                    ? $foundPosts . ' posts found'
-                    : 'Searching ' . $seedCount . ' hashtag' . ($seedCount === 1 ? '' : 's') . ' with Apify',
+                    ? $foundPosts.' posts found'
+                    : 'Searching '.$seedCount.' hashtag'.($seedCount === 1 ? '' : 's').' with Apify',
                 'count' => $foundPosts,
             ],
             [
@@ -251,7 +250,7 @@ class PipelineController extends Controller
                 'label' => 'Processing discovered posts',
                 'status' => $this->progressStageStatus('import_posts', $currentStep, $completedSteps, $status),
                 'detail' => $importedPosts !== null
-                    ? $importedPosts . ' posts processed'
+                    ? $importedPosts.' posts processed'
                     : 'Preparing discovered posts for profile extraction',
                 'count' => $importedPosts,
             ],
@@ -260,7 +259,7 @@ class PipelineController extends Controller
                 'label' => 'Selecting creator profiles',
                 'status' => $this->progressStageStatus('extract_urls', $currentStep, $completedSteps, $status),
                 'detail' => $uniqueProfiles !== null
-                    ? $uniqueProfiles . ' unique profiles selected'
+                    ? $uniqueProfiles.' unique profiles selected'
                     : 'Ranking posts and removing duplicate profile URLs',
                 'count' => $uniqueProfiles,
             ],
@@ -269,10 +268,10 @@ class PipelineController extends Controller
                 'label' => 'Enriching selected profiles',
                 'status' => $this->progressStageStatus('enrichment_scrape', $currentStep, $completedSteps, $status),
                 'detail' => $enrichedProfiles !== null
-                    ? $enrichedProfiles . ' profiles enriched'
+                    ? $enrichedProfiles.' profiles enriched'
                     : ($batchedEnrichedProfiles !== null && $batchedTotalProfiles !== null
-                        ? $batchedEnrichedProfiles . ' of ' . $batchedTotalProfiles . ' profiles enriched'
-                        : 'Enriching up to ' . min($enrichmentLimit, max($uniqueProfiles ?? $enrichmentLimit, 1)) . ' selected profiles'
+                        ? $batchedEnrichedProfiles.' of '.$batchedTotalProfiles.' profiles enriched'
+                        : 'Enriching up to '.min($enrichmentLimit, max($uniqueProfiles ?? $enrichmentLimit, 1)).' selected profiles'
                     ),
                 'count' => $enrichedProfiles ?? $batchedEnrichedProfiles,
             ],
@@ -281,7 +280,7 @@ class PipelineController extends Controller
                 'label' => 'Preparing review queue',
                 'status' => $this->progressStageStatus('import_profiles', $currentStep, $completedSteps, $status),
                 'detail' => $readyCreators !== null
-                    ? $readyCreators . ' creators ready to review'
+                    ? $readyCreators.' creators ready to review'
                     : 'Scoring fit and preparing the shortlist',
                 'count' => $readyCreators,
             ],
@@ -334,7 +333,7 @@ class PipelineController extends Controller
         }
 
         if ($previewCount > 0) {
-            return $previewCount . ' creator preview' . ($previewCount === 1 ? ' is' : 's are') . ' ready while enrichment continues.';
+            return $previewCount.' creator preview'.($previewCount === 1 ? ' is' : 's are').' ready while enrichment continues.';
         }
 
         return match ($currentStep) {
@@ -354,7 +353,7 @@ class PipelineController extends Controller
         $payload['planId'] = $this->billing->currentPlanId($workspaceId);
 
         $preflight = $this->creditPreflight($workspaceId, $payload);
-        if (!($preflight['billing']['canRun'] ?? false)) {
+        if (! ($preflight['billing']['canRun'] ?? false)) {
             $message = 'Not enough scrape credits available for this discovery run.';
 
             return response()->json(array_merge([
@@ -370,6 +369,7 @@ class PipelineController extends Controller
             $state = $this->pipeline->createJob($payload);
             try {
                 $result = $this->pipeline->runJob($state['jobId'], $payload);
+
                 return response()->json(array_merge($result, $extraResponse));
             } catch (\Throwable $e) {
                 return response()->json(array_merge([

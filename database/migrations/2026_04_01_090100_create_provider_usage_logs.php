@@ -8,7 +8,7 @@ return new class extends Migration
 {
     public function up(): void
     {
-        if (!Schema::hasTable('ai_usage_logs')) {
+        if (! Schema::hasTable('ai_usage_logs')) {
             Schema::create('ai_usage_logs', function (Blueprint $table) {
                 $table->uuid('id')->primary();
                 $table->uuid('workspace_id')->nullable()->index();
@@ -29,7 +29,7 @@ return new class extends Migration
             });
         }
 
-        if (!Schema::hasTable('apify_usage_logs')) {
+        if (! Schema::hasTable('apify_usage_logs')) {
             Schema::create('apify_usage_logs', function (Blueprint $table) {
                 $table->uuid('id')->primary();
                 $table->uuid('workspace_id')->nullable()->index();

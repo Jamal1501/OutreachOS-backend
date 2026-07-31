@@ -4,11 +4,11 @@ namespace Tests\Feature;
 
 use App\Exceptions\InsufficientCreditsException;
 use App\Mail\WorkspaceInvitationMail;
+use App\Models\DiscoveryRun;
+use App\Models\Project;
 use App\Models\User;
 use App\Models\Workspace;
 use App\Models\WorkspaceMember;
-use App\Models\Project;
-use App\Models\DiscoveryRun;
 use App\Services\AiGatewayService;
 use App\Services\PipelineDiscoveryService;
 use App\Services\WorkspaceBillingService;
@@ -17,8 +17,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
-use Tests\TestCase;
 use RuntimeException;
+use Tests\TestCase;
 
 class WorkspaceIsolationAndBillingAccessTest extends TestCase
 {
@@ -619,14 +619,14 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
         $user = User::query()->create([
             'supabase_user_id' => (string) Str::uuid(),
             'name' => 'Test User',
-            'email' => Str::random(8) . '@example.test',
+            'email' => Str::random(8).'@example.test',
             'password' => 'password',
         ]);
 
         $workspace = Workspace::query()->create([
             'id' => (string) Str::uuid(),
             'name' => 'Test Workspace',
-            'slug' => 'workspace-' . Str::random(8),
+            'slug' => 'workspace-'.Str::random(8),
             'owner_id' => $user->supabase_user_id,
             'plan_id' => 'free',
             'settings' => ['workspaceDataKey' => 'workspace:test'],
@@ -648,7 +648,7 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
         $project = Project::query()->create([
             'workspace_id' => $workspace->id,
             'name' => 'Pipeline Test',
-            'workbook_id' => 'workspace:' . Str::uuid(),
+            'workbook_id' => 'workspace:'.Str::uuid(),
             'status' => 'active',
         ]);
 
@@ -690,7 +690,7 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
     private function stripeSignature(string $payload, string $secret): string
     {
         $timestamp = time();
-        $signature = hash_hmac('sha256', $timestamp . '.' . $payload, $secret);
+        $signature = hash_hmac('sha256', $timestamp.'.'.$payload, $secret);
 
         return sprintf('t=%s,v1=%s', $timestamp, $signature);
     }

@@ -15,8 +15,7 @@ class OutreachLogService
         private ProjectResolverService $projects,
         private LearningEventService $learningEvents,
         private CreatorRelationshipTimelineService $relationshipTimeline,
-    ) {
-    }
+    ) {}
 
     public function appendEvent(string $sheetId, array $payload): string
     {
@@ -120,6 +119,7 @@ class OutreachLogService
     private function parseDateTime(?string $value): ?string
     {
         $value = trim((string) $value);
+
         return $value !== '' ? $value : null;
     }
 
@@ -130,7 +130,7 @@ class OutreachLogService
             return '';
         }
 
-        return Str::startsWith($handle, '@') ? $handle : '@' . ltrim($handle, '@');
+        return Str::startsWith($handle, '@') ? $handle : '@'.ltrim($handle, '@');
     }
 
     private function findTask(string $projectId, array $payload): ?Task
@@ -214,7 +214,7 @@ class OutreachLogService
         $advancedStates = ['replied', 'negotiating', 'accepted', 'declined', 'won', 'lost', 'archived'];
 
         if (in_array($eventType, $this->strictOutreachSentEventTypes(), true)) {
-            if (!in_array((string) $profile->lifecycle_state, $advancedStates, true)) {
+            if (! in_array((string) $profile->lifecycle_state, $advancedStates, true)) {
                 $profile->status = 'CONTACTED';
                 $profile->lifecycle_state = 'contacted';
                 $profile->follow_up_needed = true;
@@ -228,7 +228,7 @@ class OutreachLogService
                 $profile->conversation_url = $url;
             }
         } elseif (in_array($eventType, $this->strictReplyEventTypes(), true)) {
-            if (!in_array((string) $profile->lifecycle_state, ['accepted', 'declined', 'won', 'lost', 'archived'], true)) {
+            if (! in_array((string) $profile->lifecycle_state, ['accepted', 'declined', 'won', 'lost', 'archived'], true)) {
                 $profile->status = 'REPLIED';
                 $profile->lifecycle_state = 'replied';
             }
@@ -292,5 +292,4 @@ class OutreachLogService
             trim($value)
         );
     }
-
 }

@@ -2,8 +2,8 @@
 
 namespace App\Http\Controllers;
 
-use App\Services\StripeBillingService;
 use App\Services\ObservabilityService;
+use App\Services\StripeBillingService;
 use App\Services\WorkspaceBillingService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -18,8 +18,7 @@ class BillingController extends Controller
         private WorkspaceBillingService $billing,
         private StripeBillingService $stripeBilling,
         private ObservabilityService $observability,
-    ) {
-    }
+    ) {}
 
     public function summary(Request $request)
     {
@@ -119,13 +118,13 @@ class BillingController extends Controller
                 'checks' => [
                     ['key' => 'subscription_present', 'ok' => $subscription !== null, 'detail' => $subscription ? 'Subscription row exists.' : 'No subscription row found.'],
                     ['key' => 'wallet_present', 'ok' => $wallet !== null, 'detail' => $wallet ? 'Credit wallet row exists.' : 'No credit wallet row found.'],
-                    ['key' => 'subscription_can_spend', 'ok' => !in_array($subscriptionStatus, $blockedStatuses, true), 'detail' => $subscriptionStatus ?: 'unknown'],
+                    ['key' => 'subscription_can_spend', 'ok' => ! in_array($subscriptionStatus, $blockedStatuses, true), 'detail' => $subscriptionStatus ?: 'unknown'],
                     ['key' => 'stripe_customer_linked', 'ok' => trim((string) ($subscription->stripe_customer_id ?? '')) !== '' || data_get($summary, 'currentPlanId') === 'free', 'detail' => trim((string) ($subscription->stripe_customer_id ?? '')) !== '' ? 'Stripe customer linked.' : 'Free plan may not have a Stripe customer yet.'],
                     ['key' => 'stripe_subscription_linked', 'ok' => trim((string) ($subscription->stripe_subscription_id ?? '')) !== '' || data_get($summary, 'currentPlanId') === 'free', 'detail' => trim((string) ($subscription->stripe_subscription_id ?? '')) !== '' ? 'Stripe subscription linked.' : 'Free plan may not have a Stripe subscription.'],
                     ['key' => 'wallet_non_negative', 'ok' => $wallet !== null && min((int) ($wallet->scrape_credits_balance ?? 0), (int) ($wallet->ai_credits_balance ?? 0), (int) ($wallet->bonus_scrape_credits ?? 0), (int) ($wallet->bonus_ai_credits ?? 0)) >= 0, 'detail' => 'Wallet balances are unsigned in schema, but this verifies the current snapshot.'],
-                    ['key' => 'no_failed_stripe_webhooks_recent', 'ok' => $failedWebhookCount === 0, 'detail' => $failedWebhookCount . ' failed Stripe webhook events in the latest 20.'],
-                    ['key' => 'no_stale_reserved_usage_recent', 'ok' => $reservedUsageCount === 0, 'detail' => $reservedUsageCount . ' reserved usage events in the latest 10.'],
-                    ['key' => 'billing_audit_visible', 'ok' => $recentAuditEvents->isNotEmpty(), 'detail' => $recentAuditEvents->count() . ' recent billing audit events found.'],
+                    ['key' => 'no_failed_stripe_webhooks_recent', 'ok' => $failedWebhookCount === 0, 'detail' => $failedWebhookCount.' failed Stripe webhook events in the latest 20.'],
+                    ['key' => 'no_stale_reserved_usage_recent', 'ok' => $reservedUsageCount === 0, 'detail' => $reservedUsageCount.' reserved usage events in the latest 10.'],
+                    ['key' => 'billing_audit_visible', 'ok' => $recentAuditEvents->isNotEmpty(), 'detail' => $recentAuditEvents->count().' recent billing audit events found.'],
                 ],
                 'summary' => $summary,
                 'recentUsageEvents' => $recentUsage,
@@ -200,7 +199,7 @@ class BillingController extends Controller
                 && Schema::hasTable('stripe_webhook_events')
                 && DB::table('stripe_webhook_events')->where('stripe_event_id', $eventId)->exists();
 
-            if (!$alreadyTracked) {
+            if (! $alreadyTracked) {
                 $this->observability->reportWebhookFailure(
                     'stripe',
                     $eventId,
@@ -221,19 +220,19 @@ class BillingController extends Controller
         $scheme = strtolower((string) ($parts['scheme'] ?? ''));
         $host = strtolower((string) ($parts['host'] ?? ''));
 
-        if ($host === '' || !in_array($scheme, ['https', 'http'], true)) {
+        if ($host === '' || ! in_array($scheme, ['https', 'http'], true)) {
             throw ValidationException::withMessages([
                 'successUrl' => 'Invalid checkout return URL.',
             ]);
         }
 
-        if ($scheme !== 'https' && !in_array($host, ['localhost', '127.0.0.1'], true)) {
+        if ($scheme !== 'https' && ! in_array($host, ['localhost', '127.0.0.1'], true)) {
             throw ValidationException::withMessages([
                 'successUrl' => 'Checkout return URL must use HTTPS.',
             ]);
         }
 
-        if (!$this->checkoutReturnHostAllowed($host)) {
+        if (! $this->checkoutReturnHostAllowed($host)) {
             throw ValidationException::withMessages([
                 'successUrl' => 'Checkout return URL host is not allowed.',
             ]);

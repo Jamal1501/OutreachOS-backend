@@ -18,8 +18,7 @@ class OperatorViewService
         private InfluencerScoringService $scoring,
         private CreatorLifecycleService $lifecycle,
         private ProjectResolverService $projects,
-    ) {
-    }
+    ) {}
 
     public function build(string $sheetId): array
     {
@@ -54,12 +53,12 @@ class OperatorViewService
                 continue;
             }
 
-            $key = strtolower($task['platform'] . '|' . ltrim($task['handle'], '@'));
+            $key = strtolower($task['platform'].'|'.ltrim($task['handle'], '@'));
             $openTaskByCreator[$key][] = $task;
         }
 
         foreach ($creators as &$creator) {
-            $taskKey = strtolower($creator['platform'] . '|' . ltrim($creator['handle'], '@'));
+            $taskKey = strtolower($creator['platform'].'|'.ltrim($creator['handle'], '@'));
             $creator['duplicateRisk'] = $duplicateByCreator[$creator['id']] ?? 'low';
             $creator['openTaskCount'] = count($openTaskByCreator[$taskKey] ?? []);
             $creator['recommendedNextAction'] = $this->recommendedNextAction($creator);
@@ -72,40 +71,35 @@ class OperatorViewService
             fn (array $creator) => in_array($creator['lifecycleState'], $triageStates, true)
         ));
 
-        usort($triageItems, fn (array $a, array $b) =>
-            ($b['valueScore'] <=> $a['valueScore'])
+        usort($triageItems, fn (array $a, array $b) => ($b['valueScore'] <=> $a['valueScore'])
             ?: strcmp((string) ($b['addedAt'] ?? ''), (string) ($a['addedAt'] ?? ''))
         );
 
         $readyQueue = array_values(array_filter($creators, function (array $creator) use ($openTaskByCreator) {
-            $taskKey = strtolower($creator['platform'] . '|' . ltrim($creator['handle'], '@'));
+            $taskKey = strtolower($creator['platform'].'|'.ltrim($creator['handle'], '@'));
+
             return $this->isCreatorInOutreachQueue($creator, $openTaskByCreator[$taskKey] ?? []);
         }));
 
-        usort($readyQueue, fn (array $a, array $b) =>
-            ($b['valueScore'] <=> $a['valueScore'])
+        usort($readyQueue, fn (array $a, array $b) => ($b['valueScore'] <=> $a['valueScore'])
             ?: (($b['followers'] ?? 0) <=> ($a['followers'] ?? 0))
         );
 
         $today = now()->toDateString();
-        $tasksDueToday = array_values(array_filter($tasks, fn (array $task) =>
-            !in_array($task['status'], ['completed', 'skipped'], true)
+        $tasksDueToday = array_values(array_filter($tasks, fn (array $task) => ! in_array($task['status'], ['completed', 'skipped'], true)
             && str_starts_with((string) ($task['dueDate'] ?? ''), $today)
         ));
 
-        usort($tasksDueToday, fn (array $a, array $b) =>
-            strcmp((string) ($a['dueDate'] ?? ''), (string) ($b['dueDate'] ?? ''))
+        usort($tasksDueToday, fn (array $a, array $b) => strcmp((string) ($a['dueDate'] ?? ''), (string) ($b['dueDate'] ?? ''))
         );
 
         $recentActivity = $this->meaningfulSignals($this->normalizeRecentActivity($outreachRows));
         $workflowHealth = $this->workflowHealth($creators, $tasks, $duplicates, $readyQueue, $triageItems, $tasksDueToday);
 
-        $outreachSent = count(array_filter($outreachRows, fn (array $row) =>
-            Str::contains(Str::upper((string) ($row['Event_Type'] ?? '')), ['SENT', 'OUTREACH'])
+        $outreachSent = count(array_filter($outreachRows, fn (array $row) => Str::contains(Str::upper((string) ($row['Event_Type'] ?? '')), ['SENT', 'OUTREACH'])
         ));
 
-        $replies = count(array_filter($outreachRows, fn (array $row) =>
-            Str::contains(Str::upper((string) ($row['Event_Type'] ?? '')), ['REPLY', 'ACCEPTED', 'DEAL_WON'])
+        $replies = count(array_filter($outreachRows, fn (array $row) => Str::contains(Str::upper((string) ($row['Event_Type'] ?? '')), ['REPLY', 'ACCEPTED', 'DEAL_WON'])
         ));
 
         return [
@@ -138,7 +132,7 @@ class OperatorViewService
         $creatorRow = collect($creatorRows)
             ->first(fn (array $row) => (int) ($row['_row_number'] ?? 0) === $rowNumber);
 
-        if (!$creatorRow) {
+        if (! $creatorRow) {
             throw new \RuntimeException('Creator not found');
         }
 
@@ -157,8 +151,7 @@ class OperatorViewService
         $allTasks = $this->normalizeTasks($this->safeGetRows($sheetId, 'Task_Queue'));
         $relatedTasks = array_values(array_filter(
             $allTasks,
-            fn (array $task) =>
-                strtolower($task['platform']) === strtolower($creator['platform'])
+            fn (array $task) => strtolower($task['platform']) === strtolower($creator['platform'])
                 && strtolower(ltrim($task['handle'], '@')) === strtolower(ltrim($creator['handle'], '@'))
         ));
 
@@ -169,10 +162,10 @@ class OperatorViewService
         );
 
         array_unshift($timeline, [
-            'id' => 'creator-added-' . $creator['id'],
+            'id' => 'creator-added-'.$creator['id'],
             'type' => 'creator_added',
             'title' => 'Creator added to CRM',
-            'description' => $creator['addedAt'] ? 'Added at ' . $creator['addedAt'] : 'Added to CRM',
+            'description' => $creator['addedAt'] ? 'Added at '.$creator['addedAt'] : 'Added to CRM',
             'timestamp' => (string) ($creator['addedAt'] ?? ''),
             'handle' => $creator['handle'],
             'platform' => $creator['platform'],
@@ -181,114 +174,114 @@ class OperatorViewService
         return $this->buildDecisionPayload($creator, $duplicates, $relatedTasks, $timeline, $linkedProfiles);
     }
 
-public function buildDecisionSheetForProfileId(string $sheetId, string $profileId): array
-{
-    $project = $this->projects->findByWorkbookId($sheetId);
-    if (!$project) {
-        throw new \RuntimeException('Project not found');
-    }
+    public function buildDecisionSheetForProfileId(string $sheetId, string $profileId): array
+    {
+        $project = $this->projects->findByWorkbookId($sheetId);
+        if (! $project) {
+            throw new \RuntimeException('Project not found');
+        }
 
-    $profile = CreatorProfile::query()
-        ->with('creator')
-        ->where('project_id', $project->id)
-        ->where('id', $profileId)
-        ->first();
-
-    if (!$profile) {
-        throw new \RuntimeException('Creator not found');
-    }
-
-    $linkedProfileRows = CreatorProfile::query()
-        ->with('creator')
-        ->where('project_id', $project->id)
-        ->where('creator_id', $profile->creator_id)
-        ->orderByDesc('updated_at')
-        ->limit(20)
-        ->get();
-
-    $creator = $this->normalizeCreatorProfileCard($profile, $linkedProfileRows->count());
-    $linkedProfiles = $linkedProfileRows
-        ->map(fn (CreatorProfile $item) => $this->normalizeCreatorProfileCard($item, $linkedProfileRows->count()))
-        ->values()
-        ->all();
-
-    if ($linkedProfiles === []) {
-        $linkedProfiles = [$creator];
-    }
-
-    $duplicateCandidates = CreatorProfile::query()
-        ->with('creator')
-        ->where('project_id', $project->id)
-        ->where('id', '<>', $profile->id)
-        ->where(function (Builder $query) use ($profile) {
-            $handle = ltrim(strtolower((string) $profile->handle), '@');
-            $email = strtolower(trim((string) ($profile->creator?->primary_email ?? '')));
-            $displayName = strtolower(trim((string) ($profile->creator?->display_name ?? '')));
-
-            $query->where(function (Builder $handleQuery) use ($profile, $handle) {
-                $handleQuery->whereRaw("LOWER(COALESCE(platform, '')) = ?", [strtolower((string) $profile->platform)])
-                    ->whereRaw("LOWER(REPLACE(COALESCE(handle, ''), '@', '')) = ?", [$handle]);
-            });
-
-            if ($email !== '') {
-                $query->orWhereHas('creator', fn (Builder $creatorQuery) => $creatorQuery->whereRaw("LOWER(COALESCE(primary_email, '')) = ?", [$email]));
-            }
-
-            if ($displayName !== '') {
-                $query->orWhereHas('creator', fn (Builder $creatorQuery) => $creatorQuery->whereRaw("LOWER(COALESCE(display_name, '')) = ?", [$displayName]));
-            }
-        })
-        ->limit(25)
-        ->get()
-        ->map(fn (CreatorProfile $item) => $this->normalizeCreatorProfileCard($item))
-        ->values()
-        ->all();
-
-    $duplicates = $this->detectDuplicateWarnings([$creator, ...$duplicateCandidates]);
-
-    $relatedTasks = $this->normalizeDbTasks(
-        Task::query()
+        $profile = CreatorProfile::query()
+            ->with('creator')
             ->where('project_id', $project->id)
-            ->where(function (Builder $query) use ($profile, $creator) {
-                $handle = ltrim((string) ($creator['handle'] ?? ''), '@');
-                $query->where('creator_profile_id', $profile->id)
-                    ->orWhere(function (Builder $taskQuery) use ($creator, $handle) {
-                        $taskQuery->where('platform', strtolower((string) ($creator['platform'] ?? 'instagram')))
-                            ->where(function (Builder $handleQuery) use ($creator, $handle) {
-                                $handleQuery->where('handle', (string) ($creator['handle'] ?? ''))
-                                    ->orWhere('handle', $handle)
-                                    ->orWhere('handle', '@' . $handle);
-                            });
-                    });
-            })
-            ->orderByDesc('created_at')
+            ->where('id', $profileId)
+            ->first();
+
+        if (! $profile) {
+            throw new \RuntimeException('Creator not found');
+        }
+
+        $linkedProfileRows = CreatorProfile::query()
+            ->with('creator')
+            ->where('project_id', $project->id)
+            ->where('creator_id', $profile->creator_id)
+            ->orderByDesc('updated_at')
             ->limit(20)
+            ->get();
+
+        $creator = $this->normalizeCreatorProfileCard($profile, $linkedProfileRows->count());
+        $linkedProfiles = $linkedProfileRows
+            ->map(fn (CreatorProfile $item) => $this->normalizeCreatorProfileCard($item, $linkedProfileRows->count()))
+            ->values()
+            ->all();
+
+        if ($linkedProfiles === []) {
+            $linkedProfiles = [$creator];
+        }
+
+        $duplicateCandidates = CreatorProfile::query()
+            ->with('creator')
+            ->where('project_id', $project->id)
+            ->where('id', '<>', $profile->id)
+            ->where(function (Builder $query) use ($profile) {
+                $handle = ltrim(strtolower((string) $profile->handle), '@');
+                $email = strtolower(trim((string) ($profile->creator?->primary_email ?? '')));
+                $displayName = strtolower(trim((string) ($profile->creator?->display_name ?? '')));
+
+                $query->where(function (Builder $handleQuery) use ($profile, $handle) {
+                    $handleQuery->whereRaw("LOWER(COALESCE(platform, '')) = ?", [strtolower((string) $profile->platform)])
+                        ->whereRaw("LOWER(REPLACE(COALESCE(handle, ''), '@', '')) = ?", [$handle]);
+                });
+
+                if ($email !== '') {
+                    $query->orWhereHas('creator', fn (Builder $creatorQuery) => $creatorQuery->whereRaw("LOWER(COALESCE(primary_email, '')) = ?", [$email]));
+                }
+
+                if ($displayName !== '') {
+                    $query->orWhereHas('creator', fn (Builder $creatorQuery) => $creatorQuery->whereRaw("LOWER(COALESCE(display_name, '')) = ?", [$displayName]));
+                }
+            })
+            ->limit(25)
             ->get()
-            ->all()
-    );
+            ->map(fn (CreatorProfile $item) => $this->normalizeCreatorProfileCard($item))
+            ->values()
+            ->all();
 
-    $timeline = $this->normalizeDbRecentActivity(
-        $this->creatorOutreachEventQuery($project->id, $profile, $creator)
-            ->orderByDesc('sent_at')
-            ->limit(30)
-            ->get()
-            ->all(),
-        $creator['platform'],
-        $creator['handle']
-    );
+        $duplicates = $this->detectDuplicateWarnings([$creator, ...$duplicateCandidates]);
 
-    array_unshift($timeline, [
-        'id' => 'creator-added-' . $creator['id'],
-        'type' => 'creator_added',
-        'title' => 'Creator added to CRM',
-        'description' => $creator['addedAt'] ? 'Added at ' . $creator['addedAt'] : 'Added to CRM',
-        'timestamp' => (string) ($creator['addedAt'] ?? ''),
-        'handle' => $creator['handle'],
-        'platform' => $creator['platform'],
-    ]);
+        $relatedTasks = $this->normalizeDbTasks(
+            Task::query()
+                ->where('project_id', $project->id)
+                ->where(function (Builder $query) use ($profile, $creator) {
+                    $handle = ltrim((string) ($creator['handle'] ?? ''), '@');
+                    $query->where('creator_profile_id', $profile->id)
+                        ->orWhere(function (Builder $taskQuery) use ($creator, $handle) {
+                            $taskQuery->where('platform', strtolower((string) ($creator['platform'] ?? 'instagram')))
+                                ->where(function (Builder $handleQuery) use ($creator, $handle) {
+                                    $handleQuery->where('handle', (string) ($creator['handle'] ?? ''))
+                                        ->orWhere('handle', $handle)
+                                        ->orWhere('handle', '@'.$handle);
+                                });
+                        });
+                })
+                ->orderByDesc('created_at')
+                ->limit(20)
+                ->get()
+                ->all()
+        );
 
-    return $this->buildDecisionPayload($creator, $duplicates, $relatedTasks, $timeline, $linkedProfiles);
-}
+        $timeline = $this->normalizeDbRecentActivity(
+            $this->creatorOutreachEventQuery($project->id, $profile, $creator)
+                ->orderByDesc('sent_at')
+                ->limit(30)
+                ->get()
+                ->all(),
+            $creator['platform'],
+            $creator['handle']
+        );
+
+        array_unshift($timeline, [
+            'id' => 'creator-added-'.$creator['id'],
+            'type' => 'creator_added',
+            'title' => 'Creator added to CRM',
+            'description' => $creator['addedAt'] ? 'Added at '.$creator['addedAt'] : 'Added to CRM',
+            'timestamp' => (string) ($creator['addedAt'] ?? ''),
+            'handle' => $creator['handle'],
+            'platform' => $creator['platform'],
+        ]);
+
+        return $this->buildDecisionPayload($creator, $duplicates, $relatedTasks, $timeline, $linkedProfiles);
+    }
 
     private function buildFromDatabase(int $projectId): array
     {
@@ -335,12 +328,12 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
             if (in_array($task['status'], ['completed', 'skipped'], true)) {
                 continue;
             }
-            $key = strtolower($task['platform'] . '|' . ltrim($task['handle'], '@'));
+            $key = strtolower($task['platform'].'|'.ltrim($task['handle'], '@'));
             $openTaskByCreator[$key][] = $task;
         }
 
         foreach ($creators as &$creator) {
-            $taskKey = strtolower($creator['platform'] . '|' . ltrim($creator['handle'], '@'));
+            $taskKey = strtolower($creator['platform'].'|'.ltrim($creator['handle'], '@'));
             $creator['duplicateRisk'] = $duplicateByCreator[$creator['id']] ?? 'low';
             $creator['openTaskCount'] = count($openTaskByCreator[$taskKey] ?? []);
             $creator['recommendedNextAction'] = $this->recommendedNextAction($creator);
@@ -352,13 +345,14 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         usort($triageItems, fn (array $a, array $b) => ($b['valueScore'] <=> $a['valueScore']) ?: strcmp((string) ($b['addedAt'] ?? ''), (string) ($a['addedAt'] ?? '')));
 
         $readyQueue = array_values(array_filter($creators, function (array $creator) use ($openTaskByCreator) {
-            $taskKey = strtolower($creator['platform'] . '|' . ltrim($creator['handle'], '@'));
+            $taskKey = strtolower($creator['platform'].'|'.ltrim($creator['handle'], '@'));
+
             return $this->isCreatorInOutreachQueue($creator, $openTaskByCreator[$taskKey] ?? []);
         }));
         usort($readyQueue, fn (array $a, array $b) => ($b['valueScore'] <=> $a['valueScore']) ?: (($b['followers'] ?? 0) <=> ($a['followers'] ?? 0)));
 
         $today = now()->toDateString();
-        $tasksDueToday = array_values(array_filter($tasks, fn (array $task) => !in_array($task['status'], ['completed', 'skipped'], true) && str_starts_with((string) ($task['dueDate'] ?? ''), $today)));
+        $tasksDueToday = array_values(array_filter($tasks, fn (array $task) => ! in_array($task['status'], ['completed', 'skipped'], true) && str_starts_with((string) ($task['dueDate'] ?? ''), $today)));
         usort($tasksDueToday, fn (array $a, array $b) => strcmp((string) ($a['dueDate'] ?? ''), (string) ($b['dueDate'] ?? '')));
 
         $recentActivity = $this->meaningfulSignals($this->normalizeDbRecentActivity(
@@ -406,12 +400,12 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
             ->with('creator')
             ->where('project_id', $projectId)
             ->where(function (Builder $query) use ($rowNumber) {
-                $query->where('source_reference', 'Creators_CRM:' . $rowNumber)
+                $query->where('source_reference', 'Creators_CRM:'.$rowNumber)
                     ->orWhere('source_metadata->sheet_row_number', $rowNumber);
             })
             ->first();
 
-        if (!$profile) {
+        if (! $profile) {
             throw new \RuntimeException('Creator not found');
         }
 
@@ -444,7 +438,7 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
                                 ->where(function (Builder $handleQuery) use ($creator, $handle) {
                                     $handleQuery->where('handle', (string) ($creator['handle'] ?? ''))
                                         ->orWhere('handle', $handle)
-                                        ->orWhere('handle', '@' . $handle);
+                                        ->orWhere('handle', '@'.$handle);
                                 });
                         });
                 })
@@ -463,10 +457,10 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         );
 
         array_unshift($timeline, [
-            'id' => 'creator-added-' . $creator['id'],
+            'id' => 'creator-added-'.$creator['id'],
             'type' => 'creator_added',
             'title' => 'Creator added to CRM',
-            'description' => $creator['addedAt'] ? 'Added at ' . $creator['addedAt'] : 'Added to CRM',
+            'description' => $creator['addedAt'] ? 'Added at '.$creator['addedAt'] : 'Added to CRM',
             'timestamp' => (string) ($creator['addedAt'] ?? ''),
             'handle' => $creator['handle'],
             'platform' => $creator['platform'],
@@ -534,9 +528,9 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
                     ($creator['valueScore'] ?? 0) >= 70 ? 'High-value creator by current score' : null,
                     ($creator['engagementRate'] ?? 0) >= 2 ? 'Engagement rate is usable' : null,
                     $creator['email'] ? 'Direct contact route exists' : null,
-                    $creator['niche'] ? 'Niche present: ' . $creator['niche'] : null,
+                    $creator['niche'] ? 'Niche present: '.$creator['niche'] : null,
                     $lastContentDate !== '' ? 'Recent source activity captured' : null,
-                    count($sourceHashtags) > 0 ? 'Discovered through #' . implode(', #', array_slice($sourceHashtags, 0, 3)) : null,
+                    count($sourceHashtags) > 0 ? 'Discovered through #'.implode(', #', array_slice($sourceHashtags, 0, 3)) : null,
                 ])),
                 'confidenceSummary' => [
                     'score' => $this->confidenceScore($creator, $confidenceReasons, $hardDisqualifiers, $timeline),
@@ -555,7 +549,7 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
                         ? array_values(array_unique(array_filter(array_map(fn (array $warning) => (string) ($warning['reason'] ?? ''), $duplicates))))
                         : ['No duplicate warning currently surfaced'],
                     'relatedCreators' => count($duplicates) > 0
-                        ? array_values(array_unique(array_filter(array_merge(...array_map(fn (array $warning) => array_map(fn (array $item) => $item['handle'] . ' (' . $item['platform'] . ')', $warning['creators']), $duplicates)))))
+                        ? array_values(array_unique(array_filter(array_merge(...array_map(fn (array $warning) => array_map(fn (array $item) => $item['handle'].' ('.$item['platform'].')', $warning['creators']), $duplicates)))))
                         : [],
                 ],
                 'recommendedNextAction' => (string) ($nextBestAction['reason'] ?? $nextBestAction['title'] ?? ''),
@@ -630,7 +624,7 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         $linkedProfileCount = $linkedProfiles !== '' ? count(array_filter(explode(',', $linkedProfiles))) : ($identityId !== '' ? 1 : 0);
 
         return [
-            'id' => 'crm:' . (int) ($row['_row_number'] ?? 0),
+            'id' => 'crm:'.(int) ($row['_row_number'] ?? 0),
             'rowNumber' => (int) ($row['_row_number'] ?? 0),
             'platform' => $platform,
             'handle' => (string) ($row['Handle'] ?? ''),
@@ -691,17 +685,17 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         $creatorMetadata = is_array($creator?->metadata) ? $creator->metadata : [];
 
         return [
-            'id' => $sourceRowNumber > 0 ? 'crm:' . $sourceRowNumber : 'profile:' . $profile->id,
+            'id' => $sourceRowNumber > 0 ? 'crm:'.$sourceRowNumber : 'profile:'.$profile->id,
             'projectId' => (string) $profile->project_id,
             'platform' => strtolower((string) ($profile->platform ?: 'instagram')),
-'handle' => (string) ($profile->handle ?: ''),
-'fullName' => (string) ($creator?->display_name ?: $profile->username ?: ''),
-'avatarUrl' => (string) ($profile->profile_pic_url ?: ''),
-'followers' => (int) ($profile->followers_count ?? 0),
-'engagementRate' => $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null,
-'email' => (string) ($creator?->primary_email ?: ''),
-'profileUrl' => (string) ($profile->profile_url ?: $profile->dm_link ?: ''),
-'status' => $state,
+            'handle' => (string) ($profile->handle ?: ''),
+            'fullName' => (string) ($creator?->display_name ?: $profile->username ?: ''),
+            'avatarUrl' => (string) ($profile->profile_pic_url ?: ''),
+            'followers' => (int) ($profile->followers_count ?? 0),
+            'engagementRate' => $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null,
+            'email' => (string) ($creator?->primary_email ?: ''),
+            'profileUrl' => (string) ($profile->profile_url ?: $profile->dm_link ?: ''),
+            'status' => $state,
             'lifecycleState' => $state,
             'enrichmentStatus' => 'enriched',
             'niche' => (string) ($creator?->niche_category ?: ''),
@@ -744,7 +738,6 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         ];
     }
 
-
     private function sanitizeStoredMessageDraft(string $value): string
     {
         $clean = trim(str_replace('—', ' - ', $value));
@@ -781,31 +774,32 @@ public function buildDecisionSheetForProfileId(string $sheetId, string $profileI
         $items = array_map(function (Task $task) {
             $status = strtoupper(trim((string) ($task->status ?: 'PENDING')));
 
-return [
-    'id' => (string) ($task->external_task_key ?: $task->id),
-    'creatorProfileId' => (string) ($task->creator_profile_id ?: ''),
-    'type' => (string) $task->task_type,
-    'platform' => Str::lower((string) ($task->platform ?: 'instagram')),
-    'handle' => (string) ($task->handle ?: ''),
-    'status' => match ($status) {
-        'DONE', 'COMPLETED' => 'completed',
-        'SKIPPED' => 'skipped',
-        'IN_PROGRESS' => 'in_progress',
-        'SNOOZED' => 'snoozed',
-        default => 'pending',
-    },
-    'priority' => Str::lower((string) ($task->priority ?: 'medium')),
-    'dueDate' => optional($task->due_at)?->toDateTimeString() ?? '',
-    'createdAt' => optional($task->created_at)?->toDateTimeString() ?? '',
-    'completedAt' => optional($task->completed_at)?->toDateTimeString() ?? '',
-    'messageText' => $this->sanitizeStoredMessageDraft((string) ($task->message_draft ?: '')),
-    'profileUrl' => (string) ($task->open_url ?: ''),
-    'profilePicUrl' => (string) ($task->creatorProfile?->profile_pic_url ?: ''),
-    'notes' => (string) ($task->notes ?: ''),
-];
+            return [
+                'id' => (string) ($task->external_task_key ?: $task->id),
+                'creatorProfileId' => (string) ($task->creator_profile_id ?: ''),
+                'type' => (string) $task->task_type,
+                'platform' => Str::lower((string) ($task->platform ?: 'instagram')),
+                'handle' => (string) ($task->handle ?: ''),
+                'status' => match ($status) {
+                    'DONE', 'COMPLETED' => 'completed',
+                    'SKIPPED' => 'skipped',
+                    'IN_PROGRESS' => 'in_progress',
+                    'SNOOZED' => 'snoozed',
+                    default => 'pending',
+                },
+                'priority' => Str::lower((string) ($task->priority ?: 'medium')),
+                'dueDate' => optional($task->due_at)?->toDateTimeString() ?? '',
+                'createdAt' => optional($task->created_at)?->toDateTimeString() ?? '',
+                'completedAt' => optional($task->completed_at)?->toDateTimeString() ?? '',
+                'messageText' => $this->sanitizeStoredMessageDraft((string) ($task->message_draft ?: '')),
+                'profileUrl' => (string) ($task->open_url ?: ''),
+                'profilePicUrl' => (string) ($task->creatorProfile?->profile_pic_url ?: ''),
+                'notes' => (string) ($task->notes ?: ''),
+            ];
         }, $tasks);
 
         usort($items, fn (array $a, array $b) => strcmp((string) ($a['dueDate'] ?? ''), (string) ($b['dueDate'] ?? '')));
+
         return $items;
     }
 
@@ -814,7 +808,7 @@ return [
         $items = [];
 
         foreach ($events as $event) {
-            if (!$event instanceof OutreachEvent) {
+            if (! $event instanceof OutreachEvent) {
                 continue;
             }
             $rowPlatform = Str::lower((string) ($event->platform ?: ''));
@@ -839,6 +833,7 @@ return [
         }
 
         usort($items, fn (array $a, array $b) => strcmp((string) ($b['timestamp'] ?? ''), (string) ($a['timestamp'] ?? '')));
+
         return $items;
     }
 
@@ -885,6 +880,7 @@ return [
             }
 
             $description = strtolower((string) ($item['description'] ?? ''));
+
             return str_contains($description, 'follow')
                 || str_contains($description, 'accepted')
                 || str_contains($description, 'lost')
@@ -945,7 +941,8 @@ return [
         }
 
         $separator = str_contains($baseRoute, '?') ? '&' : '?';
-        return $baseRoute . $separator . 'handle=' . rawurlencode($handle);
+
+        return $baseRoute.$separator.'handle='.rawurlencode($handle);
     }
 
     private function workflowHealth(array $creators, array $tasks, array $duplicates, array $readyQueue, array $triageItems, array $tasksDueToday): array
@@ -963,7 +960,7 @@ return [
         $accepted = (int) ($stateCounts['accepted'] ?? 0);
         $won = (int) ($stateCounts['won'] ?? 0);
         $qualifiedButNoTask = count(array_filter($creators, function (array $creator) use ($readyQueue) {
-            if (!in_array((string) ($creator['lifecycleState'] ?? ''), ['approved_for_outreach', 'queued'], true)) {
+            if (! in_array((string) ($creator['lifecycleState'] ?? ''), ['approved_for_outreach', 'queued'], true)) {
                 return false;
             }
 
@@ -977,7 +974,7 @@ return [
         }));
 
         $missingContactData = count(array_filter($creators, function (array $creator) {
-            if (!in_array((string) ($creator['lifecycleState'] ?? ''), ['needs_review', 'enriched', 'approved_for_outreach', 'queued'], true)) {
+            if (! in_array((string) ($creator['lifecycleState'] ?? ''), ['needs_review', 'enriched', 'approved_for_outreach', 'queued'], true)) {
                 return false;
             }
 
@@ -1092,30 +1089,30 @@ return [
         $parts = [];
 
         if ($tasksDueToday > 0) {
-            $parts[] = $tasksDueToday . ' smart follow-up ' . ($tasksDueToday === 1 ? 'task is' : 'tasks are') . ' due';
+            $parts[] = $tasksDueToday.' smart follow-up '.($tasksDueToday === 1 ? 'task is' : 'tasks are').' due';
         }
         if ($repliesWaiting > 0) {
-            $parts[] = $repliesWaiting . ' creator ' . ($repliesWaiting === 1 ? 'reply needs' : 'replies need') . ' handling';
+            $parts[] = $repliesWaiting.' creator '.($repliesWaiting === 1 ? 'reply needs' : 'replies need').' handling';
         }
         if ($outreachQueue > 0) {
-            $parts[] = $outreachQueue . ' creator' . ($outreachQueue === 1 ? ' is' : 's are') . ' in the outreach queue';
+            $parts[] = $outreachQueue.' creator'.($outreachQueue === 1 ? ' is' : 's are').' in the outreach queue';
         }
 
         $topBlocker = $bottlenecks[0] ?? null;
         if (is_array($topBlocker)) {
-            $parts[] = (int) ($topBlocker['count'] ?? 0) . ' ' . strtolower((string) ($topBlocker['label'] ?? 'blockers'));
+            $parts[] = (int) ($topBlocker['count'] ?? 0).' '.strtolower((string) ($topBlocker['label'] ?? 'blockers'));
         }
 
         if ($parts === []) {
             return 'No urgent workflow issue is waiting. Use live discovery or CRM review to create the next useful action.';
         }
 
-        return 'Today: ' . implode(', ', array_slice($parts, 0, 3)) . '.';
+        return 'Today: '.implode(', ', array_slice($parts, 0, 3)).'.';
     }
 
     private function isOpenTask(array $task): bool
     {
-        return !in_array(strtolower((string) ($task['status'] ?? '')), ['completed', 'skipped', 'archived'], true);
+        return ! in_array(strtolower((string) ($task['status'] ?? '')), ['completed', 'skipped', 'archived'], true);
     }
 
     private function isTaskOverdue(array $task): bool
@@ -1159,8 +1156,7 @@ return [
             ];
         }, $taskRows);
 
-        usort($items, fn (array $a, array $b) =>
-            strcmp((string) ($a['dueDate'] ?? ''), (string) ($b['dueDate'] ?? ''))
+        usort($items, fn (array $a, array $b) => strcmp((string) ($a['dueDate'] ?? ''), (string) ($b['dueDate'] ?? ''))
         );
 
         return $items;
@@ -1185,7 +1181,7 @@ return [
             $eventType = Str::upper((string) ($row['Event_Type'] ?? 'EVENT'));
 
             $items[] = [
-                'id' => (string) ($row['Event_ID'] ?? ('evt-' . $index)),
+                'id' => (string) ($row['Event_ID'] ?? ('evt-'.$index)),
                 'type' => Str::lower($eventType),
                 'title' => str_replace('_', ' ', Str::headline($eventType)),
                 'description' => (string) ($row['Notes'] ?? ''),
@@ -1196,8 +1192,7 @@ return [
             ];
         }
 
-        usort($items, fn (array $a, array $b) =>
-            strcmp((string) ($b['timestamp'] ?? ''), (string) ($a['timestamp'] ?? ''))
+        usort($items, fn (array $a, array $b) => strcmp((string) ($b['timestamp'] ?? ''), (string) ($a['timestamp'] ?? ''))
         );
 
         return $items;
@@ -1213,13 +1208,13 @@ return [
             $nameKey = strtolower(trim((string) ($creator['fullName'] ?? '')));
 
             if ($handleKey !== '') {
-                $groups['handle:' . $handleKey][] = $creator;
+                $groups['handle:'.$handleKey][] = $creator;
             }
             if ($emailKey !== '') {
-                $groups['email:' . $emailKey][] = $creator;
+                $groups['email:'.$emailKey][] = $creator;
             }
             if ($nameKey !== '') {
-                $groups['name:' . $nameKey][] = $creator;
+                $groups['name:'.$nameKey][] = $creator;
             }
         }
 
@@ -1255,8 +1250,7 @@ return [
             ];
         }
 
-        usort($warnings, fn (array $a, array $b) =>
-            strcmp((string) ($a['risk'] ?? ''), (string) ($b['risk'] ?? ''))
+        usort($warnings, fn (array $a, array $b) => strcmp((string) ($a['risk'] ?? ''), (string) ($b['risk'] ?? ''))
         );
 
         return $warnings;
@@ -1268,12 +1262,12 @@ return [
         $title = trim((string) ($action['title'] ?? ''));
         $reason = trim((string) ($action['reason'] ?? ''));
 
-        return trim($title . ($reason !== '' ? '. ' . $reason : ''));
+        return trim($title.($reason !== '' ? '. '.$reason : ''));
     }
 
     private function nextBestAction(array $creator, array $relatedTasks = [], array $timeline = [], array $hardDisqualifiers = []): array
     {
-        $openTasks = array_values(array_filter($relatedTasks, fn (array $task) => !in_array((string) ($task['status'] ?? ''), ['completed', 'skipped', 'archived'], true)));
+        $openTasks = array_values(array_filter($relatedTasks, fn (array $task) => ! in_array((string) ($task['status'] ?? ''), ['completed', 'skipped', 'archived'], true)));
         $state = (string) ($creator['lifecycleState'] ?? '');
         $hasEmail = trim((string) ($creator['email'] ?? '')) !== '';
         $score = (int) ($creator['valueScore'] ?? 0);
@@ -1284,9 +1278,9 @@ return [
         $latestReplyAt = $this->latestTimelineTimestamp($timeline, $this->strictReplyEventTypes());
         $supportingFacts = array_values(array_filter([
             $fitSignal,
-            $latestOutreachAt !== '' ? 'Last outreach was ' . $this->agePhrase($latestOutreachAt) . '.' : null,
-            $latestReplyAt !== '' ? 'Last reply was ' . $this->agePhrase($latestReplyAt) . '.' : null,
-            count($openTasks) > 0 ? count($openTasks) . ' open workflow task' . (count($openTasks) === 1 ? '' : 's') . ' attached.' : null,
+            $latestOutreachAt !== '' ? 'Last outreach was '.$this->agePhrase($latestOutreachAt).'.' : null,
+            $latestReplyAt !== '' ? 'Last reply was '.$this->agePhrase($latestReplyAt).'.' : null,
+            count($openTasks) > 0 ? count($openTasks).' open workflow task'.(count($openTasks) === 1 ? '' : 's').' attached.' : null,
         ]));
 
         $candidates = [];
@@ -1334,7 +1328,7 @@ return [
         }
 
         foreach ($openTasks as $task) {
-            if (!$this->taskCanLeadNextAction($state, (string) ($task['type'] ?? ''), $latestOutreachAt, $latestReplyAt)) {
+            if (! $this->taskCanLeadNextAction($state, (string) ($task['type'] ?? ''), $latestOutreachAt, $latestReplyAt)) {
                 continue;
             }
 
@@ -1471,6 +1465,7 @@ return [
         ];
 
         unset($winner['score']);
+
         return $winner;
     }
 
@@ -1622,18 +1617,18 @@ return [
     {
         $parts = [];
         if ($followers > 0) {
-            $parts[] = number_format($followers) . ' followers';
+            $parts[] = number_format($followers).' followers';
         }
         if ($engagement > 0) {
-            $parts[] = round($engagement, 1) . '% engagement';
+            $parts[] = round($engagement, 1).'% engagement';
         }
         if ($score > 0) {
-            $parts[] = 'value score ' . $score;
+            $parts[] = 'value score '.$score;
         }
 
         return $parts === []
             ? 'Profile data is still thin.'
-            : 'Profile signals: ' . implode(', ', $parts) . '.';
+            : 'Profile signals: '.implode(', ', $parts).'.';
     }
 
     private function daysSince(string $value): ?int
@@ -1663,7 +1658,7 @@ return [
             return 'yesterday';
         }
 
-        return $days . ' days ago';
+        return $days.' days ago';
     }
 
     private function duePhrase(string $value): string
@@ -1671,14 +1666,14 @@ return [
         try {
             $date = Carbon::parse($value);
         } catch (\Throwable) {
-            return 'Due ' . $value . '.';
+            return 'Due '.$value.'.';
         }
 
         if ($date->isPast()) {
             return 'This task is due now.';
         }
 
-        return 'Due ' . $date->diffForHumans(['parts' => 1, 'join' => true]) . '.';
+        return 'Due '.$date->diffForHumans(['parts' => 1, 'join' => true]).'.';
     }
 
     private function confidenceScore(array $creator, array $confidenceReasons, array $hardDisqualifiers, array $timeline): int
@@ -1735,15 +1730,16 @@ return [
     {
         $replyAt = $this->latestTimelineTimestamp($timeline, $this->strictReplyEventTypes());
         if ($replyAt !== '') {
-            return 'Creator replied at ' . $replyAt;
+            return 'Creator replied at '.$replyAt;
         }
 
         $outreachAt = $this->latestTimelineTimestamp($timeline, $this->strictOutreachSentEventTypes());
         if ($outreachAt !== '') {
-            return 'Outreach sent at ' . $outreachAt;
+            return 'Outreach sent at '.$outreachAt;
         }
 
         $lastContentDate = trim((string) ($creator['lastContentDate'] ?? ''));
+
         return $lastContentDate !== '' ? $lastContentDate : 'No source post date captured';
     }
 
@@ -1781,7 +1777,7 @@ return [
                     $type = (string) ($event->event_type ?? '');
                     $metadata = is_string($event->metadata ?? null) ? json_decode($event->metadata, true) : [];
                     $isEstimated = is_array($metadata) && ((bool) ($metadata['estimated'] ?? false) || (bool) ($metadata['demoSafeEstimate'] ?? false));
-                    if (in_array($type, ['campaign_spend', 'campaign_spend_adjustment'], true) && !$isEstimated) {
+                    if (in_array($type, ['campaign_spend', 'campaign_spend_adjustment'], true) && ! $isEstimated) {
                         $manualSpend += (float) ($event->amount ?? 0);
                     }
                     if ($type === 'deal_closed') {
@@ -1833,7 +1829,7 @@ return [
 
     private function extractTaggedValue(string $text, string $key): ?string
     {
-        if (preg_match('/(?:^|[;|\s])' . preg_quote($key, '/') . '=([^;|]+)/', $text, $matches)) {
+        if (preg_match('/(?:^|[;|\s])'.preg_quote($key, '/').'=([^;|]+)/', $text, $matches)) {
             return trim($matches[1]);
         }
 
@@ -1847,7 +1843,7 @@ return [
         }
 
         $normalized = preg_replace('/[^0-9\-]/', '', (string) $value);
-        if ($normalized === '' || !is_numeric($normalized)) {
+        if ($normalized === '' || ! is_numeric($normalized)) {
             return null;
         }
 
@@ -1861,7 +1857,7 @@ return [
         }
 
         $normalized = preg_replace('/[^0-9.\-]/', '', (string) $value);
-        if ($normalized === '' || !is_numeric($normalized)) {
+        if ($normalized === '' || ! is_numeric($normalized)) {
             return null;
         }
 
@@ -1921,6 +1917,4 @@ return [
             'DEAL_WON',
         ];
     }
-
-
 }

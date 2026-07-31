@@ -8,13 +8,13 @@ return new class extends Migration
 {
     public function up(): void
     {
-        if (!Schema::hasColumn('users', 'supabase_user_id')) {
+        if (! Schema::hasColumn('users', 'supabase_user_id')) {
             Schema::table('users', function (Blueprint $table) {
                 $table->string('supabase_user_id')->nullable()->unique()->after('id');
             });
         }
 
-        if (!Schema::hasTable('plans')) {
+        if (! Schema::hasTable('plans')) {
             Schema::create('plans', function (Blueprint $table) {
                 $table->string('id')->primary();
                 $table->string('name');
@@ -25,7 +25,7 @@ return new class extends Migration
             });
         }
 
-        if (!Schema::hasTable('workspaces')) {
+        if (! Schema::hasTable('workspaces')) {
             Schema::create('workspaces', function (Blueprint $table) {
                 $table->uuid('id')->primary();
                 $table->string('name');
@@ -37,7 +37,7 @@ return new class extends Migration
             });
         }
 
-        if (!Schema::hasTable('workspace_members')) {
+        if (! Schema::hasTable('workspace_members')) {
             Schema::create('workspace_members', function (Blueprint $table) {
                 $table->uuid('id')->primary();
                 $table->uuid('workspace_id');
@@ -49,7 +49,7 @@ return new class extends Migration
             });
         }
 
-        if (!Schema::hasTable('workspace_invitations')) {
+        if (! Schema::hasTable('workspace_invitations')) {
             Schema::create('workspace_invitations', function (Blueprint $table) {
                 $table->uuid('id')->primary();
                 $table->uuid('workspace_id');
@@ -62,7 +62,7 @@ return new class extends Migration
             });
         }
 
-        if (Schema::hasTable('projects') && !Schema::hasColumn('projects', 'workspace_id')) {
+        if (Schema::hasTable('projects') && ! Schema::hasColumn('projects', 'workspace_id')) {
             Schema::table('projects', function (Blueprint $table) {
                 $table->uuid('workspace_id')->nullable()->after('id')->index();
                 $table->index(['workspace_id', 'workbook_id']);

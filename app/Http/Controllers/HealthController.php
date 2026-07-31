@@ -48,6 +48,7 @@ class HealthController extends Controller
             return ['status' => 'ok'];
         } catch (Throwable $exception) {
             report($exception);
+
             return ['status' => 'fail', 'message' => 'Database check failed'];
         }
     }
@@ -55,7 +56,7 @@ class HealthController extends Controller
     private function cacheCheck(): array
     {
         try {
-            $key = 'health:ready:' . sha1((string) now()->timestamp);
+            $key = 'health:ready:'.sha1((string) now()->timestamp);
             Cache::put($key, 'ok', 30);
             $ok = Cache::get($key) === 'ok';
             Cache::forget($key);
@@ -63,13 +64,14 @@ class HealthController extends Controller
             return ['status' => $ok ? 'ok' : 'fail'];
         } catch (Throwable $exception) {
             report($exception);
+
             return ['status' => 'fail', 'message' => 'Cache check failed'];
         }
     }
 
     private function queueCheck(): array
     {
-        if (!Schema::hasTable('failed_jobs')) {
+        if (! Schema::hasTable('failed_jobs')) {
             return ['status' => 'degraded', 'message' => 'failed_jobs table missing'];
         }
 
@@ -99,7 +101,7 @@ class HealthController extends Controller
 
     private function stripeWebhookCheck(): array
     {
-        if (!Schema::hasTable('stripe_webhook_events')) {
+        if (! Schema::hasTable('stripe_webhook_events')) {
             return ['status' => 'degraded', 'message' => 'stripe_webhook_events table missing'];
         }
 
@@ -119,7 +121,7 @@ class HealthController extends Controller
 
     private function processHeartbeatCheck(): array
     {
-        if (!Schema::hasTable('operational_heartbeats')) {
+        if (! Schema::hasTable('operational_heartbeats')) {
             return ['status' => 'degraded', 'message' => 'Process heartbeat storage is not initialized'];
         }
 
@@ -128,7 +130,8 @@ class HealthController extends Controller
             ->pluck('last_seen_at', 'name');
         $stale = collect(['scheduler', 'queue-worker'])->filter(function (string $name) use ($heartbeats) {
             $lastSeen = $heartbeats->get($name);
-            return !$lastSeen || now()->diffInMinutes($lastSeen) > 3;
+
+            return ! $lastSeen || now()->diffInMinutes($lastSeen) > 3;
         })->values()->all();
 
         return [

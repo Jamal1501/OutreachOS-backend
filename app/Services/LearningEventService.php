@@ -65,7 +65,7 @@ class LearningEventService
     public function recordRoiEvent(array $event): void
     {
         $this->safeRecord(function () use ($event) {
-            $eventType = $this->normalizeEventName('roi_' . (string) ($event['event_type'] ?? 'event'));
+            $eventType = $this->normalizeEventName('roi_'.(string) ($event['event_type'] ?? 'event'));
 
             LearningEvent::query()->updateOrCreate(
                 [
@@ -133,18 +133,28 @@ class LearningEventService
 
     private function outcomeLabel(string $eventName, ?string $status): ?string
     {
-        if (Str::contains($eventName, 'won')) return 'won';
-        if (Str::contains($eventName, 'accepted')) return 'accepted';
-        if (Str::contains($eventName, 'reply')) return 'replied';
-        if (Str::contains($eventName, 'lost')) return 'lost';
-        if (Str::contains($eventName, 'declined')) return 'declined';
+        if (Str::contains($eventName, 'won')) {
+            return 'won';
+        }
+        if (Str::contains($eventName, 'accepted')) {
+            return 'accepted';
+        }
+        if (Str::contains($eventName, 'reply')) {
+            return 'replied';
+        }
+        if (Str::contains($eventName, 'lost')) {
+            return 'lost';
+        }
+        if (Str::contains($eventName, 'declined')) {
+            return 'declined';
+        }
 
         return $status ? Str::lower($status) : null;
     }
 
     private function creatorSnapshot(?CreatorProfile $profile): ?array
     {
-        if (!$profile) {
+        if (! $profile) {
             return null;
         }
 
@@ -171,7 +181,7 @@ class LearningEventService
 
     private function taskSnapshot(?Task $task): ?array
     {
-        if (!$task) {
+        if (! $task) {
             return null;
         }
 
@@ -193,7 +203,7 @@ class LearningEventService
 
     private function templateSnapshot(?MessageTemplate $template): ?array
     {
-        if (!$template) {
+        if (! $template) {
             return null;
         }
 

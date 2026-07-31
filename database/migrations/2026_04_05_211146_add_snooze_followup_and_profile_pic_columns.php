@@ -10,13 +10,13 @@ return new class extends Migration
     {
         if (Schema::hasTable('tasks')) {
             Schema::table('tasks', function (Blueprint $table) {
-                if (!Schema::hasColumn('tasks', 'snoozed_until')) {
+                if (! Schema::hasColumn('tasks', 'snoozed_until')) {
                     $table->timestamp('snoozed_until')->nullable();
                 }
-                if (!Schema::hasColumn('tasks', 'follow_up_count')) {
+                if (! Schema::hasColumn('tasks', 'follow_up_count')) {
                     $table->smallInteger('follow_up_count')->default(0);
                 }
-                if (!Schema::hasColumn('tasks', 'platform_connection_state')) {
+                if (! Schema::hasColumn('tasks', 'platform_connection_state')) {
                     $table->string('platform_connection_state')->nullable();
                 }
             });
@@ -24,10 +24,10 @@ return new class extends Migration
 
         if (Schema::hasTable('creator_profiles')) {
             Schema::table('creator_profiles', function (Blueprint $table) {
-                if (!Schema::hasColumn('creator_profiles', 'profile_pic_url')) {
+                if (! Schema::hasColumn('creator_profiles', 'profile_pic_url')) {
                     $table->text('profile_pic_url')->nullable();
                 }
-                if (!Schema::hasColumn('creator_profiles', 'comment_attempted_at')) {
+                if (! Schema::hasColumn('creator_profiles', 'comment_attempted_at')) {
                     $table->timestamp('comment_attempted_at')->nullable();
                 }
             });
