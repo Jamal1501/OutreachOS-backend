@@ -489,7 +489,11 @@ class StripeBillingService
 
         $member = DB::table('workspace_members')
             ->join('users', function ($join) {
-                $join->on('users.supabase_user_id', '=', 'workspace_members.user_id');
+                $join->on(
+                    'users.supabase_user_id',
+                    '=',
+                    DB::raw('CAST(workspace_members.user_id AS TEXT)')
+                );
             })
             ->where('workspace_members.workspace_id', $workspaceId)
             ->orderByRaw("CASE workspace_members.role WHEN 'owner' THEN 1 WHEN 'admin' THEN 2 ELSE 3 END")

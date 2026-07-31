@@ -557,6 +557,37 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
             ->assertUnprocessable();
     }
 
+    public function test_workspace_bootstrap_returns_existing_workspace_and_account_members(): void
+    {
+        [$owner, $workspace] = $this->createWorkspaceForRole('owner', maxMembers: 3);
+        $member = User::query()->create([
+            'supabase_user_id' => (string) Str::uuid(),
+            'name' => 'Workspace Teammate',
+            'email' => 'workspace-teammate@example.test',
+            'password' => 'password',
+        ]);
+        WorkspaceMember::query()->create([
+            'id' => (string) Str::uuid(),
+            'workspace_id' => $workspace->id,
+            'user_id' => $member->supabase_user_id,
+            'role' => 'member',
+            'joined_at' => now(),
+        ]);
+        $this->fakeSupabaseUser($owner);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->getJson('/api/workspaces/bootstrap')
+            ->assertOk()
+            ->assertJsonPath('data.workspace.id', $workspace->id)
+            ->assertJsonFragment([
+                'user_id' => $member->supabase_user_id,
+                'email' => $member->email,
+                'name' => $member->name,
+                'role' => 'member',
+            ]);
+    }
+
     public function test_unverified_email_is_rejected_when_verification_is_required(): void
     {
         [$user] = $this->createWorkspaceForRole('owner');
