@@ -41,6 +41,18 @@ class DataLifecycleServiceTest extends TestCase
         $this->assertCount(1, $export['data']['workspace_audit_events']);
     }
 
+    public function test_workspace_export_supports_a_workspace_without_projects(): void
+    {
+        [, $workspace] = $this->workspaceFixture();
+
+        $export = app(DataLifecycleService::class)->exportWorkspace($workspace->id);
+
+        $this->assertSame([], $export['projects']);
+        $this->assertSame([], $export['data']['creators']);
+        $this->assertSame([], $export['data']['tasks']);
+        $this->assertCount(1, $export['data']['workspace_members']);
+    }
+
     public function test_workspace_deletion_can_be_canceled_during_recovery_window(): void
     {
         [$user, $workspace] = $this->workspaceFixture();

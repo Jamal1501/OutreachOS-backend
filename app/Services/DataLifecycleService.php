@@ -85,7 +85,9 @@ class DataLifecycleService
         $data = [];
         foreach ($projectTables as $table) {
             if (Schema::hasTable($table) && Schema::hasColumn($table, 'project_id')) {
-                $data[$table] = DB::table($table)->whereIn('project_id', $projectIds ?: [-1])->get()->map(fn ($row) => (array) $row)->all();
+                $data[$table] = empty($projectIds)
+                    ? []
+                    : DB::table($table)->whereIn('project_id', $projectIds)->get()->map(fn ($row) => (array) $row)->all();
             }
         }
 
