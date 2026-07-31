@@ -1,27 +1,7 @@
 #!/usr/bin/env sh
 set -e
 
-# Render commonly exposes managed Postgres as DATABASE_URL, while Laravel's
-# database config reads DB_URL. Bridge it at runtime without committing secrets.
-if [ -n "${DATABASE_URL:-}" ] && [ -z "${DB_URL:-}" ]; then
-  export DB_URL="$DATABASE_URL"
-fi
-
-if [ -z "${DB_CONNECTION:-}" ] || { [ "${APP_ENV:-}" = "production" ] && [ "${DB_CONNECTION:-}" = "sqlite" ]; }; then
-  case "${DB_URL:-}" in
-    postgres://*|postgresql://*)
-      export DB_CONNECTION=pgsql
-      ;;
-    mysql://*)
-      export DB_CONNECTION=mysql
-      ;;
-    *)
-      if [ "${APP_ENV:-}" = "production" ]; then
-        export DB_CONNECTION=pgsql
-      fi
-      ;;
-  esac
-fi
+. /var/www/runtime-database-env.sh
 
 php artisan config:clear --no-interaction
 php artisan migrate --force --no-interaction

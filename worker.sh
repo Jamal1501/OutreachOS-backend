@@ -3,13 +3,8 @@ set -e
 
 cd /var/www
 
-# Render may expose Postgres as DATABASE_URL; Laravel config also accepts DB_URL.
-if [ -n "${DATABASE_URL:-}" ] && [ -z "${DB_URL:-}" ]; then
-  export DB_URL="$DATABASE_URL"
-fi
+. /var/www/runtime-database-env.sh
 
-export APP_ENV="${APP_ENV:-production}"
-export DB_CONNECTION="${DB_CONNECTION:-pgsql}"
 export CACHE_STORE="${CACHE_STORE:-file}"
 export CACHE_DRIVER="${CACHE_DRIVER:-file}"
 export QUEUE_CONNECTION="${QUEUE_CONNECTION:-database}"
