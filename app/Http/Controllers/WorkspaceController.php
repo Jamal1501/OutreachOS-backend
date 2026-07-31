@@ -533,6 +533,24 @@ class WorkspaceController extends Controller
         return response()->json(['message' => 'Workspace deletion canceled.']);
     }
 
+    public function deletedWorkspaces(Request $request)
+    {
+        $actorUserId = (string) $request->attributes->get('supabase_user_id');
+        $workspaces = Workspace::query()
+            ->where('owner_id', $actorUserId)
+            ->orderBy('created_at')
+            ->get()
+            ->filter(fn (Workspace $workspace) => $this->workspaceIsDeleted($workspace))
+            ->values()
+            ->map(fn (Workspace $workspace) => [
+                'id' => (string) $workspace->id,
+                'name' => (string) $workspace->name,
+                'deletedAt' => (string) data_get($workspace->settings, 'deletedAt', ''),
+            ]);
+
+        return response()->json(['data' => ['workspaces' => $workspaces]]);
+    }
+
     public function deleteWorkspace(Request $request, string $workspaceId)
     {
         /** @var Workspace|null $workspace */
@@ -1173,6 +1191,30 @@ class WorkspaceController extends Controller
             ];
         })->values()->all();
 
+        $deletedWorkspaces = $membership->role === 'owner'
+            ? DB::table('workspaces')
+                ->whereIn('id', $this->accountWorkspaceIds($workspace, true))
+                ->orderBy('created_at')
+                ->get()
+                ->map(function ($row) {
+                    $settings = is_string($row->settings ?? null) ? (json_decode($row->settings, true) ?: []) : ((array) ($row->settings ?? []));
+
+                    return [
+                        'id' => (string) $row->id,
+                        'name' => (string) $row->name,
+                        'slug' => (string) $row->slug,
+                        'owner_id' => (string) ($row->owner_id ?? ''),
+                        'billing_account_id' => (string) ($row->billing_account_id ?? ''),
+                        'plan_id' => (string) ($row->plan_id ?? 'free'),
+                        'settings' => $settings,
+                        'created_at' => (string) ($row->created_at ?? ''),
+                    ];
+                })
+                ->filter(fn ($row) => ! empty($row['settings']['deletedAt']))
+                ->values()
+                ->all()
+            : [];
+
         $accountWorkspaceIds = array_map(fn ($item) => (string) $item['id'], $accountWorkspaces);
         $teamVisibleWorkspaceIds = $membership->role === 'owner'
             ? $accountWorkspaceIdsForBilling
@@ -1249,6 +1291,7 @@ class WorkspaceController extends Controller
             ] : null,
             'workspaces' => $userWorkspaces,
             'accountWorkspaces' => $accountWorkspaces,
+            'deletedWorkspaces' => $deletedWorkspaces,
             'accountMembers' => $accountMembers,
             'pendingInvitations' => $pendingInvitations,
             'membership' => $membership->toArray(),

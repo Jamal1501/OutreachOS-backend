@@ -170,16 +170,7 @@ class ApifyRunExecutor
         } catch (PipelineCancelledException $exception) {
             if ($usageReservationId) {
                 if ($runId) {
-                    $this->billing->consumeReservation(
-                        $usageReservationId,
-                        providerCostUsd: null,
-                        metadata: [
-                            'cancelled_by_user' => true,
-                            'run_id' => $runId,
-                            'provider_cost_source' => 'cancelled_run_cost_unavailable',
-                        ],
-                        referenceId: $runId,
-                    );
+                    $this->settleInterruptedRun($token, $usageReservationId, $runId, $moduleKey, $actorKey, $actorId, $input, true);
                 } else {
                     $this->billing->refundReservation($usageReservationId, 'Cancelled before provider run started');
                 }
@@ -187,12 +178,73 @@ class ApifyRunExecutor
             throw $exception;
         } catch (\Throwable $exception) {
             if ($usageReservationId) {
-                $this->billing->refundReservation($usageReservationId, 'Pipeline Apify execution failed', [
-                    'message' => $exception->getMessage(),
-                ]);
+                if ($runId) {
+                    $this->settleInterruptedRun($token, $usageReservationId, $runId, $moduleKey, $actorKey, $actorId, $input, false, $exception->getMessage());
+                } else {
+                    $this->billing->refundReservation($usageReservationId, 'Pipeline Apify execution failed', [
+                        'message' => $exception->getMessage(),
+                    ]);
+                }
             }
 
             throw $exception;
+        }
+    }
+
+    private function settleInterruptedRun(
+        string $token,
+        string $usageReservationId,
+        string $runId,
+        ?string $moduleKey,
+        string $actorKey,
+        string $actorId,
+        array $input,
+        bool $cancelled,
+        ?string $error = null,
+    ): void {
+        try {
+            $runResponse = Http::withToken($token)->acceptJson()->timeout(30)
+                ->get("https://api.apify.com/v2/actor-runs/{$runId}");
+            if (! $runResponse->successful()) {
+                throw new RuntimeException('Unable to verify interrupted Apify run.');
+            }
+
+            $runData = (array) ($runResponse->json('data') ?? []);
+            $datasetId = (string) ($runData['defaultDatasetId'] ?? '');
+            $items = $this->fetchDatasetItems($token, $datasetId);
+            $completedItems = count($items);
+            $estimateInput = $input;
+            if (isset($input['directUrls'])) {
+                $estimateInput['directUrls'] = array_fill(0, $completedItems, 'completed-profile');
+                $estimateInput['resultsLimit'] = $completedItems;
+            } else {
+                $estimateInput['resultsLimit'] = $completedItems;
+            }
+            $estimate = $this->scrapers->estimateCredits($moduleKey, $actorKey, $actorId, $estimateInput);
+            $billableUnits = $completedItems > 0 ? max(0, (int) ($estimate['units'] ?? 0)) : 0;
+
+            $this->billing->settleReservationUnits(
+                $usageReservationId,
+                $billableUnits,
+                $this->extractApifyRunCostUsd($runData),
+                metadata: [
+                    'run_id' => $runId,
+                    'dataset_id' => $datasetId,
+                    'completed_items' => $completedItems,
+                    'cancelled_by_user' => $cancelled,
+                    'interrupted' => true,
+                    'error' => $error,
+                    'provider_cost_source' => 'apify_interrupted_run_usage',
+                ],
+                referenceId: $runId,
+            );
+        } catch (\Throwable $settlementError) {
+            $this->billing->refundReservation($usageReservationId, 'Interrupted provider work could not be verified', [
+                'run_id' => $runId,
+                'cancelled_by_user' => $cancelled,
+                'execution_error' => $error,
+                'settlement_error' => $settlementError->getMessage(),
+            ]);
         }
     }
 

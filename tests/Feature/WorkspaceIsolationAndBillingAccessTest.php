@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Exceptions\ActiveDiscoveryException;
 use App\Exceptions\InsufficientCreditsException;
 use App\Mail\WorkspaceInvitationMail;
 use App\Models\DiscoveryRun;
@@ -464,6 +465,20 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
         $payload = DiscoveryRun::query()->findOrFail($run->id)->result_payload;
         $this->assertSame('worker-a', $payload['executionWorkerJobId']);
         $this->assertNotEmpty($payload['executionClaimedAt']);
+    }
+
+    public function test_workspace_can_only_have_one_active_discovery(): void
+    {
+        [, $workspace] = $this->createWorkspaceForRole('owner');
+        $activeRun = $this->createDiscoveryRun($workspace);
+
+        $this->expectException(ActiveDiscoveryException::class);
+        app(PipelineDiscoveryService::class)->createJob([
+            'workspaceId' => $workspace->id,
+            'sheetId' => $activeRun->project->workbook_id,
+            'platform' => 'instagram',
+            'hashtags' => ['skincare'],
+        ]);
     }
 
     public function test_cancellation_is_terminal_for_the_ui_and_persists_worker_abort_signal(): void

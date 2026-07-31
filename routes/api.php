@@ -33,6 +33,7 @@ Route::middleware(['api.auth', 'throttle:api'])->group(function () {
     Route::delete('/account', [WorkspaceController::class, 'deleteAccount']);
     Route::post('/account/restore', [WorkspaceController::class, 'restoreAccount']);
     Route::post('/workspaces/{workspaceId}/restore', [WorkspaceController::class, 'restoreWorkspace']);
+    Route::get('/workspaces/deleted', [WorkspaceController::class, 'deletedWorkspaces']);
 });
 
 Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(function () {

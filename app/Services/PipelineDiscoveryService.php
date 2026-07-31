@@ -4,10 +4,12 @@ namespace App\Services;
 
 use App\Contracts\DiscoveryProvider;
 use App\Contracts\EnrichmentProvider;
+use App\Exceptions\ActiveDiscoveryException;
 use App\Exceptions\PipelineCancelledException;
 use App\Models\DiscoveryItem;
 use App\Models\DiscoveryRun;
 use App\Models\EnrichmentJob;
+use App\Models\Workspace;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -74,10 +76,48 @@ class PipelineDiscoveryService
             'updatedAt' => now()->toDateTimeString(),
         ];
 
-        $this->writeJobState($jobId, $state);
-        $this->syncJobToDatabase($state);
+        if (! $this->pipelineSyncEnabled()) {
+            $this->writeJobState($jobId, $state);
 
-        return $state;
+            return $state;
+        }
+
+        return DB::transaction(function () use ($jobId, $payload, $state) {
+            $workspaceId = trim((string) ($payload['workspaceId'] ?? ''));
+            if ($workspaceId !== '') {
+                Workspace::query()->whereKey($workspaceId)->lockForUpdate()->firstOrFail();
+
+                $activeRun = DiscoveryRun::query()
+                    ->select('discovery_runs.*')
+                    ->join('projects', 'projects.id', '=', 'discovery_runs.project_id')
+                    ->where('projects.workspace_id', $workspaceId)
+                    ->whereIn('discovery_runs.status', ['running', 'cancel_requested'])
+                    ->lockForUpdate()
+                    ->orderByDesc('discovery_runs.created_at')
+                    ->first();
+
+                if ($activeRun && (string) $activeRun->id === $jobId) {
+                    return $this->getJobState($jobId) ?? $state;
+                }
+
+                if ($activeRun && $activeRun->updated_at?->lt(now()->subMinutes(20))) {
+                    $activeRun->status = 'failed';
+                    $activeRun->error_message = 'Discovery stopped responding before it completed. Please start a new discovery.';
+                    $activeRun->finished_at = now();
+                    $activeRun->save();
+                    $activeRun = null;
+                }
+
+                if ($activeRun) {
+                    throw new ActiveDiscoveryException((string) $activeRun->id);
+                }
+            }
+
+            $this->writeJobState($jobId, $state);
+            $this->syncJobToDatabase($state);
+
+            return $state;
+        });
     }
 
     public function claimJobExecution(string $jobId, string $workerJobId): bool

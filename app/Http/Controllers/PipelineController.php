@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\ActiveDiscoveryException;
 use App\Jobs\RunPipelineJob;
 use App\Models\DiscoveryRun;
 use App\Services\AiDiscoveryBriefService;
@@ -365,8 +366,17 @@ class PipelineController extends Controller
             ], $extraResponse), 402);
         }
 
-        if ($request->boolean('wait')) {
+        try {
             $state = $this->pipeline->createJob($payload);
+        } catch (ActiveDiscoveryException $exception) {
+            return response()->json(array_merge([
+                'error' => $exception->getMessage(),
+                'code' => 'discovery_already_running',
+                'activeJobId' => $exception->activeJobId,
+            ], $extraResponse), 409);
+        }
+
+        if ($request->boolean('wait')) {
             try {
                 $result = $this->pipeline->runJob($state['jobId'], $payload);
 
@@ -381,8 +391,6 @@ class PipelineController extends Controller
                 ], $extraResponse), 500);
             }
         }
-
-        $state = $this->pipeline->createJob($payload);
 
         RunPipelineJob::dispatch($state['jobId'], $payload);
 
