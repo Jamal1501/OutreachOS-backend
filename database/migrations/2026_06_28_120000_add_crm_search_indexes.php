@@ -7,6 +7,12 @@ return new class extends Migration
 {
     public function up(): void
     {
+        // These search indexes use PostgreSQL's pg_trgm extension. The test
+        // suite runs on SQLite, where neither extensions nor GIN indexes exist.
+        if (DB::connection()->getDriverName() !== 'pgsql') {
+            return;
+        }
+
         DB::statement('CREATE EXTENSION IF NOT EXISTS pg_trgm');
 
         DB::statement("CREATE INDEX IF NOT EXISTS creator_profiles_handle_trgm_idx ON creator_profiles USING gin (LOWER(COALESCE(handle, '')) gin_trgm_ops)");
@@ -18,6 +24,10 @@ return new class extends Migration
 
     public function down(): void
     {
+        if (DB::connection()->getDriverName() !== 'pgsql') {
+            return;
+        }
+
         DB::statement('DROP INDEX IF EXISTS creators_niche_category_trgm_idx');
         DB::statement('DROP INDEX IF EXISTS creators_primary_email_trgm_idx');
         DB::statement('DROP INDEX IF EXISTS creators_display_name_trgm_idx');
