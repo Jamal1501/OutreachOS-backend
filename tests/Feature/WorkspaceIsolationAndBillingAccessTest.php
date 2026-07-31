@@ -183,6 +183,7 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
         [, $workspace] = $this->createWorkspaceForRole('owner');
         [$subscription] = app(WorkspaceBillingService::class)->ensureWorkspaceBilling($workspace->id);
         DB::table('workspaces')->where('id', $workspace->id)->update(['plan_id' => 'pro']);
+        DB::table('billing_accounts')->where('id', $subscription->billing_account_id)->update(['plan_id' => 'pro']);
         DB::table('workspace_subscriptions')->where('id', $subscription->id)->update([
             'plan_id' => 'pro',
             'status' => 'active',
