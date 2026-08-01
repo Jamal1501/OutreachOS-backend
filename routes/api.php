@@ -22,6 +22,7 @@ Route::get('/health', function () {
 });
 Route::get('/health/live', [HealthController::class, 'live']);
 Route::get('/health/ready', [HealthController::class, 'ready']);
+Route::get('/health/operational', [HealthController::class, 'operational']);
 
 Route::get('/avatar-proxy', [SheetDataController::class, 'avatarProxy'])->middleware('throttle:avatar');
 Route::post('/csp-report', [CspReportController::class, 'store'])->middleware('throttle:60,1');

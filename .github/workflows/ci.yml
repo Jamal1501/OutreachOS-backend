@@ -20,3 +20,45 @@ jobs:
       - run: php artisan key:generate
       - run: php artisan test
       - run: vendor/bin/pint --test
+
+  postgres-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: outreachos_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      APP_ENV: testing
+      DB_CONNECTION: pgsql
+      DB_HOST: 127.0.0.1
+      DB_PORT: 5432
+      DB_DATABASE: outreachos_test
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DB_SSLMODE: prefer
+      CACHE_STORE: array
+      MAIL_MAILER: array
+      QUEUE_CONNECTION: sync
+      SESSION_DRIVER: array
+    steps:
+      - uses: actions/checkout@v5
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, pdo_pgsql
+          coverage: none
+      - run: composer install --no-interaction --prefer-dist --optimize-autoloader
+      - run: cp .env.example .env
+      - run: php artisan key:generate
+      - run: php artisan migrate:fresh --force
+      - run: php artisan test

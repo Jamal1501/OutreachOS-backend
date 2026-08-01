@@ -7,6 +7,7 @@ return [
     'alerts' => [
         'enabled' => env('OBSERVABILITY_ALERTS_ENABLED', env('APP_ENV') === 'production'),
         'webhook_url' => env('OBSERVABILITY_ALERT_WEBHOOK_URL'),
+        'email' => env('OBSERVABILITY_ALERT_EMAIL'),
         'timeout' => env('OBSERVABILITY_ALERT_TIMEOUT', 5),
     ],
 
@@ -21,5 +22,6 @@ return [
         'failed_webhooks_window_minutes' => env('OBSERVABILITY_FAILED_WEBHOOKS_WINDOW_MINUTES', 60),
         'failed_webhooks_threshold' => env('OBSERVABILITY_FAILED_WEBHOOKS_THRESHOLD', 0),
         'max_pending_jobs' => env('OBSERVABILITY_MAX_PENDING_JOBS', 500),
+        'queue_timeout' => env('QUEUE_TIMEOUT', 3600),
     ],
 ];

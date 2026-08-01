@@ -2,11 +2,13 @@
 
 namespace App\Services;
 
+use App\Mail\OperationalAlertMail;
 use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Throwable;
@@ -104,20 +106,31 @@ class ObservabilityService
         }
 
         $url = trim((string) ($webhookUrl ?: config('observability.alerts.webhook_url')));
-        if ($url === '') {
-            return;
+        if ($url !== '') {
+            try {
+                Http::timeout((int) config('observability.alerts.timeout', 5))
+                    ->acceptJson()
+                    ->asJson()
+                    ->post($url, $alert)
+                    ->throw();
+            } catch (Throwable $exception) {
+                Log::warning('observability webhook alert delivery failed', [
+                    'event_type' => $eventType,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
         }
 
-        try {
-            Http::timeout((int) config('observability.alerts.timeout', 5))
-                ->acceptJson()
-                ->asJson()
-                ->post($url, $alert);
-        } catch (Throwable $exception) {
-            Log::warning('observability alert delivery failed', [
-                'event_type' => $eventType,
-                'error' => $exception->getMessage(),
-            ]);
+        $email = trim((string) config('observability.alerts.email'));
+        if ($email !== '') {
+            try {
+                Mail::to($email)->send(new OperationalAlertMail($alert));
+            } catch (Throwable $exception) {
+                Log::warning('observability email alert delivery failed', [
+                    'event_type' => $eventType,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
         }
     }
 

@@ -21,6 +21,16 @@ class HealthController extends Controller
 
     public function ready(): JsonResponse
     {
+        return $this->readinessResponse(false);
+    }
+
+    public function operational(): JsonResponse
+    {
+        return $this->readinessResponse(true);
+    }
+
+    private function readinessResponse(bool $failWhenDegraded): JsonResponse
+    {
         $checks = [
             'database' => $this->databaseCheck(),
             'cache' => $this->cacheCheck(),
@@ -31,13 +41,14 @@ class HealthController extends Controller
 
         $failed = collect($checks)->contains(fn (array $check) => $check['status'] === 'fail');
         $degraded = collect($checks)->contains(fn (array $check) => $check['status'] === 'degraded');
+        $status = $failed ? 'fail' : ($degraded ? 'degraded' : 'ok');
 
         return response()->json([
-            'status' => $failed ? 'fail' : ($degraded ? 'degraded' : 'ok'),
+            'status' => $status,
             'service' => (string) config('observability.service', 'social-core-api'),
             'checkedAt' => now()->toIso8601String(),
             'checks' => $checks,
-        ], $failed ? 503 : 200);
+        ], $failed || ($failWhenDegraded && $degraded) ? 503 : 200);
     }
 
     private function databaseCheck(): array
