@@ -77,7 +77,9 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
             'workspace_id' => $workspace->id,
             'event_type' => 'invitation_created',
         ]);
-        Mail::assertSent(WorkspaceInvitationMail::class);
+        Mail::assertSent(WorkspaceInvitationMail::class, fn (WorkspaceInvitationMail $mail) => $mail->hasTo('teammate@example.test')
+            && str_contains($mail->inviteUrl, 'mode=signup')
+            && str_contains($mail->inviteUrl, 'workspaceId='.urlencode((string) $workspace->id)));
     }
 
     public function test_existing_user_is_added_to_another_workspace_and_notified(): void
@@ -108,7 +110,9 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
             'user_id' => $existingUser->supabase_user_id,
             'role' => 'member',
         ]);
-        Mail::assertSent(WorkspaceAccessGrantedMail::class, fn (WorkspaceAccessGrantedMail $mail) => $mail->hasTo('existing@example.test'));
+        Mail::assertSent(WorkspaceAccessGrantedMail::class, fn (WorkspaceAccessGrantedMail $mail) => $mail->hasTo('existing@example.test')
+            && str_contains($mail->workspaceUrl, 'mode=login')
+            && str_contains($mail->workspaceUrl, 'workspaceId='.urlencode((string) $workspace->id)));
     }
 
     public function test_invitation_creation_reports_email_delivery_failure_truthfully(): void

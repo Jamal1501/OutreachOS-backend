@@ -1084,7 +1084,11 @@ class WorkspaceController extends Controller
         }
 
         $frontendUrl = rtrim((string) config('app.frontend_url', config('app.url')), '/');
-        $inviteUrl = $frontendUrl.'/auth?mode=signup&email='.urlencode($email);
+        $inviteUrl = $frontendUrl.'/auth?'.http_build_query([
+            'mode' => 'signup',
+            'email' => $email,
+            'workspaceId' => (string) $workspace->id,
+        ], '', '&', PHP_QUERY_RFC3986);
 
         try {
             Mail::to($email)->send(new WorkspaceInvitationMail(
@@ -1129,7 +1133,11 @@ class WorkspaceController extends Controller
         }
 
         $frontendUrl = rtrim((string) config('app.frontend_url', config('app.url')), '/');
-        $workspaceUrl = $frontendUrl.'/auth?mode=login&email='.urlencode($email);
+        $workspaceUrl = $frontendUrl.'/auth?'.http_build_query([
+            'mode' => 'login',
+            'email' => $email,
+            'workspaceId' => (string) $workspace->id,
+        ], '', '&', PHP_QUERY_RFC3986);
 
         try {
             Mail::to($email)->send(new WorkspaceAccessGrantedMail(

@@ -16,6 +16,8 @@ class ValidateProductionConfigurationCommand extends Command
         $queueTimeout = (int) config('observability.health.queue_timeout', 3600);
         $queueRetryAfter = (int) config('queue.connections.database.retry_after', 0);
         $mailDriver = (string) config('mail.default');
+        $mailConfigured = ! in_array($mailDriver, ['log', 'array'], true)
+            && ($mailDriver !== 'resend' || $this->present(config('services.resend.key')));
         $alertsEnabled = (bool) config('observability.alerts.enabled');
         $hasAlertDestination = $this->present(config('observability.alerts.email'))
             || $this->present(config('observability.alerts.webhook_url'));
@@ -43,7 +45,8 @@ class ValidateProductionConfigurationCommand extends Command
             $this->check('Legacy application key disabled', ! config('services.app_security.allow_legacy_key'), true, 'ALLOW_LEGACY_APP_KEY must be false.'),
             $this->check('Verified email required', config('outreach.launch.require_verified_email'), true, 'ACCESS_REQUIRE_VERIFIED_EMAIL must be true.'),
             $this->check('Operational alerts deliverable', $alertsEnabled && $hasAlertDestination, true, 'Enable alerts and configure an email or webhook destination.'),
-            $this->check('Real mail transport', ! in_array($mailDriver, ['log', 'array'], true), false, 'Configure Resend SMTP before using invitations or email alerts.'),
+            $this->check('Real mail transport', $mailConfigured, false, 'Set MAIL_MAILER=resend and configure RESEND_API_KEY before using invitations or email alerts.'),
+            $this->check('Render-safe Resend transport', $mailDriver === 'resend', false, 'Use MAIL_MAILER=resend so Render sends mail over HTTPS instead of SMTP.'),
         ];
 
         $failures = 0;
