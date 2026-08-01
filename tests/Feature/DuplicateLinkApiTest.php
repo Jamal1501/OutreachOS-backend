@@ -2,7 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Models\Creator;
+use App\Models\CreatorProfile;
 use App\Models\DuplicateLink;
+use App\Models\Project;
 use App\Models\User;
 use App\Models\Workspace;
 use App\Models\WorkspaceMember;
@@ -109,6 +112,46 @@ class DuplicateLinkApiTest extends TestCase
             'id' => $foreignLink->id,
             'status' => 'pending',
         ]);
+    }
+
+    public function test_it_does_not_resolve_creator_ids_from_a_foreign_workspace_project(): void
+    {
+        [$user, $workspace] = $this->createMemberWorkspace('owner');
+        [, $otherWorkspace] = $this->createMemberWorkspace('owner');
+        $this->fakeSupabaseUser($user);
+
+        $foreignProject = Project::query()->create([
+            'workspace_id' => $otherWorkspace->id,
+            'name' => 'Foreign project',
+            'workbook_id' => 'workspace:foreign',
+            'status' => 'active',
+        ]);
+        $foreignCreator = Creator::query()->create([
+            'project_id' => $foreignProject->id,
+            'display_name' => 'Foreign creator',
+        ]);
+        CreatorProfile::query()->create([
+            'creator_id' => $foreignCreator->id,
+            'project_id' => $foreignProject->id,
+            'platform' => 'instagram',
+            'handle' => 'foreign_creator',
+        ]);
+        DuplicateLink::query()->create([
+            'workspace_id' => $workspace->id,
+            'project_id' => (string) $foreignProject->id,
+            'creator_a_handle' => 'foreign_creator',
+            'creator_a_platform' => 'instagram',
+            'creator_b_handle' => 'local_candidate',
+            'creator_b_platform' => 'tiktok',
+            'confidence' => 95,
+            'status' => 'pending',
+        ]);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->getJson('/api/crm/duplicate-links')
+            ->assertOk()
+            ->assertJsonPath('items.0.creator_a_id', null);
     }
 
     private function createMemberWorkspace(string $role): array

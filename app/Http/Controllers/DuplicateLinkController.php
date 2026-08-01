@@ -32,7 +32,7 @@ class DuplicateLinkController extends Controller
 
         return response()->json([
             'message' => 'Duplicate links loaded.',
-            'items' => $this->withCreatorIds($links),
+            'items' => $this->withCreatorIds($links, $workspaceId),
         ]);
     }
 
@@ -129,7 +129,7 @@ class DuplicateLinkController extends Controller
 
         return response()->json([
             'message' => 'Duplicate scan completed.',
-            'items' => $this->withCreatorIds($links),
+            'items' => $this->withCreatorIds($links, $workspaceId),
             'summary' => [
                 'scanned' => count($creators),
                 'created' => $created,
@@ -174,7 +174,7 @@ class DuplicateLinkController extends Controller
 
         return response()->json([
             'message' => 'Duplicate links saved.',
-            'items' => $this->withCreatorIds(collect($created)),
+            'items' => $this->withCreatorIds(collect($created), $workspaceId),
         ], 201);
     }
 
@@ -242,21 +242,40 @@ class DuplicateLinkController extends Controller
         return ['a' => $items[0], 'b' => $items[1]];
     }
 
-    private function withCreatorIds(Collection $links): array
+    private function withCreatorIds(Collection $links, string $workspaceId): array
     {
         if ($links->isEmpty()) {
             return [];
         }
 
-        $projectIds = $links->pluck('project_id')->filter()->unique()->values();
-        $profiles = CreatorProfile::query()
-            ->whereIn('project_id', $projectIds)
-            ->get(['id', 'project_id', 'platform', 'handle', 'username'])
-            ->keyBy(fn (CreatorProfile $profile) => $this->profileLookupKey(
-                (string) $profile->project_id,
-                (string) $profile->platform,
-                (string) ($profile->handle ?: $profile->username),
-            ));
+        // duplicate_links.project_id also supports legacy workspace/workbook keys
+        // such as "workspace:agency". creator_profiles.project_id is a bigint,
+        // so only numeric project IDs that belong to this workspace may be used
+        // in the profile lookup.
+        $candidateProjectIds = $links->pluck('project_id')
+            ->map(fn ($id) => trim((string) $id))
+            ->filter(fn (string $id) => $this->isDatabaseProjectId($id))
+            ->unique()
+            ->values();
+
+        $projectIds = $candidateProjectIds->isEmpty()
+            ? collect()
+            : Project::query()
+                ->where('workspace_id', $workspaceId)
+                ->whereIn('id', $candidateProjectIds)
+                ->pluck('id')
+                ->map(fn ($id) => (string) $id);
+
+        $profiles = $projectIds->isEmpty()
+            ? collect()
+            : CreatorProfile::query()
+                ->whereIn('project_id', $projectIds)
+                ->get(['id', 'project_id', 'platform', 'handle', 'username'])
+                ->keyBy(fn (CreatorProfile $profile) => $this->profileLookupKey(
+                    (string) $profile->project_id,
+                    (string) $profile->platform,
+                    (string) ($profile->handle ?: $profile->username),
+                ));
 
         return $links->map(function (DuplicateLink $link) use ($profiles) {
             $link->setAttribute('creator_a_id', $profiles->get($this->profileLookupKey((string) $link->project_id, (string) $link->creator_a_platform, (string) $link->creator_a_handle))?->id);
@@ -269,5 +288,12 @@ class DuplicateLinkController extends Controller
     private function profileLookupKey(string $projectId, string $platform, string $handle): string
     {
         return $projectId.'|'.strtolower(trim($platform)).'|'.strtolower($this->normalizeHandle($handle));
+    }
+
+    private function isDatabaseProjectId(string $value): bool
+    {
+        return $value !== ''
+            && ctype_digit($value)
+            && filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) !== false;
     }
 }
