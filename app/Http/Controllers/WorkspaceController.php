@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Mail\WorkspaceAccessGrantedMail;
 use App\Mail\WorkspaceInvitationMail;
 use App\Models\Workspace;
 use App\Models\WorkspaceMember;
@@ -188,8 +189,9 @@ class WorkspaceController extends Controller
         $invited = 0;
         $affectedUserIds = [];
         $pendingInvites = [];
+        $assignedNotices = [];
 
-        DB::transaction(function () use ($workspaceIds, $email, $role, $existingUser, &$assigned, &$invited, &$affectedUserIds, &$pendingInvites, $currentMembership) {
+        DB::transaction(function () use ($workspaceIds, $email, $role, $existingUser, &$assigned, &$invited, &$affectedUserIds, &$pendingInvites, &$assignedNotices, $currentMembership) {
             foreach ($workspaceIds as $workspaceId) {
                 if ($existingUser && trim((string) ($existingUser->supabase_user_id ?? '')) !== '') {
                     $targetUserId = (string) $existingUser->supabase_user_id;
@@ -215,6 +217,11 @@ class WorkspaceController extends Controller
                     }
 
                     $affectedUserIds[] = $targetUserId;
+                    $assignedNotices[] = [
+                        'workspace_id' => $workspaceId,
+                        'email' => $email,
+                        'role' => $role,
+                    ];
                     $assigned++;
                     $this->logWorkspaceAudit($workspaceId, $currentMembership?->user_id, 'member_assigned', 'user', $targetUserId, [
                         'role' => $role,
@@ -237,8 +244,19 @@ class WorkspaceController extends Controller
         });
 
         $this->forgetWorkspaceMembershipCaches($workspaceIds, $affectedUserIds);
+        $emailAttempts = 0;
+        $emailsSent = 0;
         foreach ($pendingInvites as $invite) {
-            $this->sendWorkspaceInvitationEmail($invite);
+            $emailAttempts++;
+            if ($this->sendWorkspaceInvitationEmail($invite)) {
+                $emailsSent++;
+            }
+        }
+        foreach ($assignedNotices as $notice) {
+            $emailAttempts++;
+            if ($this->sendWorkspaceAccessGrantedEmail($notice)) {
+                $emailsSent++;
+            }
         }
 
         return response()->json([
@@ -249,6 +267,7 @@ class WorkspaceController extends Controller
                 'workspaceIds' => $workspaceIds,
                 'assignedWorkspaces' => $assigned,
                 'pendingInvitations' => $invited,
+                'emailDelivery' => $this->emailDeliveryPayload($emailAttempts, $emailsSent),
             ],
         ], 201);
     }
@@ -433,12 +452,21 @@ class WorkspaceController extends Controller
 
         DB::table('workspace_invitations')->where('id', $invitationId)->update($values);
         $freshInvite = DB::table('workspace_invitations')->where('id', $invitationId)->first();
+        $emailSent = false;
         if ($freshInvite) {
-            $this->sendWorkspaceInvitationEmail($freshInvite);
+            $emailSent = $this->sendWorkspaceInvitationEmail($freshInvite);
             $this->logWorkspaceAudit((string) $freshInvite->workspace_id, $currentMembership->user_id, 'invitation_resent', 'workspace_invitation', $invitationId, [
                 'email' => (string) $freshInvite->email,
                 'role' => (string) $freshInvite->role,
+                'email_delivery' => $emailSent ? 'sent' : 'failed',
             ]);
+        }
+
+        if (! $emailSent) {
+            return response()->json([
+                'error' => 'invitation_email_failed',
+                'message' => 'The invitation is still pending, but its email could not be delivered. Check the mail configuration and try again.',
+            ], 502);
         }
 
         return response()->json([
@@ -693,6 +721,7 @@ class WorkspaceController extends Controller
 
         $events = DB::table('workspace_audit_events')
             ->whereIn('workspace_id', $workspaceIds ?: ['00000000-0000-0000-0000-000000000000'])
+            ->where('event_type', 'not like', 'billing_%')
             ->orderByDesc('created_at')
             ->limit(min(100, max(10, (int) $request->query('limit', 40))))
             ->get()
@@ -1042,16 +1071,16 @@ class WorkspaceController extends Controller
         return DB::table('workspace_invitations')->where('id', $insert['id'])->first();
     }
 
-    private function sendWorkspaceInvitationEmail(object $invite): void
+    private function sendWorkspaceInvitationEmail(object $invite): bool
     {
         $workspace = Workspace::query()->find((string) $invite->workspace_id);
         if (! $workspace) {
-            return;
+            return false;
         }
 
         $email = Str::lower(trim((string) $invite->email));
         if ($email === '') {
-            return;
+            return false;
         }
 
         $frontendUrl = rtrim((string) config('app.frontend_url', config('app.url')), '/');
@@ -1064,6 +1093,13 @@ class WorkspaceController extends Controller
                 inviteUrl: $inviteUrl,
                 expiresAt: $invite->expires_at ? (string) $invite->expires_at : 'soon'
             ));
+
+            $this->logWorkspaceAudit((string) $invite->workspace_id, null, 'invitation_email_sent', 'workspace_invitation', (string) $invite->id, [
+                'email' => $email,
+                'role' => (string) $invite->role,
+            ]);
+
+            return true;
         } catch (\Throwable $exception) {
             Log::warning('workspace invitation email failed', [
                 'workspace_id' => (string) $invite->workspace_id,
@@ -1071,7 +1107,70 @@ class WorkspaceController extends Controller
                 'email_hash' => sha1($email),
                 'error' => $exception->getMessage(),
             ]);
+
+            $this->logWorkspaceAudit((string) $invite->workspace_id, null, 'invitation_email_failed', 'workspace_invitation', (string) $invite->id, [
+                'email' => $email,
+                'role' => (string) $invite->role,
+            ]);
+
+            return false;
         }
+    }
+
+    /**
+     * @param  array{workspace_id:string,email:string,role:string}  $notice
+     */
+    private function sendWorkspaceAccessGrantedEmail(array $notice): bool
+    {
+        $workspace = Workspace::query()->find($notice['workspace_id']);
+        $email = Str::lower(trim($notice['email']));
+        if (! $workspace || $email === '') {
+            return false;
+        }
+
+        $frontendUrl = rtrim((string) config('app.frontend_url', config('app.url')), '/');
+        $workspaceUrl = $frontendUrl.'/auth?mode=login&email='.urlencode($email);
+
+        try {
+            Mail::to($email)->send(new WorkspaceAccessGrantedMail(
+                workspaceName: (string) $workspace->name,
+                role: $notice['role'],
+                workspaceUrl: $workspaceUrl,
+            ));
+
+            $this->logWorkspaceAudit($notice['workspace_id'], null, 'member_access_email_sent', 'workspace', $notice['workspace_id'], [
+                'email' => $email,
+                'role' => $notice['role'],
+            ]);
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::warning('workspace access email failed', [
+                'workspace_id' => $notice['workspace_id'],
+                'email_hash' => sha1($email),
+                'error' => $exception->getMessage(),
+            ]);
+
+            $this->logWorkspaceAudit($notice['workspace_id'], null, 'member_access_email_failed', 'workspace', $notice['workspace_id'], [
+                'email' => $email,
+                'role' => $notice['role'],
+            ]);
+
+            return false;
+        }
+    }
+
+    /**
+     * @return array{status:string,attempted:int,sent:int,failed:int}
+     */
+    private function emailDeliveryPayload(int $attempted, int $sent): array
+    {
+        $failed = max(0, $attempted - $sent);
+        $status = $attempted === 0
+            ? 'not_required'
+            : ($failed === 0 ? 'sent' : ($sent > 0 ? 'partial' : 'failed'));
+
+        return compact('status', 'attempted', 'sent', 'failed');
     }
 
     private function logWorkspaceAudit(string $workspaceId, ?string $actorUserId, string $eventType, ?string $subjectType = null, ?string $subjectId = null, array $metadata = []): void

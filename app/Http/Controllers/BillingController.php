@@ -65,7 +65,7 @@ class BillingController extends Controller
         $recentUsage = Schema::hasTable('workspace_usage_events')
             ? DB::table('workspace_usage_events')
                 ->when($billingAccountId !== '' && Schema::hasColumn('workspace_usage_events', 'billing_account_id'), fn ($query) => $query->where('billing_account_id', $billingAccountId), fn ($query) => $query->whereIn('workspace_id', $workspaceIds))
-                ->select(['id', 'workspace_id', 'type', 'credit_bucket', 'credit_cost', 'provider', 'source', 'status', 'created_at', 'consumed_at', 'refunded_at'])
+                ->select(['id', 'workspace_id', 'type', 'credit_bucket', 'units', 'credit_cost', 'provider', 'source', 'status', 'metadata', 'created_at', 'consumed_at', 'refunded_at'])
                 ->orderByDesc('created_at')
                 ->limit(10)
                 ->get()

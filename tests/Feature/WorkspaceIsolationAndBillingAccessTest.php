@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Exceptions\ActiveDiscoveryException;
 use App\Exceptions\InsufficientCreditsException;
+use App\Mail\WorkspaceAccessGrantedMail;
 use App\Mail\WorkspaceInvitationMail;
 use App\Models\DiscoveryRun;
 use App\Models\Project;
@@ -77,6 +78,97 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
             'event_type' => 'invitation_created',
         ]);
         Mail::assertSent(WorkspaceInvitationMail::class);
+    }
+
+    public function test_existing_user_is_added_to_another_workspace_and_notified(): void
+    {
+        Mail::fake();
+        [$owner, $workspace] = $this->createWorkspaceForRole('owner', maxMembers: 3);
+        $existingUser = User::query()->create([
+            'supabase_user_id' => (string) Str::uuid(),
+            'name' => 'Existing User',
+            'email' => 'existing@example.test',
+            'password' => 'password',
+        ]);
+        $this->fakeSupabaseUser($owner);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/workspaces/invitations', [
+                'email' => 'existing@example.test',
+                'role' => 'member',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('data.assignedWorkspaces', 1)
+            ->assertJsonPath('data.pendingInvitations', 0)
+            ->assertJsonPath('data.emailDelivery.status', 'sent');
+
+        $this->assertDatabaseHas('workspace_members', [
+            'workspace_id' => $workspace->id,
+            'user_id' => $existingUser->supabase_user_id,
+            'role' => 'member',
+        ]);
+        Mail::assertSent(WorkspaceAccessGrantedMail::class, fn (WorkspaceAccessGrantedMail $mail) => $mail->hasTo('existing@example.test'));
+    }
+
+    public function test_invitation_creation_reports_email_delivery_failure_truthfully(): void
+    {
+        [$owner, $workspace] = $this->createWorkspaceForRole('owner', maxMembers: 3);
+        $this->fakeSupabaseUser($owner);
+        config(['mail.default' => 'missing-test-mailer']);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/workspaces/invitations', [
+                'email' => 'delivery-failure@example.test',
+                'role' => 'member',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('data.pendingInvitations', 1)
+            ->assertJsonPath('data.emailDelivery.status', 'failed')
+            ->assertJsonPath('data.emailDelivery.failed', 1);
+
+        $this->assertDatabaseHas('workspace_invitations', [
+            'workspace_id' => $workspace->id,
+            'email' => 'delivery-failure@example.test',
+            'accepted_at' => null,
+        ]);
+    }
+
+    public function test_workspace_audit_log_excludes_billing_system_events(): void
+    {
+        [$owner, $workspace] = $this->createWorkspaceForRole('owner');
+        $this->fakeSupabaseUser($owner);
+
+        DB::table('workspace_audit_events')->insert([
+            [
+                'id' => (string) Str::uuid(),
+                'workspace_id' => $workspace->id,
+                'actor_user_id' => $owner->supabase_user_id,
+                'event_type' => 'billing_credits_reserved',
+                'subject_type' => 'billing',
+                'subject_id' => (string) Str::uuid(),
+                'metadata' => json_encode(['credit_cost' => 12]),
+                'created_at' => now(),
+            ],
+            [
+                'id' => (string) Str::uuid(),
+                'workspace_id' => $workspace->id,
+                'actor_user_id' => $owner->supabase_user_id,
+                'event_type' => 'member_assigned',
+                'subject_type' => 'user',
+                'subject_id' => (string) Str::uuid(),
+                'metadata' => json_encode(['email' => 'member@example.test']),
+                'created_at' => now()->addSecond(),
+            ],
+        ]);
+
+        $response = $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->getJson('/api/workspaces/audit?limit=40')
+            ->assertOk();
+
+        $this->assertSame(['member_assigned'], collect($response->json('data.events'))->pluck('event_type')->all());
     }
 
     public function test_invited_user_is_added_to_workspace_on_authenticated_request(): void
