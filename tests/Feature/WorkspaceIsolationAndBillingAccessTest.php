@@ -115,6 +115,26 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
             && str_contains($mail->workspaceUrl, 'workspaceId='.urlencode((string) $workspace->id)));
     }
 
+    public function test_invitation_cannot_grant_owner_role(): void
+    {
+        [$owner, $workspace] = $this->createWorkspaceForRole('owner', maxMembers: 3);
+        $this->fakeSupabaseUser($owner);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/workspaces/invitations', [
+                'email' => 'should-not-be-owner@example.test',
+                'role' => 'owner',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('role');
+
+        $this->assertDatabaseMissing('workspace_invitations', [
+            'workspace_id' => $workspace->id,
+            'email' => 'should-not-be-owner@example.test',
+        ]);
+    }
+
     public function test_invitation_creation_reports_email_delivery_failure_truthfully(): void
     {
         [$owner, $workspace] = $this->createWorkspaceForRole('owner', maxMembers: 3);

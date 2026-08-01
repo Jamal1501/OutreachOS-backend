@@ -5,6 +5,7 @@ namespace App\Providers;
 use App\Contracts\DiscoveryProvider;
 use App\Contracts\EnrichmentProvider;
 use App\Services\ObservabilityService;
+use App\Services\OperationalHeartbeatService;
 use App\Services\Providers\ApifyDiscoveryProvider;
 use App\Services\Providers\ApifyEnrichmentProvider;
 use Illuminate\Cache\RateLimiting\Limit;
@@ -12,10 +13,8 @@ use Illuminate\Http\Request;
 use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Queue\Events\Looping;
 use Illuminate\Queue\Events\QueueBusy;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\RateLimiter;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
 
@@ -23,6 +22,8 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        $this->app->singleton(OperationalHeartbeatService::class);
+
         $this->app->bind(DiscoveryProvider::class, function ($app) {
             return match ((string) config('outreach.providers.discovery', 'apify')) {
                 'apify' => $app->make(ApifyDiscoveryProvider::class),
@@ -65,15 +66,7 @@ class AppServiceProvider extends ServiceProvider
         });
 
         $this->app['events']->listen(Looping::class, function (): void {
-            static $lastHeartbeatAt = 0;
-            if (time() - $lastHeartbeatAt < 30 || ! Schema::hasTable('operational_heartbeats')) {
-                return;
-            }
-            $lastHeartbeatAt = time();
-            DB::table('operational_heartbeats')->updateOrInsert(
-                ['name' => 'queue-worker'],
-                ['last_seen_at' => now(), 'metadata' => json_encode(['source' => 'queue-loop']), 'created_at' => now(), 'updated_at' => now()],
-            );
+            app(OperationalHeartbeatService::class)->queueWorkerIdle();
         });
     }
 

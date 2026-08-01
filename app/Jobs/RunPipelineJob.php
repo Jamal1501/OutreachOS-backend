@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Services\OperationalHeartbeatService;
 use App\Services\PipelineDiscoveryService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -25,13 +26,19 @@ class RunPipelineJob implements ShouldQueue
         public array $payload,
     ) {}
 
-    public function handle(PipelineDiscoveryService $pipeline): void
+    public function handle(PipelineDiscoveryService $pipeline, OperationalHeartbeatService $heartbeat): void
     {
-        if (! $pipeline->claimJobExecution($this->jobId, (string) ($this->job?->getJobId() ?: 'direct'))) {
-            return;
-        }
+        $heartbeat->queueWorkerBusy($this->jobId, 'claiming', force: true);
 
-        $pipeline->runJob($this->jobId, $this->payload);
+        try {
+            if (! $pipeline->claimJobExecution($this->jobId, (string) ($this->job?->getJobId() ?: 'direct'))) {
+                return;
+            }
+
+            $pipeline->runJob($this->jobId, $this->payload);
+        } finally {
+            $heartbeat->queueWorkerIdle('pipeline-job-finished', force: true);
+        }
     }
 
     public function failed(?Throwable $exception): void

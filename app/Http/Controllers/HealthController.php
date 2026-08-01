@@ -138,16 +138,38 @@ class HealthController extends Controller
 
         $heartbeats = DB::table('operational_heartbeats')
             ->whereIn('name', ['scheduler', 'queue-worker'])
-            ->pluck('last_seen_at', 'name');
+            ->get(['name', 'last_seen_at', 'metadata'])
+            ->keyBy('name');
         $stale = collect(['scheduler', 'queue-worker'])->filter(function (string $name) use ($heartbeats) {
-            $lastSeen = $heartbeats->get($name);
+            $lastSeen = $heartbeats->get($name)?->last_seen_at;
 
             return ! $lastSeen || now()->diffInMinutes($lastSeen) > 3;
         })->values()->all();
+        $processes = collect(['scheduler', 'queue-worker'])->mapWithKeys(function (string $name) use ($heartbeats, $stale) {
+            $heartbeat = $heartbeats->get($name);
+            $metadata = $heartbeat && is_string($heartbeat->metadata)
+                ? (json_decode($heartbeat->metadata, true) ?: [])
+                : [];
+            $state = in_array($name, $stale, true)
+                ? 'stale'
+                : (($metadata['state'] ?? null) === 'busy' ? 'busy' : 'ok');
+
+            return [$name => array_merge([
+                'status' => $state,
+                'lastSeenAt' => $heartbeat?->last_seen_at,
+            ], array_intersect_key($metadata, array_flip([
+                'jobId',
+                'stage',
+                'providerPhase',
+                'providerRunId',
+                'providerStatus',
+            ])))];
+        })->all();
 
         return [
             'status' => $stale === [] ? 'ok' : 'degraded',
             'staleProcesses' => $stale,
+            'processes' => $processes,
         ];
     }
 }

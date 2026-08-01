@@ -27,6 +27,7 @@ class PipelineDiscoveryService
         private ScraperRegistryService $scrapers,
         private InfluencerScoringService $scoring,
         private AvatarCacheService $avatarCache,
+        private OperationalHeartbeatService $heartbeat,
     ) {}
 
     public function estimate(
@@ -317,6 +318,11 @@ class PipelineDiscoveryService
                 'planId' => $payload['planId'] ?? 'free',
                 'moduleKey' => $payload['discoveryModuleKey'] ?? null,
                 'shouldCancel' => fn (): bool => $this->isCancellationRequested($jobId),
+                'heartbeat' => fn (array $metadata = []) => $this->heartbeat->queueWorkerBusy(
+                    $jobId,
+                    'discovery_scrape',
+                    $metadata,
+                ),
             ]);
             $this->assertNotCancelled($jobId);
             $discoveryItems = $discovery->items;
@@ -433,6 +439,11 @@ class PipelineDiscoveryService
                 'planId' => $payload['planId'] ?? 'free',
                 'moduleKey' => $payload['enrichmentModuleKey'] ?? null,
                 'shouldCancel' => fn (): bool => $this->isCancellationRequested($jobId),
+                'heartbeat' => fn (array $metadata = []) => $this->heartbeat->queueWorkerBusy(
+                    $jobId,
+                    'enrichment_scrape',
+                    $metadata,
+                ),
                 'onBatchProgress' => function (int $completedProfiles, int $totalProfiles, int $completedBatches, int $totalBatches) use ($jobId) {
                     $this->updateJob($jobId, [
                         'enrichmentProgress' => [

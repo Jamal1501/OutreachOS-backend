@@ -39,6 +39,7 @@ class ApifyRunExecutor
         $moduleKey = isset($context['moduleKey']) ? trim((string) $context['moduleKey']) : null;
         $workspaceId = isset($context['workspaceId']) ? trim((string) $context['workspaceId']) : null;
         $billingManagedExternally = trim((string) ($context['externalUsageReservationId'] ?? '')) !== '';
+        $heartbeat = $context['heartbeat'] ?? null;
         if ($workspaceId && $moduleKey) {
             $module = $this->scrapers->resolveExecution($moduleKey, $actorKey, $actorId, $this->billing->currentPlanId($workspaceId));
             $this->scrapers->assertWithinExecutionLimit($module, $input);
@@ -52,6 +53,7 @@ class ApifyRunExecutor
         ], fn ($value) => $value !== null && $value !== '');
 
         try {
+            $this->touchHeartbeat($heartbeat, ['providerPhase' => 'starting']);
             if ($workspaceId && $moduleKey && ! $billingManagedExternally) {
                 $reservation = $this->billing->reserveApify(
                     workspaceId: $workspaceId,
@@ -103,7 +105,7 @@ class ApifyRunExecutor
                 throw new RuntimeException('Apify run ID missing in response');
             }
 
-            $runData = $this->pollRun($token, $runId, $context['shouldCancel'] ?? null);
+            $runData = $this->pollRun($token, $runId, $context['shouldCancel'] ?? null, $heartbeat);
             $datasetId = (string) ($runData['defaultDatasetId'] ?? '');
             $datasetFetchLimit = isset($context['fetchLimit']) && is_numeric($context['fetchLimit'])
                 ? max(1, (int) $context['fetchLimit'])
@@ -248,11 +250,16 @@ class ApifyRunExecutor
         }
     }
 
-    private function pollRun(string $token, string $runId, mixed $shouldCancel = null): array
+    private function pollRun(string $token, string $runId, mixed $shouldCancel = null, mixed $heartbeat = null): array
     {
         $deadline = time() + self::DEFAULT_TIMEOUT_SECONDS;
 
         do {
+            $this->touchHeartbeat($heartbeat, [
+                'providerPhase' => 'polling',
+                'providerRunId' => $runId,
+            ]);
+
             if (is_callable($shouldCancel) && $shouldCancel()) {
                 Http::withToken($token)
                     ->acceptJson()
@@ -273,6 +280,11 @@ class ApifyRunExecutor
 
             $run = $response->json('data') ?? [];
             $status = strtoupper((string) ($run['status'] ?? ''));
+            $this->touchHeartbeat($heartbeat, [
+                'providerPhase' => 'polling',
+                'providerRunId' => $runId,
+                'providerStatus' => $status,
+            ]);
 
             if (in_array($status, self::TERMINAL_RUN_STATUSES, true)) {
                 if ($status !== 'SUCCEEDED') {
@@ -286,6 +298,13 @@ class ApifyRunExecutor
         } while (time() < $deadline);
 
         throw new RuntimeException('Timed out while waiting for Apify run '.$runId);
+    }
+
+    private function touchHeartbeat(mixed $heartbeat, array $metadata): void
+    {
+        if (is_callable($heartbeat)) {
+            $heartbeat($metadata);
+        }
     }
 
     private function extractApifyRunCostUsd(array $runData): ?float
