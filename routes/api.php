@@ -9,8 +9,10 @@ use App\Http\Controllers\CspReportController;
 use App\Http\Controllers\DuplicateLinkController;
 use App\Http\Controllers\HealthController;
 use App\Http\Controllers\MessagePerformanceController;
+use App\Http\Controllers\OperationsController;
 use App\Http\Controllers\PipelineController;
 use App\Http\Controllers\SheetDataController;
+use App\Http\Controllers\SupportController;
 use App\Http\Controllers\WorkspaceController;
 use Illuminate\Support\Facades\Route;
 
@@ -30,6 +32,7 @@ Route::middleware('throttle:30,1')->group(function () {
 Route::get('/avatar-proxy', [SheetDataController::class, 'avatarProxy'])->middleware('throttle:avatar');
 Route::post('/csp-report', [CspReportController::class, 'store'])->middleware('throttle:60,1');
 Route::post('/billing/webhooks/stripe', [BillingController::class, 'stripeWebhook'])->middleware('throttle:60,1');
+Route::get('/status/banner', [SupportController::class, 'banner'])->middleware('throttle:30,1');
 
 Route::middleware(['api.auth', 'throttle:api'])->group(function () {
     Route::get('/workspaces/bootstrap', [WorkspaceController::class, 'bootstrap']);
@@ -38,9 +41,14 @@ Route::middleware(['api.auth', 'throttle:api'])->group(function () {
     Route::post('/account/restore', [WorkspaceController::class, 'restoreAccount']);
     Route::post('/workspaces/{workspaceId}/restore', [WorkspaceController::class, 'restoreWorkspace']);
     Route::get('/workspaces/deleted', [WorkspaceController::class, 'deletedWorkspaces']);
+    Route::middleware('platform.operator')->group(function () {
+        Route::get('/operations/provider-spend', [OperationsController::class, 'providerSpend']);
+        Route::put('/operations/provider-spend/control', [OperationsController::class, 'updateProviderSpendControl']);
+    });
 });
 
 Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(function () {
+    Route::post('/support/requests', [SupportController::class, 'store'])->middleware('throttle:10,1');
     Route::get('/auth-check', function () {
         return response()->json([
             'ok' => true,

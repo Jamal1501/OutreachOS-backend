@@ -65,11 +65,24 @@ class BillingController extends Controller
         $recentUsage = Schema::hasTable('workspace_usage_events')
             ? DB::table('workspace_usage_events')
                 ->when($billingAccountId !== '' && Schema::hasColumn('workspace_usage_events', 'billing_account_id'), fn ($query) => $query->where('billing_account_id', $billingAccountId), fn ($query) => $query->whereIn('workspace_id', $workspaceIds))
-                ->select(['id', 'workspace_id', 'type', 'credit_bucket', 'units', 'credit_cost', 'provider', 'source', 'status', 'metadata', 'created_at', 'consumed_at', 'refunded_at'])
+                ->select(['id', 'workspace_id', 'type', 'credit_bucket', 'units', 'credit_cost', 'provider', 'source', 'status', 'reference_id', 'metadata', 'created_at', 'consumed_at', 'refunded_at'])
                 ->orderByDesc('created_at')
-                ->limit(10)
+                ->limit(25)
                 ->get()
             : collect();
+        $workspaceNames = Schema::hasTable('workspaces')
+            ? DB::table('workspaces')->whereIn('id', $workspaceIds)->pluck('name', 'id')
+            : collect();
+        $recentUsage->transform(function ($event) use ($workspaceNames) {
+            $metadata = is_string($event->metadata ?? null)
+                ? (json_decode($event->metadata, true) ?: [])
+                : (array) ($event->metadata ?? []);
+            $event->metadata = $metadata;
+            $event->workspace_name = (string) ($workspaceNames[$event->workspace_id] ?? 'Workspace');
+            $event->description = $this->usageEventDescription($event, $metadata);
+
+            return $event;
+        });
 
         $recentPurchases = Schema::hasTable('credit_purchases')
             ? DB::table('credit_purchases')
@@ -105,7 +118,10 @@ class BillingController extends Controller
             : collect();
 
         $failedWebhookCount = $stripeWebhookEvents->where('status', 'failed')->count();
-        $reservedUsageCount = $recentUsage->where('status', 'reserved')->count();
+        $reservedUsageCount = $recentUsage
+            ->where('status', 'reserved')
+            ->filter(fn ($event) => $event->created_at && now()->parse($event->created_at)->lt(now()->subHour()))
+            ->count();
         $subscriptionStatus = (string) ($subscription->status ?? data_get($summary, 'subscription.status', ''));
         $blockedStatuses = ['past_due', 'unpaid', 'canceled', 'incomplete', 'incomplete_expired'];
 
@@ -123,7 +139,7 @@ class BillingController extends Controller
                     ['key' => 'stripe_subscription_linked', 'ok' => trim((string) ($subscription->stripe_subscription_id ?? '')) !== '' || data_get($summary, 'currentPlanId') === 'free', 'detail' => trim((string) ($subscription->stripe_subscription_id ?? '')) !== '' ? 'Stripe subscription linked.' : 'Free plan may not have a Stripe subscription.'],
                     ['key' => 'wallet_non_negative', 'ok' => $wallet !== null && min((int) ($wallet->scrape_credits_balance ?? 0), (int) ($wallet->ai_credits_balance ?? 0), (int) ($wallet->bonus_scrape_credits ?? 0), (int) ($wallet->bonus_ai_credits ?? 0)) >= 0, 'detail' => 'Wallet balances are unsigned in schema, but this verifies the current snapshot.'],
                     ['key' => 'no_failed_stripe_webhooks_recent', 'ok' => $failedWebhookCount === 0, 'detail' => $failedWebhookCount.' failed Stripe webhook events in the latest 20.'],
-                    ['key' => 'no_stale_reserved_usage_recent', 'ok' => $reservedUsageCount === 0, 'detail' => $reservedUsageCount.' reserved usage events in the latest 10.'],
+                    ['key' => 'no_stale_reserved_usage_recent', 'ok' => $reservedUsageCount === 0, 'detail' => $reservedUsageCount.' credit reservations older than one hour in the latest 25 events.'],
                     ['key' => 'billing_audit_visible', 'ok' => $recentAuditEvents->isNotEmpty(), 'detail' => $recentAuditEvents->count().' recent billing audit events found.'],
                 ],
                 'summary' => $summary,
@@ -239,6 +255,33 @@ class BillingController extends Controller
         }
 
         return $url;
+    }
+
+    private function usageEventDescription(object $event, array $metadata): string
+    {
+        $source = strtolower(trim((string) (($event->source ?? '').' '.($event->type ?? ''))));
+        $activity = str_contains($source, 'enrich')
+            ? 'Creator enrichment'
+            : (str_contains($source, 'discover') || str_contains($source, 'pipeline')
+                ? 'Creator discovery'
+                : (str_contains($source, 'ai') || str_contains($source, 'draft') || str_contains($source, 'message')
+                    ? 'AI drafting'
+                    : Str::headline((string) ($event->type ?? 'Credit usage'))));
+        $creditCost = max(0, (int) ($event->credit_cost ?? 0));
+        $original = max($creditCost, (int) ($metadata['original_credit_cost'] ?? $creditCost));
+        $returned = (string) ($event->status ?? '') === 'refunded'
+            ? $original
+            : max(0, (int) ($metadata['refunded_credit_cost'] ?? 0));
+        $bucket = (string) ($event->credit_bucket ?? '') === 'ai' ? 'AI' : 'workflow';
+
+        return match ((string) ($event->status ?? '')) {
+            'reserved' => "{$activity}: {$original} {$bucket} credits reserved",
+            'refunded' => "{$activity}: {$returned} {$bucket} credits returned",
+            'consumed' => $returned > 0
+                ? "{$activity}: {$creditCost} {$bucket} credits used, {$returned} returned"
+                : "{$activity}: {$creditCost} {$bucket} credits used",
+            default => "{$activity}: {$creditCost} {$bucket} credits",
+        };
     }
 
     private function checkoutReturnHostAllowed(string $host): bool

@@ -28,6 +28,15 @@ class ApifyEnrichmentProvider implements EnrichmentProvider
         $workspaceId = trim((string) ($context['workspaceId'] ?? ''));
         $batchSize = max(1, (int) ($module['maxBatchSize'] ?? 100));
         $aggregateInput = $this->buildInput($platform, $cleanUrls);
+        $providerBudgetReservationUsd = array_sum(array_map(
+            fn (array $batchUrls): float => $this->scrapers->providerChargeLimitUsd(
+                (string) $module['key'],
+                $actorKey,
+                (string) $module['actorId'],
+                $this->buildInput($platform, $batchUrls),
+            ),
+            array_chunk($cleanUrls, $batchSize),
+        ));
         $reservation = $workspaceId !== ''
             ? $this->billing->reserveApify(
                 workspaceId: $workspaceId,
@@ -35,7 +44,7 @@ class ApifyEnrichmentProvider implements EnrichmentProvider
                 actorKey: $actorKey,
                 actorId: (string) $module['actorId'],
                 input: $aggregateInput,
-                maxChargeUsd: null,
+                maxChargeUsd: round($providerBudgetReservationUsd, 2),
             )
             : null;
         $reservationId = (string) ($reservation['usage_event_id'] ?? '');

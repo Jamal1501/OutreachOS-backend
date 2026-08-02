@@ -53,6 +53,29 @@ class DataLifecycleServiceTest extends TestCase
         $this->assertCount(1, $export['data']['workspace_members']);
     }
 
+    public function test_workspace_export_includes_the_shared_billing_account(): void
+    {
+        [$user, $workspace] = $this->workspaceFixture();
+        $billingAccountId = (string) Str::uuid();
+        DB::table('billing_accounts')->insert([
+            'id' => $billingAccountId,
+            'owner_user_id' => $user->supabase_user_id,
+            'primary_workspace_id' => $workspace->id,
+            'name' => 'Lifecycle billing',
+            'plan_id' => 'free',
+            'status' => 'active',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $workspace->billing_account_id = $billingAccountId;
+        $workspace->save();
+
+        $export = $this->workspaceExport($workspace->id);
+
+        $this->assertCount(1, $export['data']['billing_accounts']);
+        $this->assertSame($billingAccountId, $export['data']['billing_accounts'][0]['id']);
+    }
+
     public function test_workspace_export_is_emitted_in_incremental_chunks(): void
     {
         [, $workspace] = $this->workspaceFixture();
@@ -101,6 +124,38 @@ class DataLifecycleServiceTest extends TestCase
             'workspace_id' => $workspace->id,
             'status' => 'canceled',
         ]);
+    }
+
+    public function test_account_restoration_cancels_account_and_owned_workspace_deletions(): void
+    {
+        [$user, $workspace] = $this->workspaceFixture();
+        $workspace->settings = [
+            'deletedAt' => now()->toIso8601String(),
+            'deletedBy' => $user->supabase_user_id,
+            'archivedAt' => now()->toIso8601String(),
+            'archivedBy' => $user->supabase_user_id,
+            'workspaceDataKey' => 'workspace:restored',
+        ];
+        $workspace->save();
+        $service = app(DataLifecycleService::class);
+        $service->scheduleAccountDeletion($user->supabase_user_id);
+
+        $service->cancelAccountDeletion($user->supabase_user_id);
+
+        $this->assertDatabaseHas('data_deletion_requests', [
+            'type' => 'account',
+            'user_id' => $user->supabase_user_id,
+            'status' => 'canceled',
+        ]);
+        $this->assertDatabaseHas('data_deletion_requests', [
+            'type' => 'workspace',
+            'workspace_id' => $workspace->id,
+            'status' => 'canceled',
+        ]);
+        $settings = (array) Workspace::query()->findOrFail($workspace->id)->settings;
+        $this->assertArrayNotHasKey('deletedAt', $settings);
+        $this->assertArrayNotHasKey('archivedAt', $settings);
+        $this->assertSame('workspace:restored', $settings['workspaceDataKey']);
     }
 
     public function test_due_workspace_deletion_purges_customer_content(): void

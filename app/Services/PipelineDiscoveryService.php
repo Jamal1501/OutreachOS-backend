@@ -66,6 +66,7 @@ class PipelineDiscoveryService
             'totalCreators' => 0,
             'failedStep' => null,
             'error' => null,
+            'errorReference' => null,
             'request' => $payload,
             'criteria' => $payload['criteria'] ?? null,
             'brief' => $payload['brief'] ?? null,
@@ -192,10 +193,21 @@ class PipelineDiscoveryService
             return;
         }
 
+        $errorReference = (string) ($state['errorReference'] ?? '');
+        if ($errorReference === '') {
+            $errorReference = 'ERR-'.Str::upper(Str::random(10));
+        }
+        Log::error('Pipeline worker marked discovery as failed', [
+            'jobId' => $jobId,
+            'errorReference' => $errorReference,
+            'message' => $message,
+        ]);
+
         $this->updateJob($jobId, [
             'status' => 'failed',
             'failedStep' => $state['currentStep'] ?? null,
             'error' => $message,
+            'errorReference' => $errorReference,
         ]);
     }
 
@@ -251,6 +263,7 @@ class PipelineDiscoveryService
                 'totalCreators' => $result['totalCreators'] ?? 0,
                 'failedStep' => $run->error_message ? $run->current_step : null,
                 'error' => $run->error_message,
+                'errorReference' => $result['errorReference'] ?? null,
                 'projectId' => $run->project_id,
                 'request' => $run->request_payload,
                 'criteria' => $result['criteria'] ?? Arr::get($run->request_payload, 'criteria'),
@@ -553,8 +566,10 @@ class PipelineDiscoveryService
 
             return ['status' => 'cancelled', 'message' => 'Discovery stopped'];
         } catch (\Throwable $exception) {
+            $errorReference = 'ERR-'.Str::upper(Str::random(10));
             Log::error('Pipeline discovery job failed', [
                 'jobId' => $jobId,
+                'errorReference' => $errorReference,
                 'message' => $exception->getMessage(),
                 'exception' => get_class($exception),
                 'trace' => $exception->getTraceAsString(),
@@ -574,6 +589,7 @@ class PipelineDiscoveryService
                 'status' => 'failed',
                 'failedStep' => $failedStep,
                 'error' => $publicError,
+                'errorReference' => $errorReference,
                 'steps' => $stepResults,
                 'currentStep' => $failedStep,
                 'usageSummary' => $usageSummary,
@@ -584,6 +600,7 @@ class PipelineDiscoveryService
                     'creators' => [],
                     'totalCreators' => 0,
                     'failedStep' => $failedStep,
+                    'errorReference' => $errorReference,
                     'criteria' => $criteria !== [] ? $criteria : null,
                     'filterSummary' => null,
                     'brief' => $brief !== '' ? $brief : null,
@@ -783,6 +800,7 @@ class PipelineDiscoveryService
                 'cancellationRequested' => (bool) ($state['cancellationRequested'] ?? false),
                 'executionClaimedAt' => $state['executionClaimedAt'] ?? null,
                 'executionWorkerJobId' => $state['executionWorkerJobId'] ?? null,
+                'errorReference' => $state['errorReference'] ?? null,
             ],
             is_array($state['result'] ?? null) ? $state['result'] : []
         );

@@ -14,6 +14,14 @@ return [
         'enrichment' => env('OUTREACH_ENRICHMENT_PROVIDER', 'apify'),
     ],
 
+    'provider_spend' => [
+        'enabled' => env('PROVIDER_SPEND_LIMITS_ENABLED', true),
+        'global_daily_limit_usd' => env('PROVIDER_SPEND_GLOBAL_DAILY_LIMIT_USD', 50),
+        'workspace_daily_limit_usd' => env('PROVIDER_SPEND_WORKSPACE_DAILY_LIMIT_USD', 20),
+        'openai_reservation_usd' => env('PROVIDER_SPEND_OPENAI_RESERVATION_USD', 0.10),
+        'operator_emails' => array_values(array_filter(array_map('trim', explode(',', (string) env('OPERATIONS_ALLOWED_EMAILS', ''))))),
+    ],
+
     'operational_db' => [
         'mode' => env('OUTREACH_OPERATIONAL_DB_MODE', 'database'), // off|dual|database
         'auto_create_project' => env('OUTREACH_AUTO_CREATE_PROJECT', true),

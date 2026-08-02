@@ -620,6 +620,7 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
 
         $this->assertSame('failed', $state['status']);
         $this->assertStringContainsString('stopped responding', $state['error']);
+        $this->assertMatchesRegularExpression('/^ERR-[A-Z0-9]{10}$/', (string) $state['errorReference']);
     }
 
     public function test_malformed_ai_structured_output_refunds_reserved_credits(): void
@@ -765,6 +766,39 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
             ->getJson('/api/health/operational/details')
             ->assertJsonPath('checks.processes.status', 'ok')
             ->assertJsonPath('checks.processes.staleProcesses', []);
+    }
+
+    public function test_billing_activity_has_customer_readable_amounts_workspace_and_reference(): void
+    {
+        [$user, $workspace] = $this->createWorkspaceForRole('owner');
+        $this->fakeSupabaseUser($user);
+        [, , , $billingAccount] = app(WorkspaceBillingService::class)->ensureWorkspaceBilling($workspace->id);
+        $reference = 'provider-run-123';
+        DB::table('workspace_usage_events')->insert([
+            'id' => (string) Str::uuid(),
+            'workspace_id' => $workspace->id,
+            'billing_account_id' => $billingAccount->id,
+            'type' => 'enrichment',
+            'credit_bucket' => 'scrape',
+            'units' => 2,
+            'credit_cost' => 7,
+            'provider' => 'apify',
+            'source' => 'instagram.enrichment.deep',
+            'status' => 'consumed',
+            'reference_id' => $reference,
+            'metadata' => json_encode([]),
+            'consumed_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->getJson('/api/billing/qa-checklist')
+            ->assertOk()
+            ->assertJsonPath('data.recentUsageEvents.0.description', 'Creator enrichment: 7 workflow credits used')
+            ->assertJsonPath('data.recentUsageEvents.0.workspace_name', $workspace->name)
+            ->assertJsonPath('data.recentUsageEvents.0.reference_id', $reference);
     }
 
     private function createWorkspaceForRole(string $role, int $maxMembers = 1): array

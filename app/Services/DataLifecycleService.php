@@ -86,7 +86,7 @@ class DataLifecycleService
         $projectIds = DB::table('projects')->where('workspace_id', $workspaceId)->pluck('id')->all();
         $projectTables = ['creators', 'creator_profiles', 'message_templates', 'tasks', 'outreach_events', 'discovery_runs', 'discovery_items', 'enrichment_jobs', 'connected_accounts'];
         $workspaceTables = ['workspace_members', 'workspace_invitations', 'workspace_audit_events', 'duplicate_links', 'learning_events', 'creator_relationship_events', 'ai_usage_logs', 'apify_usage_logs', 'workspace_usage_events', 'credit_purchases'];
-        $billingTables = ['billing_accounts', 'workspace_subscriptions', 'workspace_credit_wallets'];
+        $billingTables = ['workspace_subscriptions', 'workspace_credit_wallets'];
         $billingAccountId = (string) ($workspace->billing_account_id ?? '');
         $buffer = '';
         $emit = function (string $chunk) use (&$buffer, $write): void {
@@ -145,6 +145,10 @@ class DataLifecycleService
         }
 
         if ($billingAccountId !== '') {
+            if (Schema::hasTable('billing_accounts')) {
+                $streamTable('billing_accounts', DB::table('billing_accounts')->where('id', $billingAccountId));
+            }
+
             foreach ($billingTables as $table) {
                 if (Schema::hasTable($table) && Schema::hasColumn($table, 'billing_account_id')) {
                     $streamTable($table, DB::table($table)->where('billing_account_id', $billingAccountId));

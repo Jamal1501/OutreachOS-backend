@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Exceptions\InsufficientCreditsException;
+use App\Exceptions\ProviderSpendLimitException;
 use App\Models\CreditPackage;
 use App\Models\CreditPurchase;
 use App\Models\WorkspaceCreditWallet;
@@ -65,6 +66,7 @@ class WorkspaceBillingService
     public function __construct(
         private ScraperRegistryService $scrapers,
         private ObservabilityService $observability,
+        private ProviderSpendGuardService $providerSpend,
     ) {}
 
     public function summary(string $workspaceId): array
@@ -238,6 +240,7 @@ class WorkspaceBillingService
             creditCost: $estimate['credit_cost'],
             provider: 'apify',
             source: (string) ($moduleKey ?: $actorKey ?: $actorId ?: 'apify_run'),
+            providerCostReservationUsd: $maxChargeUsd,
             metadata: [
                 'module_key' => $moduleKey,
                 'cost_class' => $estimate['cost_class'] ?? null,
@@ -266,6 +269,7 @@ class WorkspaceBillingService
             creditCost: $creditCost,
             provider: 'openai',
             source: $operation,
+            providerCostReservationUsd: (float) config('outreach.provider_spend.openai_reservation_usd', 0.10),
             metadata: $context,
         );
     }
@@ -279,7 +283,9 @@ class WorkspaceBillingService
             }
 
             $event->status = 'consumed';
-            $event->provider_cost_usd = $providerCostUsd;
+            if ($providerCostUsd !== null) {
+                $event->provider_cost_usd = $providerCostUsd;
+            }
             $event->reference_id = $referenceId ?: $event->reference_id;
             $event->metadata = array_merge((array) ($event->metadata ?? []), $metadata);
             $event->consumed_at = now();
@@ -399,7 +405,9 @@ class WorkspaceBillingService
             $event->units = $settledUnits;
             $event->credit_cost = $settledCredits;
             $event->status = 'consumed';
-            $event->provider_cost_usd = $providerCostUsd;
+            if ($providerCostUsd !== null) {
+                $event->provider_cost_usd = $providerCostUsd;
+            }
             $event->reference_id = $referenceId ?: $event->reference_id;
             $event->metadata = array_merge($eventMetadata, $metadata, [
                 'original_units' => $originalUnits,
@@ -899,6 +907,7 @@ class WorkspaceBillingService
         string $provider,
         string $source,
         array $metadata = [],
+        ?float $providerCostReservationUsd = null,
     ): array {
         [$subscription, , , $billingAccount] = $this->ensureWorkspaceBilling($workspaceId);
         $billingAccountId = (string) $billingAccount->id;
@@ -912,81 +921,93 @@ class WorkspaceBillingService
             ]);
         }
 
-        return DB::transaction(function () use ($workspaceId, $type, $bucket, $units, $creditCost, $provider, $source, $metadata, $subscription, $billingAccountId, $planIdAtReservation, $periodStart, $periodEnd) {
-            $wallet = WorkspaceCreditWallet::query()
-                ->where('billing_account_id', $billingAccountId)
-                ->lockForUpdate()
-                ->firstOrFail();
+        try {
+            return DB::transaction(function () use ($workspaceId, $type, $bucket, $units, $creditCost, $provider, $source, $metadata, $providerCostReservationUsd, $subscription, $billingAccountId, $planIdAtReservation, $periodStart, $periodEnd) {
+                $this->providerSpend->assertCanReserve($workspaceId, $provider, (float) ($providerCostReservationUsd ?? 0));
+                $wallet = WorkspaceCreditWallet::query()
+                    ->where('billing_account_id', $billingAccountId)
+                    ->lockForUpdate()
+                    ->firstOrFail();
 
-            $baseField = $bucket === 'scrape' ? 'scrape_credits_balance' : 'ai_credits_balance';
-            $bonusField = $bucket === 'scrape' ? 'bonus_scrape_credits' : 'bonus_ai_credits';
-            $baseAvailable = (int) $wallet->{$baseField};
-            $bonusAvailable = (int) $wallet->{$bonusField};
-            $totalAvailable = $baseAvailable + $bonusAvailable;
+                $baseField = $bucket === 'scrape' ? 'scrape_credits_balance' : 'ai_credits_balance';
+                $bonusField = $bucket === 'scrape' ? 'bonus_scrape_credits' : 'bonus_ai_credits';
+                $baseAvailable = (int) $wallet->{$baseField};
+                $bonusAvailable = (int) $wallet->{$bonusField};
+                $totalAvailable = $baseAvailable + $bonusAvailable;
 
-            if ($totalAvailable < $creditCost) {
-                throw new InsufficientCreditsException('Not enough credits available for this action.', [
-                    'bucket' => $bucket,
-                    'required' => $creditCost,
-                    'available' => $totalAvailable,
-                    'baseAvailable' => $baseAvailable,
-                    'bonusAvailable' => $bonusAvailable,
+                if ($totalAvailable < $creditCost) {
+                    throw new InsufficientCreditsException('Not enough credits available for this action.', [
+                        'bucket' => $bucket,
+                        'required' => $creditCost,
+                        'available' => $totalAvailable,
+                        'baseAvailable' => $baseAvailable,
+                        'bonusAvailable' => $bonusAvailable,
+                    ]);
+                }
+
+                $deductBase = min($baseAvailable, $creditCost);
+                $deductBonus = max(0, $creditCost - $deductBase);
+
+                $wallet->{$baseField} = $baseAvailable - $deductBase;
+                $wallet->{$bonusField} = $bonusAvailable - $deductBonus;
+                $wallet->save();
+
+                $event = WorkspaceUsageEvent::query()->create([
+                    'id' => (string) Str::uuid(),
+                    'workspace_id' => $workspaceId,
+                    'billing_account_id' => $billingAccountId,
+                    'type' => $type,
+                    'credit_bucket' => $bucket,
+                    'units' => $units,
+                    'credit_cost' => $creditCost,
+                    'provider' => $provider,
+                    'provider_cost_usd' => $providerCostReservationUsd,
+                    'source' => $source,
+                    'status' => 'reserved',
+                    'metadata' => array_merge($metadata, [
+                        'billing' => [
+                            'billing_account_id' => $billingAccountId,
+                            'subscription_id' => $subscription->id,
+                            'plan_id_at_charge' => $planIdAtReservation,
+                            'period_start' => $periodStart,
+                            'period_end' => $periodEnd,
+                            'credit_model' => 'monthly_reset_plus_bonus_topups',
+                            'customer_billing_unit' => 'credits',
+                        ],
+                        'deductions' => [
+                            'base' => $deductBase,
+                            'bonus' => $deductBonus,
+                        ],
+                    ]),
                 ]);
-            }
 
-            $deductBase = min($baseAvailable, $creditCost);
-            $deductBonus = max(0, $creditCost - $deductBase);
+                $this->observability->reportBillingEvent($workspaceId, 'credits_reserved', [
+                    'usage_event_id' => (string) $event->id,
+                    'credit_bucket' => $bucket,
+                    'credit_cost' => $creditCost,
+                    'units' => $units,
+                    'provider' => $provider,
+                    'source' => $source,
+                    'remaining_balance' => (int) $wallet->{$baseField} + (int) $wallet->{$bonusField},
+                ], $billingAccountId, (string) $event->id);
 
-            $wallet->{$baseField} = $baseAvailable - $deductBase;
-            $wallet->{$bonusField} = $bonusAvailable - $deductBonus;
-            $wallet->save();
-
-            $event = WorkspaceUsageEvent::query()->create([
-                'id' => (string) Str::uuid(),
-                'workspace_id' => $workspaceId,
-                'billing_account_id' => $billingAccountId,
+                return [
+                    'usage_event_id' => $event->id,
+                    'credit_bucket' => $bucket,
+                    'credit_cost' => $creditCost,
+                    'units' => $units,
+                    'remaining_balance' => (int) $wallet->{$baseField} + (int) $wallet->{$bonusField},
+                ];
+            });
+        } catch (ProviderSpendLimitException $exception) {
+            $this->providerSpend->recordBlock($exception, [
                 'type' => $type,
-                'credit_bucket' => $bucket,
-                'units' => $units,
-                'credit_cost' => $creditCost,
-                'provider' => $provider,
                 'source' => $source,
-                'status' => 'reserved',
-                'metadata' => array_merge($metadata, [
-                    'billing' => [
-                        'billing_account_id' => $billingAccountId,
-                        'subscription_id' => $subscription->id,
-                        'plan_id_at_charge' => $planIdAtReservation,
-                        'period_start' => $periodStart,
-                        'period_end' => $periodEnd,
-                        'credit_model' => 'monthly_reset_plus_bonus_topups',
-                        'customer_billing_unit' => 'credits',
-                    ],
-                    'deductions' => [
-                        'base' => $deductBase,
-                        'bonus' => $deductBonus,
-                    ],
-                ]),
+                'units' => $units,
             ]);
 
-            $this->observability->reportBillingEvent($workspaceId, 'credits_reserved', [
-                'usage_event_id' => (string) $event->id,
-                'credit_bucket' => $bucket,
-                'credit_cost' => $creditCost,
-                'units' => $units,
-                'provider' => $provider,
-                'source' => $source,
-                'remaining_balance' => (int) $wallet->{$baseField} + (int) $wallet->{$bonusField},
-            ], $billingAccountId, (string) $event->id);
-
-            return [
-                'usage_event_id' => $event->id,
-                'credit_bucket' => $bucket,
-                'credit_cost' => $creditCost,
-                'units' => $units,
-                'remaining_balance' => (int) $wallet->{$baseField} + (int) $wallet->{$bonusField},
-            ];
-        });
+            throw $exception;
+        }
     }
 
     private function billingAccountForWorkspaceLocked(string $workspaceId): array

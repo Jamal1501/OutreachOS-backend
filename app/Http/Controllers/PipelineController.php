@@ -167,6 +167,7 @@ class PipelineController extends Controller
             'steps' => $state['steps'] ?? [],
             'progress' => $this->progressSnapshot($state),
             'error' => $state['error'] ?? null,
+            'errorReference' => $state['errorReference'] ?? null,
             'criteria' => $state['criteria'] ?? null,
             'filterSummary' => $state['filterSummary'] ?? null,
             'brief' => $state['brief'] ?? null,
