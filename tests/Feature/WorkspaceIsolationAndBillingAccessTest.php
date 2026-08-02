@@ -759,7 +759,10 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
             ]);
         }
 
-        $this->getJson('/api/health/ready')
+        config(['observability.health.details_token' => 'test-operational-details-token']);
+
+        $this->withToken('test-operational-details-token')
+            ->getJson('/api/health/operational/details')
             ->assertJsonPath('checks.processes.status', 'ok')
             ->assertJsonPath('checks.processes.staleProcesses', []);
     }

@@ -21,6 +21,7 @@ class ValidateProductionConfigurationCommand extends Command
         $alertsEnabled = (bool) config('observability.alerts.enabled');
         $hasAlertDestination = $this->present(config('observability.alerts.email'))
             || $this->present(config('observability.alerts.webhook_url'));
+        $healthDetailsToken = trim((string) config('observability.health.details_token'));
         $tiktokEnabled = (bool) config('outreach.launch.enable_tiktok');
 
         $checks = [
@@ -45,6 +46,7 @@ class ValidateProductionConfigurationCommand extends Command
             $this->check('Legacy application key disabled', ! config('services.app_security.allow_legacy_key'), true, 'ALLOW_LEGACY_APP_KEY must be false.'),
             $this->check('Verified email required', config('outreach.launch.require_verified_email'), true, 'ACCESS_REQUIRE_VERIFIED_EMAIL must be true.'),
             $this->check('Operational alerts deliverable', $alertsEnabled && $hasAlertDestination, true, 'Enable alerts and configure an email or webhook destination.'),
+            $this->check('Protected health diagnostics', strlen($healthDetailsToken) >= 32, false, 'Set OBSERVABILITY_HEALTH_DETAILS_TOKEN to a random value of at least 32 characters.'),
             $this->check('Real mail transport', $mailConfigured, false, 'Set MAIL_MAILER=resend and configure RESEND_API_KEY before using invitations or email alerts.'),
             $this->check('Render-safe Resend transport', $mailDriver === 'resend', false, 'Use MAIL_MAILER=resend so Render sends mail over HTTPS instead of SMTP.'),
         ];

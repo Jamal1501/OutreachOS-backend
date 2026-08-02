@@ -8,6 +8,7 @@ use App\Exceptions\PipelineCancelledException;
 use App\Services\ProviderUsageLogger;
 use App\Services\WorkspaceBillingService;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Sleep;
 use RuntimeException;
 
 class ApifyRunExecutor
@@ -294,7 +295,7 @@ class ApifyRunExecutor
                 return $run;
             }
 
-            sleep(self::DEFAULT_POLL_SECONDS);
+            Sleep::sleep(self::DEFAULT_POLL_SECONDS);
         } while (time() < $deadline);
 
         throw new RuntimeException('Timed out while waiting for Apify run '.$runId);

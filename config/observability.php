@@ -17,6 +17,7 @@ return [
     ],
 
     'health' => [
+        'details_token' => env('OBSERVABILITY_HEALTH_DETAILS_TOKEN'),
         'failed_jobs_window_minutes' => env('OBSERVABILITY_FAILED_JOBS_WINDOW_MINUTES', 15),
         'failed_jobs_threshold' => env('OBSERVABILITY_FAILED_JOBS_THRESHOLD', 0),
         'failed_webhooks_window_minutes' => env('OBSERVABILITY_FAILED_WEBHOOKS_WINDOW_MINUTES', 60),

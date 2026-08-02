@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -21,15 +22,27 @@ class HealthController extends Controller
 
     public function ready(): JsonResponse
     {
-        return $this->readinessResponse(false);
+        return $this->readinessResponse(false, false);
     }
 
     public function operational(): JsonResponse
     {
-        return $this->readinessResponse(true);
+        return $this->readinessResponse(true, false);
     }
 
-    private function readinessResponse(bool $failWhenDegraded): JsonResponse
+    public function operationalDetails(Request $request): JsonResponse
+    {
+        $configuredToken = trim((string) config('observability.health.details_token'));
+        $providedToken = trim((string) ($request->bearerToken() ?: $request->header('X-Operational-Token')));
+
+        if ($configuredToken === '' || $providedToken === '' || ! hash_equals($configuredToken, $providedToken)) {
+            return response()->json(['error' => 'Unauthorized.'], 401);
+        }
+
+        return $this->readinessResponse(true, true);
+    }
+
+    private function readinessResponse(bool $failWhenDegraded, bool $includeDetails): JsonResponse
     {
         $checks = [
             'database' => $this->databaseCheck(),
@@ -43,12 +56,16 @@ class HealthController extends Controller
         $degraded = collect($checks)->contains(fn (array $check) => $check['status'] === 'degraded');
         $status = $failed ? 'fail' : ($degraded ? 'degraded' : 'ok');
 
-        return response()->json([
+        $payload = [
             'status' => $status,
             'service' => (string) config('observability.service', 'social-core-api'),
             'checkedAt' => now()->toIso8601String(),
-            'checks' => $checks,
-        ], $failed || ($failWhenDegraded && $degraded) ? 503 : 200);
+        ];
+        if ($includeDetails) {
+            $payload['checks'] = $checks;
+        }
+
+        return response()->json($payload, $failed || ($failWhenDegraded && $degraded) ? 503 : 200);
     }
 
     private function databaseCheck(): array

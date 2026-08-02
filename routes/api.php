@@ -14,15 +14,18 @@ use App\Http\Controllers\SheetDataController;
 use App\Http\Controllers\WorkspaceController;
 use Illuminate\Support\Facades\Route;
 
-Route::get('/health', function () {
-    return response()->json([
-        'status' => 'ok',
-        'service' => 'social-core-api',
-    ]);
+Route::middleware('throttle:30,1')->group(function () {
+    Route::get('/health', function () {
+        return response()->json([
+            'status' => 'ok',
+            'service' => 'social-core-api',
+        ]);
+    });
+    Route::get('/health/live', [HealthController::class, 'live']);
+    Route::get('/health/ready', [HealthController::class, 'ready']);
+    Route::get('/health/operational', [HealthController::class, 'operational']);
+    Route::get('/health/operational/details', [HealthController::class, 'operationalDetails']);
 });
-Route::get('/health/live', [HealthController::class, 'live']);
-Route::get('/health/ready', [HealthController::class, 'ready']);
-Route::get('/health/operational', [HealthController::class, 'operational']);
 
 Route::get('/avatar-proxy', [SheetDataController::class, 'avatarProxy'])->middleware('throttle:avatar');
 Route::post('/csp-report', [CspReportController::class, 'store'])->middleware('throttle:60,1');

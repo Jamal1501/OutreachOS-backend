@@ -14,12 +14,14 @@ class OperationalReadinessTest extends TestCase
 {
     use RefreshDatabase;
 
+    private const DETAILS_TOKEN = 'test-operational-details-token';
+
     public function test_operational_health_fails_when_required_processes_are_stale(): void
     {
         $this->getJson('/api/health/operational')
             ->assertServiceUnavailable()
             ->assertJsonPath('status', 'degraded')
-            ->assertJsonPath('checks.processes.status', 'degraded');
+            ->assertJsonMissingPath('checks');
     }
 
     public function test_operational_health_succeeds_when_required_processes_are_current(): void
@@ -36,7 +38,8 @@ class OperationalReadinessTest extends TestCase
 
         $this->getJson('/api/health/operational')
             ->assertOk()
-            ->assertJsonPath('status', 'ok');
+            ->assertJsonPath('status', 'ok')
+            ->assertJsonMissingPath('checks');
     }
 
     public function test_alerts_can_be_delivered_by_email_without_a_webhook(): void
@@ -73,11 +76,23 @@ class OperationalReadinessTest extends TestCase
             force: true,
         );
 
-        $this->getJson('/api/health/operational')
+        config(['observability.health.details_token' => self::DETAILS_TOKEN]);
+
+        $this->withToken(self::DETAILS_TOKEN)
+            ->getJson('/api/health/operational/details')
             ->assertOk()
             ->assertJsonPath('checks.processes.status', 'ok')
             ->assertJsonPath('checks.processes.processes.queue-worker.status', 'busy')
             ->assertJsonPath('checks.processes.processes.queue-worker.stage', 'enrichment_scrape')
             ->assertJsonPath('checks.processes.processes.queue-worker.providerStatus', 'RUNNING');
+    }
+
+    public function test_detailed_operational_health_requires_the_operator_token(): void
+    {
+        config(['observability.health.details_token' => self::DETAILS_TOKEN]);
+
+        $this->getJson('/api/health/operational/details')
+            ->assertUnauthorized()
+            ->assertJsonMissingPath('checks');
     }
 }
