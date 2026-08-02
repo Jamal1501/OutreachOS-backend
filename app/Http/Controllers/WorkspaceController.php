@@ -675,8 +675,19 @@ class WorkspaceController extends Controller
             return response()->json(['error' => 'Workspace not found.'], 404);
         }
 
-        return response()->json($this->dataLifecycle->exportWorkspace($workspaceId))
-            ->header('Content-Disposition', 'attachment; filename="socialcore-workspace-export-'.$workspaceId.'.json"');
+        return response()->streamDownload(function () use ($workspaceId): void {
+            $this->dataLifecycle->streamWorkspaceExport($workspaceId, static function (string $chunk): void {
+                echo $chunk;
+                if (ob_get_level() > 0) {
+                    @ob_flush();
+                }
+                flush();
+            });
+        }, 'socialcore-workspace-export-'.$workspaceId.'.json', [
+            'Content-Type' => 'application/json; charset=UTF-8',
+            'Cache-Control' => 'no-store, private',
+            'X-Accel-Buffering' => 'no',
+        ]);
     }
 
     public function deleteAccount(Request $request)

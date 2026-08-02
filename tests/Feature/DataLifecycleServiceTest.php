@@ -33,7 +33,7 @@ class DataLifecycleServiceTest extends TestCase
             'created_at' => now(),
         ]);
 
-        $export = app(DataLifecycleService::class)->exportWorkspace($workspace->id);
+        $export = $this->workspaceExport($workspace->id);
 
         $this->assertSame('workspace_customer_data', $export['exportType']);
         $this->assertCount(1, $export['projects']);
@@ -45,12 +45,47 @@ class DataLifecycleServiceTest extends TestCase
     {
         [, $workspace] = $this->workspaceFixture();
 
-        $export = app(DataLifecycleService::class)->exportWorkspace($workspace->id);
+        $export = $this->workspaceExport($workspace->id);
 
         $this->assertSame([], $export['projects']);
         $this->assertSame([], $export['data']['creators']);
         $this->assertSame([], $export['data']['tasks']);
         $this->assertCount(1, $export['data']['workspace_members']);
+    }
+
+    public function test_workspace_export_is_emitted_in_incremental_chunks(): void
+    {
+        [, $workspace] = $this->workspaceFixture();
+        $project = Project::query()->create([
+            'workspace_id' => $workspace->id,
+            'name' => 'Large export project',
+            'workbook_id' => 'workspace:large-export-test',
+            'status' => 'active',
+        ]);
+        $payload = str_repeat('export-data-', 800);
+        for ($index = 0; $index < 20; $index++) {
+            DB::table('discovery_items')->insert([
+                'id' => (string) Str::uuid(),
+                'project_id' => $project->id,
+                'platform' => 'instagram',
+                'raw_payload' => json_encode(['payload' => $payload, 'index' => $index]),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $chunks = [];
+        app(DataLifecycleService::class)->streamWorkspaceExport(
+            $workspace->id,
+            static function (string $chunk) use (&$chunks): void {
+                $chunks[] = $chunk;
+            },
+        );
+        $export = json_decode(implode('', $chunks), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertGreaterThan(1, count($chunks));
+        $this->assertCount(20, $export['data']['discovery_items']);
+        $this->assertLessThan(131072, max(array_map('strlen', $chunks)));
     }
 
     public function test_workspace_deletion_can_be_canceled_during_recovery_window(): void
@@ -137,6 +172,19 @@ class DataLifecycleServiceTest extends TestCase
         ]);
 
         return [$user, $workspace];
+    }
+
+    private function workspaceExport(string $workspaceId): array
+    {
+        $content = '';
+        app(DataLifecycleService::class)->streamWorkspaceExport(
+            $workspaceId,
+            static function (string $chunk) use (&$content): void {
+                $content .= $chunk;
+            },
+        );
+
+        return json_decode($content, true, flags: JSON_THROW_ON_ERROR);
     }
 
     private function userFixture(): User

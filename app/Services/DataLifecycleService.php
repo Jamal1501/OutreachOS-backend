@@ -13,6 +13,10 @@ use Throwable;
 
 class DataLifecycleService
 {
+    private const EXPORT_BUFFER_BYTES = 65536;
+
+    private const EXPORT_CHUNK_SIZE = 100;
+
     public function scheduleWorkspaceDeletion(string $workspaceId, string $userId): array
     {
         $purgeAfter = now()->addDays(30);
@@ -76,44 +80,104 @@ class DataLifecycleService
             ->update(['status' => 'canceled', 'canceled_at' => now(), 'updated_at' => now()]);
     }
 
-    public function exportWorkspace(string $workspaceId): array
+    public function streamWorkspaceExport(string $workspaceId, callable $write): void
     {
         $workspace = Workspace::query()->findOrFail($workspaceId);
-        $projects = DB::table('projects')->where('workspace_id', $workspaceId)->get();
-        $projectIds = $projects->pluck('id')->all();
+        $projectIds = DB::table('projects')->where('workspace_id', $workspaceId)->pluck('id')->all();
         $projectTables = ['creators', 'creator_profiles', 'message_templates', 'tasks', 'outreach_events', 'discovery_runs', 'discovery_items', 'enrichment_jobs', 'connected_accounts'];
-        $data = [];
+        $workspaceTables = ['workspace_members', 'workspace_invitations', 'workspace_audit_events', 'duplicate_links', 'learning_events', 'creator_relationship_events', 'ai_usage_logs', 'apify_usage_logs', 'workspace_usage_events', 'credit_purchases'];
+        $billingTables = ['billing_accounts', 'workspace_subscriptions', 'workspace_credit_wallets'];
+        $billingAccountId = (string) ($workspace->billing_account_id ?? '');
+        $buffer = '';
+        $emit = function (string $chunk) use (&$buffer, $write): void {
+            $buffer .= $chunk;
+            if (strlen($buffer) >= self::EXPORT_BUFFER_BYTES) {
+                $write($buffer);
+                $buffer = '';
+            }
+        };
+        $flush = function () use (&$buffer, $write): void {
+            if ($buffer !== '') {
+                $write($buffer);
+                $buffer = '';
+            }
+        };
+
+        $emit('{"exportedAt":'.$this->encodeExportValue(now()->toIso8601String()));
+        $emit(',"exportType":"workspace_customer_data"');
+        $emit(',"retainedAfterDeletion":'.$this->encodeExportValue([
+            'billing settlement records required by law',
+            'minimal purge audit record',
+        ]));
+        $emit(',"workspace":'.$this->encodeExportValue([
+            'id' => $workspace->id,
+            'name' => $workspace->name,
+            'settings' => $workspace->settings,
+        ]));
+        $emit(',"projects":');
+        $this->streamExportQuery(
+            DB::table('projects')->where('workspace_id', $workspaceId),
+            $emit,
+        );
+        $emit(',"data":{');
+
+        $firstTable = true;
+        $streamTable = function (string $table, $query) use (&$firstTable, $emit): void {
+            if (! $firstTable) {
+                $emit(',');
+            }
+            $firstTable = false;
+            $emit($this->encodeExportValue($table).':');
+            $this->streamExportQuery($query, $emit);
+        };
+
         foreach ($projectTables as $table) {
             if (Schema::hasTable($table) && Schema::hasColumn($table, 'project_id')) {
-                $data[$table] = empty($projectIds)
-                    ? []
-                    : DB::table($table)->whereIn('project_id', $projectIds)->get()->map(fn ($row) => (array) $row)->all();
+                $query = DB::table($table)->whereIn('project_id', $projectIds);
+                $streamTable($table, $query);
             }
         }
 
-        foreach (['workspace_members', 'workspace_invitations', 'workspace_audit_events', 'duplicate_links', 'learning_events', 'creator_relationship_events', 'ai_usage_logs', 'apify_usage_logs', 'workspace_usage_events', 'credit_purchases'] as $table) {
+        foreach ($workspaceTables as $table) {
             if (Schema::hasTable($table) && Schema::hasColumn($table, 'workspace_id')) {
-                $data[$table] = DB::table($table)->where('workspace_id', $workspaceId)->get()->map(fn ($row) => (array) $row)->all();
+                $streamTable($table, DB::table($table)->where('workspace_id', $workspaceId));
             }
         }
 
-        $billingAccountId = (string) ($workspace->billing_account_id ?? '');
         if ($billingAccountId !== '') {
-            foreach (['billing_accounts', 'workspace_subscriptions', 'workspace_credit_wallets'] as $table) {
+            foreach ($billingTables as $table) {
                 if (Schema::hasTable($table) && Schema::hasColumn($table, 'billing_account_id')) {
-                    $data[$table] = DB::table($table)->where('billing_account_id', $billingAccountId)->get()->map(fn ($row) => (array) $row)->all();
+                    $streamTable($table, DB::table($table)->where('billing_account_id', $billingAccountId));
                 }
             }
         }
 
-        return [
-            'exportedAt' => now()->toIso8601String(),
-            'exportType' => 'workspace_customer_data',
-            'retainedAfterDeletion' => ['billing settlement records required by law', 'minimal purge audit record'],
-            'workspace' => ['id' => $workspace->id, 'name' => $workspace->name, 'settings' => $workspace->settings],
-            'projects' => $projects->map(fn ($row) => (array) $row)->all(),
-            'data' => $data,
-        ];
+        $emit('}}');
+        $flush();
+    }
+
+    private function streamExportQuery($query, callable $emit): void
+    {
+        $emit('[');
+        $firstRow = true;
+
+        foreach ($query->lazyById(self::EXPORT_CHUNK_SIZE, column: 'id') as $row) {
+            if (! $firstRow) {
+                $emit(',');
+            }
+            $firstRow = false;
+            $emit($this->encodeExportValue((array) $row));
+        }
+
+        $emit(']');
+    }
+
+    private function encodeExportValue(mixed $value): string
+    {
+        return json_encode(
+            $value,
+            JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE,
+        );
     }
 
     public function purgeDue(): int
