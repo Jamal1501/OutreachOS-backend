@@ -20,6 +20,7 @@ class Workspace extends Model
         'slug',
         'owner_id',
         'plan_id',
+        'creation_request_id',
         'settings',
     ];
 

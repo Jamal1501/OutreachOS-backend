@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Exceptions\InsufficientCreditsException;
 use App\Http\Controllers\SupportController;
 use App\Mail\SupportRequestMail;
 use App\Models\User;
@@ -70,6 +71,22 @@ class SupportAndErrorReferenceTest extends TestCase
             ->assertJsonMissing(['message' => 'private database failure details'])
             ->assertJsonStructure(['message', 'errorReference']);
         $this->assertMatchesRegularExpression('/^ERR-[A-Z0-9]{10}$/', (string) $response->json('errorReference'));
+    }
+
+    public function test_insufficient_credits_is_a_customer_action_not_an_internal_error(): void
+    {
+        Route::get('/api/testing/insufficient-credits', fn () => throw new InsufficientCreditsException(
+            'Not enough credits available for this action.',
+            ['bucket' => 'ai', 'required' => 3, 'available' => 1],
+        ));
+
+        $this->getJson('/api/testing/insufficient-credits')
+            ->assertStatus(402)
+            ->assertJsonPath('code', 'insufficient_credits')
+            ->assertJsonPath('creditBucket', 'ai')
+            ->assertJsonPath('requiredCredits', 3)
+            ->assertJsonPath('availableCredits', 1)
+            ->assertJsonMissingPath('errorReference');
     }
 
     private function workspaceFixture(): array

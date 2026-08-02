@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use App\Exceptions\InsufficientCreditsException;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
@@ -50,15 +49,11 @@ class AiGatewayService
             ],
         ];
 
-        try {
-            $usageReservation = $this->billing->reserveAi($workspaceId, $toolName, [
-                'model' => $model,
-                'temperature' => $temperature,
-            ]);
-            $usageReservationId = $usageReservation['usage_event_id'] ?? null;
-        } catch (InsufficientCreditsException $e) {
-            throw new RuntimeException($e->getMessage());
-        }
+        $usageReservation = $this->billing->reserveAi($workspaceId, $toolName, [
+            'model' => $model,
+            'temperature' => $temperature,
+        ]);
+        $usageReservationId = $usageReservation['usage_event_id'] ?? null;
 
         $response = Http::timeout((int) config('services.ai.timeout', 60))
             ->withToken($apiKey)

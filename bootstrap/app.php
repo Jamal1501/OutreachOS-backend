@@ -1,5 +1,6 @@
 <?php
 
+use App\Exceptions\InsufficientCreditsException;
 use App\Exceptions\ProviderSpendLimitException;
 use App\Http\Middleware\AuthenticateApiRequest;
 use App\Http\Middleware\RequireAppKey;
@@ -43,6 +44,7 @@ return Application::configure(basePath: dirname(__DIR__))
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->dontReport([
+            InsufficientCreditsException::class,
             ProviderSpendLimitException::class,
         ]);
 
@@ -72,6 +74,19 @@ return Application::configure(basePath: dirname(__DIR__))
                     'message' => $exception->getMessage(),
                     'code' => 'provider_safety_pause',
                 ], 503);
+            }
+
+            if ($exception instanceof InsufficientCreditsException) {
+                $context = $exception->context();
+                $subscriptionInactive = array_key_exists('subscriptionStatus', $context);
+
+                return response()->json(array_filter([
+                    'message' => $exception->getMessage(),
+                    'code' => $subscriptionInactive ? 'subscription_inactive' : 'insufficient_credits',
+                    'creditBucket' => $context['bucket'] ?? null,
+                    'requiredCredits' => $context['required'] ?? null,
+                    'availableCredits' => $context['available'] ?? null,
+                ], fn ($value) => $value !== null), 402);
             }
 
             if ($exception instanceof ValidationException

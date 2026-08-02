@@ -14,6 +14,7 @@ use App\Http\Controllers\PipelineController;
 use App\Http\Controllers\SheetDataController;
 use App\Http\Controllers\SupportController;
 use App\Http\Controllers\WorkspaceController;
+use App\Http\Controllers\WorkspaceOnboardingController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('throttle:30,1')->group(function () {
@@ -59,6 +60,8 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     });
 
     Route::put('/workspaces/settings', [WorkspaceController::class, 'updateSettings'])->middleware('workspace.role:owner,admin');
+    Route::get('/workspaces/onboarding/personal', [WorkspaceOnboardingController::class, 'show']);
+    Route::put('/workspaces/onboarding/personal', [WorkspaceOnboardingController::class, 'update']);
     Route::put('/workspaces/current', [WorkspaceController::class, 'updateCurrent'])->middleware('workspace.role:owner');
     Route::post('/workspaces/invitations', [WorkspaceController::class, 'invite'])->middleware('workspace.role:owner,admin');
     Route::post('/workspaces/invitations/{invitationId}/resend', [WorkspaceController::class, 'resendInvitation'])->middleware('workspace.role:owner,admin');

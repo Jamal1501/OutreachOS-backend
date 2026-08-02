@@ -7,6 +7,7 @@ use App\Mail\WorkspaceInvitationMail;
 use App\Models\Workspace;
 use App\Models\WorkspaceMember;
 use App\Services\DataLifecycleService;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -94,6 +95,7 @@ class WorkspaceController extends Controller
 
         $validated = $request->validate([
             'name' => ['required', 'string', 'min:2', 'max:120'],
+            'creationRequestId' => ['nullable', 'uuid'],
             'platformFocus' => ['nullable', Rule::in(['instagram', 'tiktok', 'both'])],
             'budget' => ['nullable', 'numeric', 'min:0'],
             'notes' => ['nullable', 'string', 'max:4000'],
@@ -101,44 +103,81 @@ class WorkspaceController extends Controller
             'onboarding' => ['nullable', 'array'],
         ]);
 
-        [$workspace, $membership] = DB::transaction(function () use ($validated, $supabaseUserId) {
-            $name = trim((string) $validated['name']);
-            $slug = $this->uniqueSlug($name);
-            $workspaceId = (string) Str::uuid();
-            $workspaceDataKey = 'workspace:'.$slug;
-            $billingAccount = $this->ensureBillingAccountForOwner($supabaseUserId, $name, $workspaceId);
+        $creationRequestId = trim((string) ($validated['creationRequestId'] ?? ''));
+        if ($creationRequestId !== '') {
+            $existingWorkspace = Workspace::query()
+                ->where('owner_id', $supabaseUserId)
+                ->where('creation_request_id', $creationRequestId)
+                ->first();
 
-            $workspace = Workspace::query()->create([
-                'id' => $workspaceId,
-                'billing_account_id' => $billingAccount->id,
-                'name' => $name,
-                'slug' => $slug,
-                'owner_id' => $supabaseUserId,
-                'plan_id' => $billingAccount->plan_id ?: 'free',
-                'settings' => [
-                    'workspaceDataKey' => $workspaceDataKey,
-                    // Backward-compatible alias while old request payloads still use sheetId/workbookId.
-                    'workbookId' => $workspaceDataKey,
-                    'platformFocus' => $validated['platformFocus'] ?? 'both',
-                    'budget' => isset($validated['budget']) ? (float) $validated['budget'] : null,
-                    'notes' => $validated['notes'] ?? null,
-                    'brandProfile' => $validated['brandProfile'] ?? null,
-                    'onboarding' => $this->normalizeOnboardingSettings((array) ($validated['onboarding'] ?? [])),
-                    'dataSource' => 'internal_database',
-                    'legacyLegacyWorkbooksDisabled' => true,
-                ],
-            ]);
+            if ($existingWorkspace) {
+                $existingMembership = WorkspaceMember::query()
+                    ->where('workspace_id', $existingWorkspace->id)
+                    ->where('user_id', $supabaseUserId)
+                    ->firstOrFail();
 
-            $membership = WorkspaceMember::query()->create([
-                'id' => (string) Str::uuid(),
-                'workspace_id' => $workspaceId,
-                'user_id' => $supabaseUserId,
-                'role' => 'owner',
-                'joined_at' => now(),
-            ]);
+                return response()->json([
+                    'message' => 'Workspace already created',
+                    'data' => $this->workspacePayload($existingWorkspace, $existingMembership),
+                ]);
+            }
+        }
 
-            return [$workspace, $membership];
-        });
+        try {
+            [$workspace, $membership] = DB::transaction(function () use ($validated, $supabaseUserId, $creationRequestId) {
+                $name = trim((string) $validated['name']);
+                $slug = $this->uniqueSlug($name);
+                $workspaceId = (string) Str::uuid();
+                $workspaceDataKey = 'workspace:'.$slug;
+                $billingAccount = $this->ensureBillingAccountForOwner($supabaseUserId, $name, $workspaceId);
+
+                $workspace = Workspace::query()->create([
+                    'id' => $workspaceId,
+                    'billing_account_id' => $billingAccount->id,
+                    'name' => $name,
+                    'slug' => $slug,
+                    'owner_id' => $supabaseUserId,
+                    'plan_id' => $billingAccount->plan_id ?: 'free',
+                    'creation_request_id' => $creationRequestId !== '' ? $creationRequestId : null,
+                    'settings' => [
+                        'workspaceDataKey' => $workspaceDataKey,
+                        // Backward-compatible alias while old request payloads still use sheetId/workbookId.
+                        'workbookId' => $workspaceDataKey,
+                        'platformFocus' => $validated['platformFocus'] ?? 'both',
+                        'budget' => isset($validated['budget']) ? (float) $validated['budget'] : null,
+                        'notes' => $validated['notes'] ?? null,
+                        'brandProfile' => $validated['brandProfile'] ?? null,
+                        'onboarding' => $this->normalizeOnboardingSettings((array) ($validated['onboarding'] ?? [])),
+                        'dataSource' => 'internal_database',
+                        'legacyLegacyWorkbooksDisabled' => true,
+                    ],
+                ]);
+
+                $membership = WorkspaceMember::query()->create([
+                    'id' => (string) Str::uuid(),
+                    'workspace_id' => $workspaceId,
+                    'user_id' => $supabaseUserId,
+                    'role' => 'owner',
+                    'joined_at' => now(),
+                ]);
+
+                return [$workspace, $membership];
+            });
+        } catch (QueryException $exception) {
+            $isCreationRequestCollision = str_contains(Str::lower($exception->getMessage()), 'creation_request_id');
+            if ($creationRequestId === '' || (string) $exception->getCode() !== '23505' || ! $isCreationRequestCollision) {
+                throw $exception;
+            }
+
+            $workspace = Workspace::query()
+                ->where('owner_id', $supabaseUserId)
+                ->where('creation_request_id', $creationRequestId)
+                ->firstOrFail();
+            $membership = WorkspaceMember::query()
+                ->where('workspace_id', $workspace->id)
+                ->where('user_id', $supabaseUserId)
+                ->firstOrFail();
+        }
 
         return response()->json([
             'message' => 'Workspace created',
@@ -1494,7 +1533,7 @@ class WorkspaceController extends Controller
         $platformFocus = in_array(($input['platformFocus'] ?? ''), ['instagram', 'tiktok', 'both'], true)
             ? (string) $input['platformFocus']
             : null;
-        $firstAction = in_array(($input['firstAction'] ?? ''), ['discover', 'crm', 'team'], true)
+        $firstAction = in_array(($input['firstAction'] ?? ''), ['discover', 'crm', 'tasks', 'team'], true)
             ? (string) $input['firstAction']
             : null;
 
@@ -1507,7 +1546,7 @@ class WorkspaceController extends Controller
         }
 
         return array_filter([
-            'version' => 1,
+            'version' => 2,
             'createdAt' => isset($input['createdAt']) ? Str::limit((string) $input['createdAt'], 64, '') : null,
             'updatedAt' => isset($input['updatedAt']) ? Str::limit((string) $input['updatedAt'], 64, '') : null,
             'workspaceType' => $workspaceType,

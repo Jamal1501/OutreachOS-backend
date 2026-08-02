@@ -693,11 +693,36 @@ class MessagePerformanceService
             return $this->creatorTargetCache[$cacheKey];
         }
 
-        $profile = CreatorProfile::query()
-            ->with('creator')
-            ->where('project_id', $projectId)
-            ->where('id', $creatorProfileId)
-            ->first();
+        $routeId = trim($creatorProfileId);
+        $profile = null;
+
+        if (Str::startsWith($routeId, 'crm:')) {
+            $rowNumber = (int) substr($routeId, 4);
+            if ($rowNumber > 0) {
+                $profile = CreatorProfile::query()
+                    ->with('creator')
+                    ->where('project_id', $projectId)
+                    ->where(function ($query) use ($rowNumber) {
+                        $query->where('source_reference', 'Creators_CRM:'.$rowNumber)
+                            ->orWhere('source_metadata->sheet_row_number', $rowNumber);
+                    })
+                    ->first();
+            }
+        } else {
+            if (Str::startsWith($routeId, 'crmdb:')) {
+                $routeId = substr($routeId, 6);
+            } elseif (Str::startsWith($routeId, 'profile:')) {
+                $routeId = substr($routeId, 8);
+            }
+
+            if (Str::isUuid($routeId)) {
+                $profile = CreatorProfile::query()
+                    ->with('creator')
+                    ->where('project_id', $projectId)
+                    ->where('id', $routeId)
+                    ->first();
+            }
+        }
 
         if (! $profile) {
             return $this->creatorTargetCache[$cacheKey] = null;
