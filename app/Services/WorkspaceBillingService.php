@@ -283,9 +283,11 @@ class WorkspaceBillingService
             }
 
             $event->status = 'consumed';
-            if ($providerCostUsd !== null) {
-                $event->provider_cost_usd = $providerCostUsd;
-            }
+            $actualProviderCostUsd = $providerCostUsd !== null
+                ? max(0, $providerCostUsd)
+                : max(0, (float) ($event->provider_cost_reserved_usd ?? $event->provider_cost_usd ?? 0));
+            $event->provider_cost_actual_usd = $actualProviderCostUsd;
+            $event->provider_cost_usd = $actualProviderCostUsd;
             $event->reference_id = $referenceId ?: $event->reference_id;
             $event->metadata = array_merge((array) ($event->metadata ?? []), $metadata);
             $event->consumed_at = now();
@@ -311,9 +313,9 @@ class WorkspaceBillingService
         });
     }
 
-    public function refundReservation(string $usageEventId, string $reason, array $metadata = []): void
+    public function refundReservation(string $usageEventId, string $reason, array $metadata = [], ?float $providerCostActualUsd = null): void
     {
-        DB::transaction(function () use ($usageEventId, $reason, $metadata) {
+        DB::transaction(function () use ($usageEventId, $reason, $metadata, $providerCostActualUsd) {
             $event = WorkspaceUsageEvent::query()->lockForUpdate()->find($usageEventId);
             if (! $event || $event->status !== 'reserved') {
                 return;
@@ -341,6 +343,15 @@ class WorkspaceBillingService
             }
 
             $event->status = 'refunded';
+            $providerStarted = trim((string) ($event->reference_id ?? '')) !== ''
+                || trim((string) ($metadata['run_id'] ?? '')) !== '';
+            $actualProviderCostUsd = $providerCostActualUsd !== null
+                ? max(0, $providerCostActualUsd)
+                : ($providerStarted
+                    ? max(0, (float) ($event->provider_cost_reserved_usd ?? $event->provider_cost_usd ?? 0))
+                    : 0.0);
+            $event->provider_cost_actual_usd = $actualProviderCostUsd;
+            $event->provider_cost_usd = $actualProviderCostUsd;
             $event->error_message = $reason;
             $event->metadata = array_merge((array) ($event->metadata ?? []), $metadata);
             $event->refunded_at = now();
@@ -364,7 +375,7 @@ class WorkspaceBillingService
             $originalUnits = max(1, (int) $event->units);
             $settledUnits = min($originalUnits, max(0, $billableUnits));
             if ($settledUnits === 0) {
-                $this->refundReservation($usageEventId, 'No billable units completed', $metadata);
+                $this->refundReservation($usageEventId, 'No billable units completed', $metadata, $providerCostUsd);
 
                 return;
             }
@@ -405,9 +416,12 @@ class WorkspaceBillingService
             $event->units = $settledUnits;
             $event->credit_cost = $settledCredits;
             $event->status = 'consumed';
-            if ($providerCostUsd !== null) {
-                $event->provider_cost_usd = $providerCostUsd;
-            }
+            $reservedProviderCostUsd = max(0, (float) ($event->provider_cost_reserved_usd ?? $event->provider_cost_usd ?? 0));
+            $actualProviderCostUsd = $providerCostUsd !== null
+                ? max(0, $providerCostUsd)
+                : round($reservedProviderCostUsd * ($settledUnits / $originalUnits), 4);
+            $event->provider_cost_actual_usd = $actualProviderCostUsd;
+            $event->provider_cost_usd = $actualProviderCostUsd;
             $event->reference_id = $referenceId ?: $event->reference_id;
             $event->metadata = array_merge($eventMetadata, $metadata, [
                 'original_units' => $originalUnits,
@@ -962,6 +976,8 @@ class WorkspaceBillingService
                     'credit_cost' => $creditCost,
                     'provider' => $provider,
                     'provider_cost_usd' => $providerCostReservationUsd,
+                    'provider_cost_reserved_usd' => $providerCostReservationUsd,
+                    'provider_cost_actual_usd' => null,
                     'source' => $source,
                     'status' => 'reserved',
                     'metadata' => array_merge($metadata, [

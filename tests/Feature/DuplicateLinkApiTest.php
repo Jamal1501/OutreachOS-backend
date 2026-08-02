@@ -37,13 +37,40 @@ class DuplicateLinkApiTest extends TestCase
 
         $response->assertCreated();
 
+        $projectId = (string) Project::query()
+            ->where('workspace_id', $workspace->id)
+            ->where('workbook_id', 'workspace:agency-client-a')
+            ->value('id');
+
         $this->assertDatabaseHas('duplicate_links', [
             'workspace_id' => $workspace->id,
-            'project_id' => 'workspace:agency-client-a',
+            'project_id' => $projectId,
             'creator_a_handle' => 'creator_a',
             'creator_b_handle' => 'creator_b',
             'status' => 'pending',
         ]);
+    }
+
+    public function test_scan_resolves_a_legacy_workspace_slug_without_querying_bigint_with_it(): void
+    {
+        [$user, $workspace] = $this->createMemberWorkspace('owner');
+        $this->fakeSupabaseUser($user);
+        Project::query()->create([
+            'workspace_id' => $workspace->id,
+            'name' => 'Workspace project',
+            'workbook_id' => 'workspace:actual-data-key',
+            'status' => 'active',
+        ]);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/crm/duplicate-links/scan', [
+                'projectId' => $workspace->slug,
+                'limit' => 100,
+            ])
+            ->assertOk()
+            ->assertJsonPath('summary.scanned', 0)
+            ->assertJsonPath('summary.matches', 0);
     }
 
     public function test_it_does_not_list_duplicate_links_from_another_workspace(): void

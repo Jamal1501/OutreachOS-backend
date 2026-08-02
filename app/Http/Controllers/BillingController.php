@@ -151,6 +151,68 @@ class BillingController extends Controller
         ]);
     }
 
+    public function activity(Request $request)
+    {
+        $validated = $request->validate([
+            'page' => ['nullable', 'integer', 'min:1'],
+            'perPage' => ['nullable', 'integer', 'min:1', 'max:100'],
+        ]);
+        $page = (int) ($validated['page'] ?? 1);
+        $perPage = (int) ($validated['perPage'] ?? 20);
+        [$billingAccountId, $workspaceIds] = $this->billingActivityScope($request);
+        $query = $this->billingActivityQuery($billingAccountId, $workspaceIds);
+        $total = (clone $query)->count();
+        $items = $query
+            ->orderByDesc('usage.created_at')
+            ->forPage($page, $perPage)
+            ->get($this->billingActivityColumns())
+            ->map(fn ($event) => $this->presentUsageEvent($event));
+
+        return response()->json([
+            'message' => 'Billing activity fetched',
+            'data' => [
+                'items' => $items,
+                'pagination' => [
+                    'page' => $page,
+                    'perPage' => $perPage,
+                    'total' => $total,
+                    'lastPage' => max(1, (int) ceil($total / $perPage)),
+                ],
+            ],
+        ]);
+    }
+
+    public function exportActivity(Request $request)
+    {
+        [$billingAccountId, $workspaceIds] = $this->billingActivityScope($request);
+
+        return response()->streamDownload(function () use ($billingAccountId, $workspaceIds): void {
+            $output = fopen('php://output', 'wb');
+            if ($output === false) {
+                throw new \RuntimeException('Billing activity export could not be opened.');
+            }
+            fputcsv($output, ['Date', 'Workspace', 'Activity', 'Status', 'Credits', 'Credit type', 'Reference']);
+            foreach ($this->billingActivityQuery($billingAccountId, $workspaceIds)
+                ->orderByDesc('usage.created_at')
+                ->cursor($this->billingActivityColumns()) as $event) {
+                $presented = $this->presentUsageEvent($event);
+                fputcsv($output, [
+                    $event->consumed_at ?: ($event->refunded_at ?: $event->created_at),
+                    $event->workspace_name ?: 'Workspace',
+                    $presented->description,
+                    $event->status,
+                    (int) $event->credit_cost,
+                    $event->credit_bucket === 'ai' ? 'AI' : 'Workflow',
+                    $event->reference_id,
+                ]);
+            }
+            fclose($output);
+        }, 'socialcore-usage-activity-'.now()->format('Y-m-d').'.csv', [
+            'Content-Type' => 'text/csv; charset=UTF-8',
+            'Cache-Control' => 'no-store, private',
+        ]);
+    }
+
     public function checkoutSubscription(Request $request)
     {
         $workspaceId = (string) $request->attributes->get('workspace_id');
@@ -282,6 +344,51 @@ class BillingController extends Controller
                 : "{$activity}: {$creditCost} {$bucket} credits used",
             default => "{$activity}: {$creditCost} {$bucket} credits",
         };
+    }
+
+    private function billingActivityScope(Request $request): array
+    {
+        $workspaceId = (string) $request->attributes->get('workspace_id');
+        $summary = $this->billing->summary($workspaceId);
+        $billingAccountId = (string) data_get($summary, 'billingAccount.id', '');
+        $workspaceIds = $billingAccountId !== '' && Schema::hasColumn('workspaces', 'billing_account_id')
+            ? DB::table('workspaces')->where('billing_account_id', $billingAccountId)->pluck('id')->map(fn ($id) => (string) $id)->all()
+            : [$workspaceId];
+
+        return [$billingAccountId, $workspaceIds];
+    }
+
+    private function billingActivityQuery(string $billingAccountId, array $workspaceIds)
+    {
+        return DB::table('workspace_usage_events as usage')
+            ->leftJoin('workspaces', 'workspaces.id', '=', 'usage.workspace_id')
+            ->when(
+                $billingAccountId !== '' && Schema::hasColumn('workspace_usage_events', 'billing_account_id'),
+                fn ($query) => $query->where('usage.billing_account_id', $billingAccountId),
+                fn ($query) => $query->whereIn('usage.workspace_id', $workspaceIds),
+            );
+    }
+
+    private function billingActivityColumns(): array
+    {
+        return [
+            'usage.id', 'usage.workspace_id', 'usage.type', 'usage.credit_bucket', 'usage.units',
+            'usage.credit_cost', 'usage.provider', 'usage.source', 'usage.status', 'usage.reference_id',
+            'usage.metadata', 'usage.created_at', 'usage.consumed_at', 'usage.refunded_at',
+            'workspaces.name as workspace_name',
+        ];
+    }
+
+    private function presentUsageEvent(object $event): object
+    {
+        $metadata = is_string($event->metadata ?? null)
+            ? (json_decode($event->metadata, true) ?: [])
+            : (array) ($event->metadata ?? []);
+        $event->metadata = $metadata;
+        $event->workspace_name = (string) ($event->workspace_name ?? 'Workspace');
+        $event->description = $this->usageEventDescription($event, $metadata);
+
+        return $event;
     }
 
     private function checkoutReturnHostAllowed(string $host): bool

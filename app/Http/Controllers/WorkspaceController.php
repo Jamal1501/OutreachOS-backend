@@ -736,6 +736,32 @@ class WorkspaceController extends Controller
             return response()->json(['error' => 'Authentication required.'], 401);
         }
 
+        $ownedWorkspaces = Workspace::query()
+            ->where('owner_id', $userId)
+            ->get(['id', 'name']);
+        $scheduledWorkspaceIds = Schema::hasTable('data_deletion_requests')
+            ? DB::table('data_deletion_requests')
+                ->where('type', 'workspace')
+                ->where('status', 'scheduled')
+                ->whereIn('workspace_id', $ownedWorkspaces->pluck('id'))
+                ->pluck('workspace_id')
+                ->map(fn ($id) => (string) $id)
+                ->all()
+            : [];
+        $workspacesRequiringAction = $ownedWorkspaces
+            ->reject(fn (Workspace $workspace) => in_array((string) $workspace->id, $scheduledWorkspaceIds, true))
+            ->values();
+        if ($workspacesRequiringAction->isNotEmpty()) {
+            return response()->json([
+                'message' => 'Before deleting your account, transfer ownership or schedule each workspace for deletion in Admin Settings.',
+                'code' => 'owned_workspaces_require_action',
+                'workspaces' => $workspacesRequiringAction->map(fn (Workspace $workspace) => [
+                    'id' => (string) $workspace->id,
+                    'name' => $workspace->name,
+                ]),
+            ], 409);
+        }
+
         return response()->json([
             'message' => 'Account scheduled for permanent deletion',
             'deletion' => $this->dataLifecycle->scheduleAccountDeletion($userId),

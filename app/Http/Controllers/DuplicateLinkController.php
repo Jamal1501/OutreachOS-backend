@@ -20,11 +20,15 @@ class DuplicateLinkController extends Controller
     public function index(Request $request): JsonResponse
     {
         $workspaceId = $this->workspaceId($request);
-        $projectId = trim((string) $request->query('projectId', ''));
+        $projectReference = trim((string) $request->query('projectId', ''));
+        $project = $projectReference !== '' ? $this->resolveProjectReference($workspaceId, $projectReference) : null;
+        if ($projectReference !== '' && ! $project) {
+            return response()->json(['message' => 'Duplicate links loaded.', 'items' => []]);
+        }
 
         $links = DuplicateLink::query()
             ->where('workspace_id', $workspaceId)
-            ->when($projectId !== '', fn ($query) => $query->where('project_id', $projectId))
+            ->when($project, fn ($query) => $query->where('project_id', $project->id))
             ->orderByDesc('confidence')
             ->orderByDesc('created_at')
             ->limit(min(max((int) $request->query('limit', 100), 1), 250))
@@ -45,10 +49,8 @@ class DuplicateLinkController extends Controller
             'limit' => ['nullable', 'integer', 'min:2', 'max:100'],
         ]);
 
-        $project = Project::query()
-            ->where('workspace_id', $workspaceId)
-            ->whereKey((string) $validated['projectId'])
-            ->firstOrFail();
+        $project = $this->resolveProjectReference($workspaceId, (string) $validated['projectId']);
+        abort_unless($project, 404, 'Project not found.');
 
         $limit = (int) ($validated['limit'] ?? 100);
         $creators = CreatorProfile::query()
@@ -156,12 +158,13 @@ class DuplicateLinkController extends Controller
         ]);
 
         $created = [];
-        $projectId = trim((string) $validated['projectId']);
+        $project = $this->resolveProjectReference($workspaceId, (string) $validated['projectId']);
+        abort_unless($project, 404, 'Project not found.');
 
         foreach ($validated['duplicates'] as $duplicate) {
             $created[] = DuplicateLink::query()->create([
                 'workspace_id' => $workspaceId,
-                'project_id' => $projectId,
+                'project_id' => (string) $project->id,
                 'creator_a_handle' => $this->normalizeHandle((string) data_get($duplicate, 'creatorA.handle')),
                 'creator_a_platform' => strtolower(trim((string) data_get($duplicate, 'creatorA.platform'))),
                 'creator_b_handle' => $this->normalizeHandle((string) data_get($duplicate, 'creatorB.handle')),
@@ -295,5 +298,39 @@ class DuplicateLinkController extends Controller
         return $value !== ''
             && ctype_digit($value)
             && filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) !== false;
+    }
+
+    private function resolveProjectReference(string $workspaceId, string $reference): ?Project
+    {
+        $reference = trim($reference);
+        if ($reference === '') {
+            return null;
+        }
+
+        $query = Project::query()->where('workspace_id', $workspaceId);
+        if ($this->isDatabaseProjectId($reference)) {
+            return $query->whereKey((int) $reference)->first();
+        }
+
+        $project = (clone $query)->where('workbook_id', $reference)->first();
+        if ($project) {
+            return $project;
+        }
+
+        // Older clients sent the workspace slug rather than the database project ID.
+        // Falling back is safe only when this workspace has one unambiguous project.
+        $projects = $query->orderBy('id')->limit(2)->get();
+
+        if ($projects->isEmpty()) {
+            return Project::query()->create([
+                'workspace_id' => $workspaceId,
+                'name' => str_starts_with($reference, 'workspace:') ? 'Workspace project' : 'Creator project',
+                'workbook_id' => $reference,
+                'status' => 'active',
+                'metadata' => ['source' => 'duplicate_review'],
+            ]);
+        }
+
+        return $projects->count() === 1 ? $projects->first() : null;
     }
 }

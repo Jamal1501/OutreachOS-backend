@@ -791,14 +791,61 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
             'created_at' => now(),
             'updated_at' => now(),
         ]);
+        foreach (range(1, 20) as $index) {
+            DB::table('workspace_usage_events')->insert([
+                'id' => (string) Str::uuid(),
+                'workspace_id' => $workspace->id,
+                'billing_account_id' => $billingAccount->id,
+                'type' => 'ai_message',
+                'credit_bucket' => 'ai',
+                'units' => 1,
+                'credit_cost' => 1,
+                'provider' => 'openai',
+                'source' => 'ai.draft',
+                'status' => 'consumed',
+                'metadata' => json_encode([]),
+                'consumed_at' => now()->subMinutes($index),
+                'created_at' => now()->subMinutes($index),
+                'updated_at' => now()->subMinutes($index),
+            ]);
+        }
 
         $this->withToken('valid-token')
             ->withHeader('X-Workspace-Id', $workspace->id)
-            ->getJson('/api/billing/qa-checklist')
+            ->getJson('/api/billing/activity?page=1&perPage=20')
             ->assertOk()
-            ->assertJsonPath('data.recentUsageEvents.0.description', 'Creator enrichment: 7 workflow credits used')
-            ->assertJsonPath('data.recentUsageEvents.0.workspace_name', $workspace->name)
-            ->assertJsonPath('data.recentUsageEvents.0.reference_id', $reference);
+            ->assertJsonPath('data.items.0.description', 'Creator enrichment: 7 workflow credits used')
+            ->assertJsonPath('data.items.0.workspace_name', $workspace->name)
+            ->assertJsonPath('data.items.0.reference_id', $reference)
+            ->assertJsonPath('data.pagination.perPage', 20)
+            ->assertJsonPath('data.pagination.total', 21)
+            ->assertJsonPath('data.pagination.lastPage', 2)
+            ->assertJsonCount(20, 'data.items');
+
+        $export = $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->get('/api/billing/activity/export')
+            ->assertOk()
+            ->assertHeader('content-type', 'text/csv; charset=UTF-8');
+        $this->assertStringContainsString('Creator enrichment: 7 workflow credits used', $export->streamedContent());
+    }
+
+    public function test_account_owner_must_handle_owned_workspaces_before_account_deletion(): void
+    {
+        [$user, $workspace] = $this->createWorkspaceForRole('owner');
+        $this->fakeSupabaseUser($user);
+
+        $this->withToken('valid-token')
+            ->deleteJson('/api/account')
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'owned_workspaces_require_action')
+            ->assertJsonPath('workspaces.0.id', $workspace->id);
+
+        $this->assertDatabaseMissing('data_deletion_requests', [
+            'type' => 'account',
+            'user_id' => $user->supabase_user_id,
+            'status' => 'scheduled',
+        ]);
     }
 
     public function test_workspace_creation_is_idempotent_when_the_browser_retries(): void

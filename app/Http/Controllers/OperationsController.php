@@ -2,10 +2,13 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\SupportRequest;
 use App\Services\ProviderSpendGuardService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 class OperationsController extends Controller
@@ -34,8 +37,8 @@ class OperationsController extends Controller
             'workspaceId' => ['nullable', 'uuid', Rule::requiredIf(fn () => $request->input('scope') === 'workspace')],
             'dailyLimitUsd' => ['nullable', 'numeric', 'min:0', 'max:100000'],
             'overrideLimitUsd' => ['nullable', 'numeric', 'min:0', 'max:100000'],
-            'overrideUntil' => ['nullable', 'date', 'after:now'],
-            'overrideReason' => ['nullable', 'string', 'max:300'],
+            'overrideUntil' => ['nullable', 'date', 'after:now', Rule::requiredIf(fn () => (bool) $request->input('bypassTemporarily') || $request->filled('overrideLimitUsd'))],
+            'overrideReason' => ['nullable', 'string', 'max:300', Rule::requiredIf(fn () => (bool) $request->input('bypassTemporarily') || $request->filled('overrideLimitUsd'))],
             'bypassTemporarily' => ['nullable', 'boolean'],
             'clearOverride' => ['nullable', 'boolean'],
         ]);
@@ -74,6 +77,121 @@ class OperationsController extends Controller
         return response()->json([
             'message' => 'Provider spend control updated',
             'data' => $control,
+        ]);
+    }
+
+    public function incidentBanner(): mixed
+    {
+        $banner = Schema::hasTable('platform_incident_banners')
+            ? DB::table('platform_incident_banners')->orderByDesc('updated_at')->first()
+            : null;
+
+        return response()->json([
+            'data' => $banner ? [
+                'id' => $banner->id,
+                'enabled' => (bool) $banner->enabled,
+                'severity' => $banner->severity,
+                'message' => $banner->message,
+                'startsAt' => $banner->starts_at,
+                'expiresAt' => $banner->expires_at,
+                'updatedAt' => $banner->updated_at,
+                'updatedByUserId' => $banner->updated_by_user_id,
+            ] : null,
+        ]);
+    }
+
+    public function updateIncidentBanner(Request $request): mixed
+    {
+        $validated = $request->validate([
+            'enabled' => ['required', 'boolean'],
+            'severity' => ['required', 'string', Rule::in(['info', 'warning', 'critical'])],
+            'message' => ['required', 'string', 'min:3', 'max:500'],
+            'startsAt' => ['nullable', 'date'],
+            'expiresAt' => ['nullable', 'date', 'after:now'],
+        ]);
+        $userId = (string) $request->attributes->get('supabase_user_id');
+        DB::transaction(function () use ($validated, $userId) {
+            DB::table('platform_incident_banners')->where('enabled', true)->update([
+                'enabled' => false,
+                'updated_at' => now(),
+            ]);
+            DB::table('platform_incident_banners')->insert([
+                'id' => (string) Str::uuid(),
+                'enabled' => (bool) $validated['enabled'],
+                'severity' => $validated['severity'],
+                'message' => trim((string) $validated['message']),
+                'starts_at' => $validated['startsAt'] ?? null,
+                'expires_at' => $validated['expiresAt'] ?? null,
+                'updated_by_user_id' => $userId,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        });
+
+        return $this->incidentBanner();
+    }
+
+    public function supportRequests(Request $request): mixed
+    {
+        $validated = $request->validate([
+            'page' => ['nullable', 'integer', 'min:1'],
+            'perPage' => ['nullable', 'integer', 'min:1', 'max:100'],
+            'status' => ['nullable', 'string', Rule::in(['open', 'in_progress', 'resolved'])],
+        ]);
+        $page = (int) ($validated['page'] ?? 1);
+        $perPage = (int) ($validated['perPage'] ?? 20);
+        $query = SupportRequest::query()
+            ->with('workspace:id,name')
+            ->when(isset($validated['status']), fn ($builder) => $builder->where('ticket_status', $validated['status']))
+            ->orderByRaw("CASE ticket_status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END")
+            ->orderByDesc('created_at');
+        $total = (clone $query)->count();
+
+        return response()->json([
+            'data' => [
+                'items' => $query->forPage($page, $perPage)->get()->map(fn (SupportRequest $ticket) => [
+                    'id' => (string) $ticket->id,
+                    'reference' => $ticket->reference,
+                    'workspaceId' => $ticket->workspace_id,
+                    'workspaceName' => $ticket->workspace?->name,
+                    'email' => $ticket->email,
+                    'category' => $ticket->category,
+                    'subject' => $ticket->subject,
+                    'message' => $ticket->message,
+                    'page' => $ticket->page,
+                    'ticketStatus' => $ticket->ticket_status,
+                    'deliveryStatus' => $ticket->status,
+                    'createdAt' => $ticket->created_at?->toIso8601String(),
+                    'resolvedAt' => $ticket->resolved_at?->toIso8601String(),
+                ])->values(),
+                'pagination' => [
+                    'page' => $page,
+                    'perPage' => $perPage,
+                    'total' => $total,
+                    'lastPage' => max(1, (int) ceil($total / $perPage)),
+                ],
+            ],
+        ]);
+    }
+
+    public function updateSupportRequest(Request $request, string $id): mixed
+    {
+        $validated = $request->validate([
+            'status' => ['required', 'string', Rule::in(['open', 'in_progress', 'resolved'])],
+        ]);
+        $ticket = SupportRequest::query()->findOrFail($id);
+        $ticket->ticket_status = $validated['status'];
+        $ticket->updated_by_operator_id = (string) $request->attributes->get('supabase_user_id');
+        $ticket->resolved_at = $validated['status'] === 'resolved' ? now() : null;
+        $ticket->save();
+
+        return response()->json([
+            'message' => 'Support request updated.',
+            'data' => [
+                'id' => (string) $ticket->id,
+                'ticketStatus' => $ticket->ticket_status,
+                'resolvedAt' => $ticket->resolved_at?->toIso8601String(),
+            ],
         ]);
     }
 }

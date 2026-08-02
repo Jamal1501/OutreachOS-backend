@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Exceptions\InsufficientCreditsException;
+use App\Services\ApiErrorResponseService;
 use App\Services\ApifyRowMapper;
 use App\Services\CreatorMergeService;
 use App\Services\OperationalMirrorService;
@@ -34,6 +35,7 @@ class ApifyController extends Controller
         private ProviderUsageLogger $usageLogger,
         private WorkspaceBillingService $billing,
         private ScraperRegistryService $scrapers,
+        private ApiErrorResponseService $errors,
     ) {}
 
     public function runActor(Request $request)
@@ -44,9 +46,7 @@ class ApifyController extends Controller
             $token = (string) config('services.apify.token');
 
             if ($token === '') {
-                Log::error('APIFY_API_TOKEN missing');
-
-                return response()->json(['error' => 'Missing APIFY_API_TOKEN'], 500);
+                throw new RuntimeException('APIFY_API_TOKEN is not configured.');
             }
 
             $configuredActorKeys = array_keys($this->actorMap());
@@ -136,10 +136,15 @@ class ApifyController extends Controller
                     'error_message' => 'Apify run failed',
                 ]);
 
-                return response()->json([
-                    'error' => 'Apify run failed',
-                    'apifyStatus' => $response->status(),
-                ], $response->status());
+                if ($response->serverError()) {
+                    return $this->errors->unexpected(
+                        new RuntimeException('Apify rejected actor startup with HTTP '.$response->status().'.'),
+                        $request,
+                        status: 502,
+                    );
+                }
+
+                return response()->json(['message' => 'The scraper request was rejected. Please review the inputs and retry.'], 422);
             }
 
             $responsePayload = $response->json();
@@ -193,10 +198,7 @@ class ApifyController extends Controller
                 'apify' => $responsePayload,
             ]);
         } catch (InsufficientCreditsException $e) {
-            return response()->json([
-                'error' => $e->getMessage(),
-                'billing' => $e->context(),
-            ], 402);
+            throw $e;
         } catch (\Throwable $e) {
             if ($usageReservationId) {
                 $this->billing->refundReservation($usageReservationId, 'Unhandled Apify exception', [
@@ -204,16 +206,7 @@ class ApifyController extends Controller
                 ]);
             }
 
-            Log::error('Unhandled exception in runActor', [
-                'message' => $e->getMessage(),
-                'file' => basename($e->getFile()),
-                'line' => $e->getLine(),
-            ]);
-
-            return response()->json([
-                'error' => 'Unhandled backend error while starting actor',
-                'message' => config('app.debug') ? $e->getMessage() : 'The scraper could not be started. Please retry.',
-            ], 500);
+            return $this->errors->unexpected($e, $request);
         }
     }
 
@@ -243,18 +236,18 @@ class ApifyController extends Controller
         $token = (string) config('services.apify.token');
 
         if ($token === '') {
-            return response()->json(['error' => 'Missing APIFY_API_TOKEN'], 500);
+            return $this->errors->unexpected(new RuntimeException('APIFY_API_TOKEN is not configured.'), $request);
         }
 
         $response = Http::withToken($token)
             ->get("https://api.apify.com/v2/actor-runs/{$runId}");
 
         if (! $response->successful()) {
-            return response()->json([
-                'error' => 'Failed to fetch run status',
-                'status' => $response->status(),
-                'body' => config('app.debug') ? ($response->json() ?? $response->body()) : null,
-            ], 500);
+            return $this->errors->unexpected(
+                new RuntimeException('Apify run-status request failed with HTTP '.$response->status().'.'),
+                $request,
+                status: 502,
+            );
         }
 
         return response()->json([
@@ -271,9 +264,7 @@ class ApifyController extends Controller
             $token = (string) config('services.apify.token');
 
             if ($token === '') {
-                return response()->json([
-                    'error' => 'Missing APIFY_API_TOKEN',
-                ], 500);
+                throw new RuntimeException('APIFY_API_TOKEN is not configured.');
             }
 
             $limit = min(max((int) $request->query('limit', 100), 1), 500);
@@ -298,10 +289,7 @@ class ApifyController extends Controller
             $items = json_decode($response->body(), true);
 
             if (! is_array($items)) {
-                return response()->json([
-                    'error' => 'Dataset response was not a valid JSON array',
-                    'message' => config('app.debug') ? $response->body() : 'Invalid dataset response from provider.',
-                ], 500);
+                throw new RuntimeException('Apify dataset response was not a valid JSON array.');
             }
 
             return response()->json([
@@ -311,10 +299,7 @@ class ApifyController extends Controller
                 'items' => $items,
             ]);
         } catch (\Throwable $e) {
-            return response()->json([
-                'error' => 'Unhandled error while fetching dataset results',
-                'message' => config('app.debug') ? $e->getMessage() : 'Dataset results could not be fetched.',
-            ], 500);
+            return $this->errors->unexpected($e, $request);
         }
     }
 
@@ -420,10 +405,7 @@ class ApifyController extends Controller
                 'result' => $result,
             ]);
         } catch (\Throwable $e) {
-            return response()->json([
-                'error' => 'Merge failed',
-                'message' => config('app.debug') ? $e->getMessage() : 'Merge failed. Please retry or contact support.',
-            ], 500);
+            return $this->errors->unexpected($e, $request);
         }
     }
 

@@ -98,25 +98,46 @@ class ProviderSpendGuardService
     ): array {
         $provider = Str::lower(trim($provider));
         $scopeKey = $scope === 'global' ? 'global' : 'workspace:'.$workspaceId;
-        $this->ensureControl($provider, $scopeKey, $scope === 'global' ? null : $workspaceId);
+        DB::transaction(function () use ($provider, $scopeKey, $scope, $workspaceId, $updatedByUserId, $updateDailyLimit, $dailyLimitUsd, $updateOverride, $overrideLimitUsd, $overrideUntil, $overrideReason): void {
+            $this->ensureControl($provider, $scopeKey, $scope === 'global' ? null : $workspaceId);
+            $before = DB::table('provider_spend_controls')
+                ->where('provider', $provider)
+                ->where('scope_key', $scopeKey)
+                ->lockForUpdate()
+                ->first();
 
-        $updates = [
-            'updated_by_user_id' => $updatedByUserId,
-            'updated_at' => now(),
-        ];
-        if ($updateDailyLimit) {
-            $updates['daily_limit_usd'] = $dailyLimitUsd;
-        }
-        if ($updateOverride) {
-            $updates['override_limit_usd'] = $overrideLimitUsd;
-            $updates['override_until'] = $overrideUntil;
-            $updates['override_reason'] = $overrideReason;
-        }
+            $updates = ['updated_by_user_id' => $updatedByUserId, 'updated_at' => now()];
+            if ($updateDailyLimit) {
+                $updates['daily_limit_usd'] = $dailyLimitUsd;
+            }
+            if ($updateOverride) {
+                $updates['override_limit_usd'] = $overrideLimitUsd;
+                $updates['override_until'] = $overrideUntil;
+                $updates['override_reason'] = $overrideReason;
+            }
 
-        DB::table('provider_spend_controls')
-            ->where('provider', $provider)
-            ->where('scope_key', $scopeKey)
-            ->update($updates);
+            DB::table('provider_spend_controls')
+                ->where('provider', $provider)
+                ->where('scope_key', $scopeKey)
+                ->update($updates);
+
+            $after = DB::table('provider_spend_controls')
+                ->where('provider', $provider)
+                ->where('scope_key', $scopeKey)
+                ->first();
+            if (Schema::hasTable('provider_spend_control_audits')) {
+                DB::table('provider_spend_control_audits')->insert([
+                    'id' => (string) Str::uuid(),
+                    'provider' => $provider,
+                    'scope_key' => $scopeKey,
+                    'workspace_id' => $workspaceId,
+                    'updated_by_user_id' => $updatedByUserId,
+                    'before_values' => $before ? json_encode($before) : null,
+                    'after_values' => json_encode($after),
+                    'created_at' => now(),
+                ]);
+            }
+        });
 
         return $this->controlSnapshot($provider, $scopeKey, $scope === 'global' ? null : $workspaceId);
     }
@@ -124,14 +145,47 @@ class ProviderSpendGuardService
     public function overview(string $provider = 'apify'): array
     {
         $provider = Str::lower(trim($provider));
-        $global = $this->controlSnapshot($provider, 'global', null);
-        $workspaces = DB::table('workspaces')
+        $workspaceRows = DB::table('workspaces')
             ->select(['id', 'name'])
             ->orderBy('name')
+            ->get();
+        $controlDefaults = $workspaceRows->map(fn ($workspace) => [
+            'id' => (string) Str::uuid(),
+            'provider' => $provider,
+            'scope_key' => 'workspace:'.$workspace->id,
+            'workspace_id' => $workspace->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ])->prepend([
+            'id' => (string) Str::uuid(),
+            'provider' => $provider,
+            'scope_key' => 'global',
+            'workspace_id' => null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        foreach ($controlDefaults->chunk(200) as $controlChunk) {
+            DB::table('provider_spend_controls')->insertOrIgnore($controlChunk->all());
+        }
+
+        $controls = DB::table('provider_spend_controls')
+            ->where('provider', $provider)
             ->get()
+            ->keyBy('scope_key');
+        $spendByWorkspace = $this->dailySpendByWorkspace($provider);
+        $global = $this->controlSnapshotFrom(
+            $controls->get('global'),
+            null,
+            $this->dailySpend($provider, null),
+        );
+        $workspaces = $workspaceRows
             ->map(fn ($workspace) => array_merge(
                 ['workspaceName' => (string) $workspace->name],
-                $this->controlSnapshot($provider, 'workspace:'.$workspace->id, (string) $workspace->id),
+                $this->controlSnapshotFrom(
+                    $controls->get('workspace:'.$workspace->id),
+                    (string) $workspace->id,
+                    (float) ($spendByWorkspace[(string) $workspace->id] ?? 0),
+                ),
             ))
             ->values()
             ->all();
@@ -195,9 +249,14 @@ class ProviderSpendGuardService
             ->where('provider', $provider)
             ->where('scope_key', $scopeKey)
             ->firstOrFail();
+
+        return $this->controlSnapshotFrom($control, $workspaceId, $this->dailySpend($provider, $workspaceId));
+    }
+
+    private function controlSnapshotFrom(object $control, ?string $workspaceId, float $spent): array
+    {
         $scope = $workspaceId ? 'workspace' : 'global';
         $limit = $this->effectiveLimit($control, $scope);
-        $spent = $this->dailySpend($provider, $workspaceId);
 
         return [
             'scope' => $scope,
@@ -247,6 +306,26 @@ class ProviderSpendGuardService
             ->whereIn('status', ['reserved', 'consumed', 'refunded'])
             ->where('created_at', '>=', now()->startOfDay())
             ->when($workspaceId, fn ($query) => $query->where('workspace_id', $workspaceId))
-            ->sum('provider_cost_usd'), 4);
+            ->selectRaw("COALESCE(SUM(CASE WHEN status = 'reserved' THEN COALESCE(provider_cost_reserved_usd, provider_cost_usd, 0) ELSE COALESCE(provider_cost_actual_usd, provider_cost_usd, 0) END), 0) as guarded_spend")
+            ->value('guarded_spend'), 4);
+    }
+
+    private function dailySpendByWorkspace(string $provider): array
+    {
+        if (! Schema::hasTable('workspace_usage_events')) {
+            return [];
+        }
+
+        return DB::table('workspace_usage_events')
+            ->where('provider', $provider)
+            ->whereIn('status', ['reserved', 'consumed', 'refunded'])
+            ->where('created_at', '>=', now()->startOfDay())
+            ->whereNotNull('workspace_id')
+            ->select('workspace_id')
+            ->selectRaw("COALESCE(SUM(CASE WHEN status = 'reserved' THEN COALESCE(provider_cost_reserved_usd, provider_cost_usd, 0) ELSE COALESCE(provider_cost_actual_usd, provider_cost_usd, 0) END), 0) as guarded_spend")
+            ->groupBy('workspace_id')
+            ->get()
+            ->mapWithKeys(fn ($row) => [(string) $row->workspace_id => round((float) $row->guarded_spend, 4)])
+            ->all();
     }
 }

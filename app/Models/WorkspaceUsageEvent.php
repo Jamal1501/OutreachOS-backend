@@ -22,6 +22,8 @@ class WorkspaceUsageEvent extends Model
         'credit_cost',
         'provider',
         'provider_cost_usd',
+        'provider_cost_reserved_usd',
+        'provider_cost_actual_usd',
         'source',
         'status',
         'reference_id',
@@ -34,6 +36,9 @@ class WorkspaceUsageEvent extends Model
     protected function casts(): array
     {
         return [
+            'provider_cost_usd' => 'decimal:4',
+            'provider_cost_reserved_usd' => 'decimal:4',
+            'provider_cost_actual_usd' => 'decimal:4',
             'metadata' => 'array',
             'consumed_at' => 'datetime',
             'refunded_at' => 'datetime',

@@ -8,6 +8,7 @@ use App\Models\DiscoveryItem;
 use App\Models\MessageTemplate;
 use App\Models\OutreachEvent;
 use App\Services\AnalyticsSummaryService;
+use App\Services\ApiErrorResponseService;
 use App\Services\AvatarCacheService;
 use App\Services\CreatorLifecycleService;
 use App\Services\CreatorLocationInferenceService;
@@ -49,6 +50,7 @@ class SheetDataController extends Controller
         private AnalyticsSummaryService $analytics,
         private LearningEventService $learningEvents,
         private AvatarCacheService $avatarCache,
+        private ApiErrorResponseService $errors,
     ) {}
 
     public function avatarProxy(Request $request)
@@ -1259,13 +1261,7 @@ class SheetDataController extends Controller
                 'data' => $data,
             ]);
         } catch (\Throwable $e) {
-            report($e);
-
-            return response()->json([
-                'message' => 'Failed to build operator view',
-                'error' => $e->getMessage(),
-                'exception' => class_basename($e),
-            ], 500);
+            return $this->errors->unexpected($e, $request);
         }
     }
 

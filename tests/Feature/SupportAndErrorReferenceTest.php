@@ -3,8 +3,10 @@
 namespace Tests\Feature;
 
 use App\Exceptions\InsufficientCreditsException;
+use App\Http\Controllers\OperationsController;
 use App\Http\Controllers\SupportController;
 use App\Mail\SupportRequestMail;
+use App\Models\SupportRequest;
 use App\Models\User;
 use App\Models\Workspace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -40,6 +42,13 @@ class SupportAndErrorReferenceTest extends TestCase
         $this->assertSame(201, $response->getStatusCode());
         $this->assertMatchesRegularExpression('/^SUP-[A-Z0-9]{10}$/', $payload['data']['reference']);
         Mail::assertSent(SupportRequestMail::class, fn (SupportRequestMail $mail) => $mail->hasTo('support@example.test'));
+        $this->assertDatabaseHas('support_requests', [
+            'reference' => $payload['data']['reference'],
+            'workspace_id' => $workspace->id,
+            'page' => 'https://www.socialcore.app/discover',
+            'status' => 'sent',
+            'delivery_attempts' => 1,
+        ]);
         $this->assertDatabaseHas('workspace_audit_events', [
             'workspace_id' => $workspace->id,
             'event_type' => 'support_request_submitted',
@@ -59,6 +68,59 @@ class SupportAndErrorReferenceTest extends TestCase
 
         $this->assertTrue($response->getData(true)['data']['enabled']);
         $this->assertSame('critical', $response->getData(true)['data']['severity']);
+    }
+
+    public function test_database_banner_state_overrides_environment_fallback(): void
+    {
+        config([
+            'support.incident_banner.enabled' => true,
+            'support.incident_banner.message' => 'Old environment incident.',
+        ]);
+        DB::table('platform_incident_banners')->insert([
+            'id' => (string) Str::uuid(),
+            'enabled' => false,
+            'severity' => 'warning',
+            'message' => 'Resolved incident.',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $payload = app(SupportController::class)->banner()->getData(true);
+
+        $this->assertFalse($payload['data']['enabled']);
+        $this->assertNull($payload['data']['message']);
+    }
+
+    public function test_operator_can_list_and_resolve_persisted_support_requests(): void
+    {
+        [$user, $workspace] = $this->workspaceFixture();
+        $ticket = SupportRequest::query()->create([
+            'reference' => 'SUP-OPER123456',
+            'workspace_id' => $workspace->id,
+            'user_id' => $user->supabase_user_id,
+            'email' => $user->email,
+            'category' => 'technical_problem',
+            'subject' => 'Cannot complete review',
+            'message' => 'The duplicate review returns after every refresh.',
+            'page' => 'https://www.socialcore.app/duplicates',
+            'status' => 'sent',
+            'ticket_status' => 'open',
+        ]);
+
+        $listRequest = Request::create('/api/operations/support-requests', 'GET', ['status' => 'open']);
+        $list = app(OperationsController::class)->supportRequests($listRequest)->getData(true);
+        $this->assertSame($ticket->reference, $list['data']['items'][0]['reference']);
+        $this->assertSame($workspace->name, $list['data']['items'][0]['workspaceName']);
+
+        $updateRequest = Request::create('/api/operations/support-requests/'.$ticket->id, 'PATCH', ['status' => 'resolved']);
+        $updateRequest->attributes->set('supabase_user_id', 'operator-user');
+        app(OperationsController::class)->updateSupportRequest($updateRequest, (string) $ticket->id);
+
+        $this->assertDatabaseHas('support_requests', [
+            'id' => $ticket->id,
+            'ticket_status' => 'resolved',
+            'updated_by_operator_id' => 'operator-user',
+        ]);
     }
 
     public function test_unhandled_api_errors_return_a_customer_reference_without_internal_details(): void

@@ -45,6 +45,10 @@ Route::middleware(['api.auth', 'throttle:api'])->group(function () {
     Route::middleware('platform.operator')->group(function () {
         Route::get('/operations/provider-spend', [OperationsController::class, 'providerSpend']);
         Route::put('/operations/provider-spend/control', [OperationsController::class, 'updateProviderSpendControl']);
+        Route::get('/operations/incident-banner', [OperationsController::class, 'incidentBanner']);
+        Route::put('/operations/incident-banner', [OperationsController::class, 'updateIncidentBanner']);
+        Route::get('/operations/support-requests', [OperationsController::class, 'supportRequests']);
+        Route::patch('/operations/support-requests/{id}', [OperationsController::class, 'updateSupportRequest']);
     });
 });
 
@@ -139,6 +143,8 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::get('/billing/catalog', [BillingController::class, 'catalog']);
     Route::middleware('workspace.role:owner,admin')->group(function () {
         Route::get('/billing/qa-checklist', [BillingController::class, 'qaChecklist']);
+        Route::get('/billing/activity', [BillingController::class, 'activity']);
+        Route::get('/billing/activity/export', [BillingController::class, 'exportActivity']);
         Route::post('/billing/checkout/subscription', [BillingController::class, 'checkoutSubscription'])->middleware('throttle:expensive');
         Route::post('/billing/checkout/topup', [BillingController::class, 'checkoutTopup'])->middleware('throttle:expensive');
     });

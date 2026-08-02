@@ -6,6 +6,7 @@ use App\Exceptions\ActiveDiscoveryException;
 use App\Jobs\RunPipelineJob;
 use App\Models\DiscoveryRun;
 use App\Services\AiDiscoveryBriefService;
+use App\Services\ApiErrorResponseService;
 use App\Services\PipelineDiscoveryService;
 use App\Services\WorkspaceBillingService;
 use App\Services\WorkspaceContextService;
@@ -19,6 +20,7 @@ class PipelineController extends Controller
         private WorkspaceContextService $workspaceContext,
         private AiDiscoveryBriefService $briefs,
         private WorkspaceBillingService $billing,
+        private ApiErrorResponseService $errors,
     ) {}
 
     public function discover(Request $request)
@@ -383,13 +385,11 @@ class PipelineController extends Controller
 
                 return response()->json(array_merge($result, $extraResponse));
             } catch (\Throwable $e) {
-                return response()->json(array_merge([
-                    'message' => 'Pipeline failed',
+                return $this->errors->unexpected($e, $request, array_merge([
                     'status' => 'failed',
                     'jobId' => $state['jobId'],
                     'failedStep' => $this->pipeline->getJobState($state['jobId'])['failedStep'] ?? null,
-                    'error' => config('app.debug') ? $e->getMessage() : 'Pipeline failed. Please retry or contact support.',
-                ], $extraResponse), 500);
+                ], $extraResponse));
             }
         }
 
