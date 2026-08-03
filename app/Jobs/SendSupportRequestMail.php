@@ -32,13 +32,20 @@ class SendSupportRequestMail implements ShouldQueue
         }
 
         $supportRequest->increment('delivery_attempts');
-        $inbox = trim((string) config('support.inbox_email'));
-        if ($inbox === '') {
+        $recipients = collect([
+            trim((string) config('support.inbox_email')),
+            ...(array) config('support.operator_notification_emails', []),
+        ])->map(fn ($email) => strtolower(trim((string) $email)))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+        if ($recipients === []) {
             throw new RuntimeException('Support inbox is not configured.');
         }
 
         $workspaceName = (string) DB::table('workspaces')->where('id', $supportRequest->workspace_id)->value('name');
-        Mail::to($inbox)->send(new SupportRequestMail([
+        Mail::to($recipients)->send(new SupportRequestMail([
             'reference' => $supportRequest->reference,
             'category' => $supportRequest->category,
             'subject' => $supportRequest->subject,

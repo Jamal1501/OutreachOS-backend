@@ -4,6 +4,7 @@ namespace App\Mail;
 
 use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailable;
+use Illuminate\Mail\Mailables\Address;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
@@ -20,7 +21,14 @@ class SupportRequestMail extends Mailable
         $reference = str_replace(["\r", "\n"], '', (string) ($this->supportRequest['reference'] ?? 'SUPPORT'));
         $subject = str_replace(["\r", "\n"], '', (string) ($this->supportRequest['subject'] ?? 'Support request'));
 
-        return new Envelope(subject: "[{$reference}] Social CORE: {$subject}");
+        $replyTo = filter_var($this->supportRequest['email'] ?? null, FILTER_VALIDATE_EMAIL)
+            ? [new Address((string) $this->supportRequest['email'])]
+            : [];
+
+        return new Envelope(
+            replyTo: $replyTo,
+            subject: "[{$reference}] Social CORE: {$subject}",
+        );
     }
 
     public function content(): Content

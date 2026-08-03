@@ -29,6 +29,68 @@ class OperationsController extends Controller
         ]);
     }
 
+    public function access(): mixed
+    {
+        return response()->json([
+            'data' => ['allowed' => true],
+        ]);
+    }
+
+    public function overview(): mixed
+    {
+        $heartbeats = Schema::hasTable('operational_heartbeats')
+            ? DB::table('operational_heartbeats')
+                ->whereIn('name', ['scheduler', 'queue-worker'])
+                ->get(['name', 'last_seen_at', 'metadata'])
+                ->keyBy('name')
+            : collect();
+        $processes = collect(['scheduler', 'queue-worker'])->mapWithKeys(function (string $name) use ($heartbeats) {
+            $heartbeat = $heartbeats->get($name);
+            $lastSeenAt = $heartbeat?->last_seen_at;
+            $stale = ! $lastSeenAt || now()->diffInMinutes($lastSeenAt) > 3;
+            $metadata = $heartbeat && is_string($heartbeat->metadata)
+                ? (json_decode($heartbeat->metadata, true) ?: [])
+                : [];
+
+            return [$name => [
+                'status' => $stale ? 'stale' : (($metadata['state'] ?? null) === 'busy' ? 'busy' : 'healthy'),
+                'lastSeenAt' => $lastSeenAt,
+                'stage' => $metadata['stage'] ?? null,
+                'jobId' => $metadata['jobId'] ?? null,
+            ]];
+        })->all();
+
+        return response()->json([
+            'data' => [
+                'checkedAt' => now()->toIso8601String(),
+                'processes' => $processes,
+                'queue' => [
+                    'pending' => Schema::hasTable('jobs') ? DB::table('jobs')->count() : null,
+                    'failedLast24Hours' => Schema::hasTable('failed_jobs')
+                        ? DB::table('failed_jobs')->where('failed_at', '>=', now()->subDay())->count()
+                        : null,
+                ],
+                'support' => [
+                    'open' => Schema::hasTable('support_requests')
+                        ? SupportRequest::query()->where('ticket_status', 'open')->count()
+                        : 0,
+                    'inProgress' => Schema::hasTable('support_requests')
+                        ? SupportRequest::query()->where('ticket_status', 'in_progress')->count()
+                        : 0,
+                    'failedEmailDeliveries' => Schema::hasTable('support_requests')
+                        ? SupportRequest::query()->where('status', 'failed')->count()
+                        : 0,
+                ],
+                'customers' => [
+                    'users' => Schema::hasTable('users') ? DB::table('users')->count() : null,
+                    'workspaces' => Schema::hasTable('workspaces')
+                        ? DB::table('workspaces')->count()
+                        : null,
+                ],
+            ],
+        ]);
+    }
+
     public function updateProviderSpendControl(Request $request): mixed
     {
         $validated = $request->validate([

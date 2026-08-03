@@ -25,7 +25,10 @@ class SupportAndErrorReferenceTest extends TestCase
     public function test_support_request_is_delivered_with_a_reference_and_minimal_audit_record(): void
     {
         Mail::fake();
-        config(['support.inbox_email' => 'support@example.test']);
+        config([
+            'support.inbox_email' => 'support@example.test',
+            'support.operator_notification_emails' => ['operator@example.test'],
+        ]);
         [$user, $workspace] = $this->workspaceFixture();
         $request = Request::create('/api/support/requests', 'POST', [
             'category' => 'technical_problem',
@@ -41,7 +44,8 @@ class SupportAndErrorReferenceTest extends TestCase
 
         $this->assertSame(201, $response->getStatusCode());
         $this->assertMatchesRegularExpression('/^SUP-[A-Z0-9]{10}$/', $payload['data']['reference']);
-        Mail::assertSent(SupportRequestMail::class, fn (SupportRequestMail $mail) => $mail->hasTo('support@example.test'));
+        Mail::assertSent(SupportRequestMail::class, fn (SupportRequestMail $mail) => $mail->hasTo('support@example.test')
+            && $mail->hasTo('operator@example.test'));
         $this->assertDatabaseHas('support_requests', [
             'reference' => $payload['data']['reference'],
             'workspace_id' => $workspace->id,

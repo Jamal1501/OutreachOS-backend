@@ -43,6 +43,8 @@ Route::middleware(['api.auth', 'throttle:api'])->group(function () {
     Route::post('/workspaces/{workspaceId}/restore', [WorkspaceController::class, 'restoreWorkspace']);
     Route::get('/workspaces/deleted', [WorkspaceController::class, 'deletedWorkspaces']);
     Route::middleware('platform.operator')->group(function () {
+        Route::get('/operations/access', [OperationsController::class, 'access']);
+        Route::get('/operations/overview', [OperationsController::class, 'overview']);
         Route::get('/operations/provider-spend', [OperationsController::class, 'providerSpend']);
         Route::put('/operations/provider-spend/control', [OperationsController::class, 'updateProviderSpendControl']);
         Route::get('/operations/incident-banner', [OperationsController::class, 'incidentBanner']);
