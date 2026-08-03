@@ -169,7 +169,12 @@ class OperationsController extends Controller
             'severity' => ['required', 'string', Rule::in(['info', 'warning', 'critical'])],
             'message' => ['required', 'string', 'min:3', 'max:500'],
             'startsAt' => ['nullable', 'date'],
-            'expiresAt' => ['nullable', 'date', 'after:now'],
+            'expiresAt' => [
+                'nullable',
+                'date',
+                'after:now',
+                Rule::when($request->filled('startsAt'), ['after:startsAt']),
+            ],
         ]);
         $userId = (string) $request->attributes->get('supabase_user_id');
         DB::transaction(function () use ($validated, $userId) {

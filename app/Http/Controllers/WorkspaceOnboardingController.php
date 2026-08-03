@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\WorkspaceUserOnboardingState;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class WorkspaceOnboardingController extends Controller
@@ -50,37 +51,60 @@ class WorkspaceOnboardingController extends Controller
             'reset' => ['sometimes', 'boolean'],
         ]);
 
-        $state = WorkspaceUserOnboardingState::query()->firstOrNew([
-            'workspace_id' => $workspace->id,
-            'user_id' => $userId,
-        ]);
-        $state->version = 2;
+        $state = WorkspaceUserOnboardingState::query()
+            ->where('workspace_id', $workspace->id)
+            ->where('user_id', $userId)
+            ->first();
+        $dismissedRoutes = array_values((array) ($state?->dismissed_routes ?? []));
+        $hiddenAt = $state?->hidden_at;
+        $lastRoute = $state?->last_route;
+        $updateColumns = ['version', 'updated_at'];
 
         if ((bool) ($validated['reset'] ?? false)) {
-            $state->dismissed_routes = [];
-            $state->hidden_at = null;
-            $state->last_route = null;
+            $dismissedRoutes = [];
+            $hiddenAt = null;
+            $lastRoute = null;
+            array_push($updateColumns, 'dismissed_routes', 'hidden_at', 'last_route');
         } else {
             if (array_key_exists('dismissedRoutes', $validated)) {
-                $state->dismissed_routes = array_values(array_intersect(
+                $dismissedRoutes = array_values(array_intersect(
                     self::ROUTES,
                     array_map(fn ($route) => Str::start(trim((string) $route), '/'), $validated['dismissedRoutes'])
                 ));
+                $updateColumns[] = 'dismissed_routes';
             }
             if (array_key_exists('hidden', $validated)) {
-                $state->hidden_at = $validated['hidden'] ? now() : null;
+                $hiddenAt = $validated['hidden'] ? now() : null;
+                $updateColumns[] = 'hidden_at';
             }
             if (array_key_exists('lastRoute', $validated)) {
-                $lastRoute = Str::start(trim((string) ($validated['lastRoute'] ?? '')), '/');
-                $state->last_route = in_array($lastRoute, self::ROUTES, true) ? $lastRoute : null;
+                $requestedRoute = Str::start(trim((string) ($validated['lastRoute'] ?? '')), '/');
+                $lastRoute = in_array($requestedRoute, self::ROUTES, true) ? $requestedRoute : null;
+                $updateColumns[] = 'last_route';
             }
         }
 
-        $state->save();
+        $timestamp = now();
+        DB::table('workspace_user_onboarding_states')->upsert([[
+            'id' => $state?->id ?: (string) Str::uuid(),
+            'workspace_id' => $workspace->id,
+            'user_id' => $userId,
+            'version' => 2,
+            'dismissed_routes' => json_encode($dismissedRoutes),
+            'hidden_at' => $hiddenAt,
+            'last_route' => $lastRoute,
+            'created_at' => $state?->created_at ?: $timestamp,
+            'updated_at' => $timestamp,
+        ]], ['workspace_id', 'user_id'], array_values(array_unique($updateColumns)));
+
+        $state = WorkspaceUserOnboardingState::query()
+            ->where('workspace_id', $workspace->id)
+            ->where('user_id', $userId)
+            ->firstOrFail();
 
         return response()->json([
             'message' => 'Personal onboarding state updated',
-            'data' => $this->payload($state->fresh()),
+            'data' => $this->payload($state),
         ]);
     }
 

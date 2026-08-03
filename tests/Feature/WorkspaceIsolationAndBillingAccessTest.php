@@ -879,6 +879,36 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
         $this->assertSame(1, Workspace::query()->where('creation_request_id', $creationRequestId)->count());
     }
 
+    public function test_different_owners_can_reuse_the_same_workspace_creation_request_id(): void
+    {
+        DB::table('plans')->updateOrInsert(
+            ['id' => 'free'],
+            ['name' => 'Free', 'max_members' => 3, 'max_creators' => 100, 'features' => json_encode([]), 'created_at' => now(), 'updated_at' => now()]
+        );
+        $users = collect(['first', 'second'])->map(fn (string $label) => User::query()->create([
+            'supabase_user_id' => (string) Str::uuid(),
+            'name' => Str::headline($label).' Owner',
+            'email' => $label.'-owner@example.test',
+            'password' => 'password',
+        ]));
+        $creationRequestId = (string) Str::uuid();
+
+        foreach ($users as $index => $user) {
+            Workspace::query()->create([
+                'id' => (string) Str::uuid(),
+                'name' => 'Workspace '.($index + 1),
+                'slug' => 'request-scope-'.Str::lower(Str::random(10)),
+                'owner_id' => $user->supabase_user_id,
+                'plan_id' => 'free',
+                'creation_request_id' => $creationRequestId,
+                'settings' => [],
+            ]);
+        }
+
+        $this->assertSame(2, Workspace::query()->where('creation_request_id', $creationRequestId)->count());
+        $this->assertSame(2, Workspace::query()->whereIn('owner_id', $users->pluck('supabase_user_id'))->count());
+    }
+
     public function test_personal_onboarding_progress_is_saved_per_workspace_member(): void
     {
         [$user, $workspace] = $this->createWorkspaceForRole('member');
@@ -902,6 +932,20 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
             ->assertJsonPath('data.dismissedRoutes', ['/dashboard'])
             ->assertJsonPath('data.lastRoute', '/crm')
             ->assertJsonPath('data.version', 2);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->putJson('/api/workspaces/onboarding/personal', [
+                'lastRoute' => '/tasks',
+            ])
+            ->assertOk()
+            ->assertJsonPath('data.dismissedRoutes', ['/dashboard'])
+            ->assertJsonPath('data.lastRoute', '/tasks');
+
+        $this->assertSame(1, DB::table('workspace_user_onboarding_states')
+            ->where('workspace_id', $workspace->id)
+            ->where('user_id', $user->supabase_user_id)
+            ->count());
     }
 
     private function createWorkspaceForRole(string $role, int $maxMembers = 1): array

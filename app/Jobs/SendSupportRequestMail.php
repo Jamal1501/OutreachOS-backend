@@ -22,7 +22,10 @@ class SendSupportRequestMail implements ShouldQueue
 
     public array $backoff = [60, 300, 900];
 
-    public function __construct(public string $supportRequestId) {}
+    public function __construct(public string $supportRequestId)
+    {
+        $this->onQueue('notifications');
+    }
 
     public function handle(): void
     {

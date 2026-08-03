@@ -23,10 +23,11 @@ class BillingController extends Controller
     public function summary(Request $request)
     {
         $workspaceId = (string) $request->attributes->get('workspace_id');
+        $summary = $this->billing->summary($workspaceId);
 
         return response()->json([
             'message' => 'Billing summary fetched',
-            'data' => $this->billing->summary($workspaceId),
+            'data' => $this->scopeBillingSummary($request, $summary),
         ]);
     }
 
@@ -45,7 +46,9 @@ class BillingController extends Controller
         $workspaceId = (string) $request->attributes->get('workspace_id');
         $summary = $this->billing->summary($workspaceId);
         $billingAccountId = (string) data_get($summary, 'billingAccount.id', '');
-        $workspaceIds = $billingAccountId !== '' && Schema::hasTable('workspaces') && Schema::hasColumn('workspaces', 'billing_account_id')
+        $accountWide = $this->canViewBillingAccountWide($request, $billingAccountId);
+        $visibleBillingAccountId = $accountWide ? $billingAccountId : '';
+        $workspaceIds = $accountWide && $billingAccountId !== '' && Schema::hasTable('workspaces') && Schema::hasColumn('workspaces', 'billing_account_id')
             ? DB::table('workspaces')->where('billing_account_id', $billingAccountId)->pluck('id')->map(fn ($id) => (string) $id)->all()
             : [$workspaceId];
 
@@ -64,7 +67,7 @@ class BillingController extends Controller
 
         $recentUsage = Schema::hasTable('workspace_usage_events')
             ? DB::table('workspace_usage_events')
-                ->when($billingAccountId !== '' && Schema::hasColumn('workspace_usage_events', 'billing_account_id'), fn ($query) => $query->where('billing_account_id', $billingAccountId), fn ($query) => $query->whereIn('workspace_id', $workspaceIds))
+                ->when($visibleBillingAccountId !== '' && Schema::hasColumn('workspace_usage_events', 'billing_account_id'), fn ($query) => $query->where('billing_account_id', $visibleBillingAccountId), fn ($query) => $query->whereIn('workspace_id', $workspaceIds))
                 ->select(['id', 'workspace_id', 'type', 'credit_bucket', 'units', 'credit_cost', 'provider', 'source', 'status', 'reference_id', 'metadata', 'created_at', 'consumed_at', 'refunded_at'])
                 ->orderByDesc('created_at')
                 ->limit(25)
@@ -86,7 +89,7 @@ class BillingController extends Controller
 
         $recentPurchases = Schema::hasTable('credit_purchases')
             ? DB::table('credit_purchases')
-                ->when($billingAccountId !== '' && Schema::hasColumn('credit_purchases', 'billing_account_id'), fn ($query) => $query->where('billing_account_id', $billingAccountId), fn ($query) => $query->whereIn('workspace_id', $workspaceIds))
+                ->when($visibleBillingAccountId !== '' && Schema::hasColumn('credit_purchases', 'billing_account_id'), fn ($query) => $query->where('billing_account_id', $visibleBillingAccountId), fn ($query) => $query->whereIn('workspace_id', $workspaceIds))
                 ->select(['id', 'workspace_id', 'credit_package_id', 'stripe_payment_intent_id', 'scrape_credits_added', 'ai_credits_added', 'amount_paid_usd', 'created_at'])
                 ->orderByDesc('created_at')
                 ->limit(10)
@@ -109,15 +112,9 @@ class BillingController extends Controller
                 ->get()
             : collect();
 
-        $stripeWebhookEvents = Schema::hasTable('stripe_webhook_events')
-            ? DB::table('stripe_webhook_events')
-                ->select(['stripe_event_id', 'type', 'status', 'processed_at', 'last_error', 'created_at', 'updated_at'])
-                ->orderByDesc('created_at')
-                ->limit(20)
-                ->get()
-            : collect();
-
-        $failedWebhookCount = $stripeWebhookEvents->where('status', 'failed')->count();
+        // Stripe webhook rows are platform-level operational data and are not
+        // linked to a billing account. Keep them out of customer billing QA.
+        $stripeWebhookEvents = collect();
         $reservedUsageCount = $recentUsage
             ->where('status', 'reserved')
             ->filter(fn ($event) => $event->created_at && now()->parse($event->created_at)->lt(now()->subHour()))
@@ -138,11 +135,10 @@ class BillingController extends Controller
                     ['key' => 'stripe_customer_linked', 'ok' => trim((string) ($subscription->stripe_customer_id ?? '')) !== '' || data_get($summary, 'currentPlanId') === 'free', 'detail' => trim((string) ($subscription->stripe_customer_id ?? '')) !== '' ? 'Stripe customer linked.' : 'Free plan may not have a Stripe customer yet.'],
                     ['key' => 'stripe_subscription_linked', 'ok' => trim((string) ($subscription->stripe_subscription_id ?? '')) !== '' || data_get($summary, 'currentPlanId') === 'free', 'detail' => trim((string) ($subscription->stripe_subscription_id ?? '')) !== '' ? 'Stripe subscription linked.' : 'Free plan may not have a Stripe subscription.'],
                     ['key' => 'wallet_non_negative', 'ok' => $wallet !== null && min((int) ($wallet->scrape_credits_balance ?? 0), (int) ($wallet->ai_credits_balance ?? 0), (int) ($wallet->bonus_scrape_credits ?? 0), (int) ($wallet->bonus_ai_credits ?? 0)) >= 0, 'detail' => 'Wallet balances are unsigned in schema, but this verifies the current snapshot.'],
-                    ['key' => 'no_failed_stripe_webhooks_recent', 'ok' => $failedWebhookCount === 0, 'detail' => $failedWebhookCount.' failed Stripe webhook events in the latest 20.'],
                     ['key' => 'no_stale_reserved_usage_recent', 'ok' => $reservedUsageCount === 0, 'detail' => $reservedUsageCount.' credit reservations older than one hour in the latest 25 events.'],
                     ['key' => 'billing_audit_visible', 'ok' => $recentAuditEvents->isNotEmpty(), 'detail' => $recentAuditEvents->count().' recent billing audit events found.'],
                 ],
-                'summary' => $summary,
+                'summary' => $this->scopeBillingSummary($request, $summary),
                 'recentUsageEvents' => $recentUsage,
                 'recentCreditPurchases' => $recentPurchases,
                 'recentBillingAuditEvents' => $recentAuditEvents,
@@ -193,17 +189,18 @@ class BillingController extends Controller
             }
             fputcsv($output, ['Date', 'Workspace', 'Activity', 'Status', 'Credits', 'Credit type', 'Reference']);
             foreach ($this->billingActivityQuery($billingAccountId, $workspaceIds)
+                ->select($this->billingActivityColumns())
                 ->orderByDesc('usage.created_at')
-                ->cursor($this->billingActivityColumns()) as $event) {
+                ->cursor() as $event) {
                 $presented = $this->presentUsageEvent($event);
                 fputcsv($output, [
                     $event->consumed_at ?: ($event->refunded_at ?: $event->created_at),
-                    $event->workspace_name ?: 'Workspace',
-                    $presented->description,
+                    $this->sanitizeCsvText($event->workspace_name ?: 'Workspace'),
+                    $this->sanitizeCsvText($presented->description),
                     $event->status,
                     (int) $event->credit_cost,
                     $event->credit_bucket === 'ai' ? 'AI' : 'Workflow',
-                    $event->reference_id,
+                    $this->sanitizeCsvText($event->reference_id),
                 ]);
             }
             fclose($output);
@@ -351,11 +348,56 @@ class BillingController extends Controller
         $workspaceId = (string) $request->attributes->get('workspace_id');
         $summary = $this->billing->summary($workspaceId);
         $billingAccountId = (string) data_get($summary, 'billingAccount.id', '');
-        $workspaceIds = $billingAccountId !== '' && Schema::hasColumn('workspaces', 'billing_account_id')
+        $accountWide = $this->canViewBillingAccountWide($request, $billingAccountId);
+        $workspaceIds = $accountWide && $billingAccountId !== '' && Schema::hasColumn('workspaces', 'billing_account_id')
             ? DB::table('workspaces')->where('billing_account_id', $billingAccountId)->pluck('id')->map(fn ($id) => (string) $id)->all()
             : [$workspaceId];
 
-        return [$billingAccountId, $workspaceIds];
+        return [$accountWide ? $billingAccountId : '', $workspaceIds];
+    }
+
+    private function canViewBillingAccountWide(Request $request, string $billingAccountId): bool
+    {
+        if ($billingAccountId === '' || strtolower((string) $request->attributes->get('workspace_role')) !== 'owner') {
+            return false;
+        }
+
+        $userId = trim((string) $request->attributes->get('supabase_user_id'));
+
+        return $userId !== ''
+            && Schema::hasTable('billing_accounts')
+            && DB::table('billing_accounts')
+                ->where('id', $billingAccountId)
+                ->where('owner_user_id', $userId)
+                ->exists();
+    }
+
+    private function scopeBillingSummary(Request $request, array $summary): array
+    {
+        $billingAccountId = (string) data_get($summary, 'billingAccount.id', '');
+        if ($this->canViewBillingAccountWide($request, $billingAccountId)) {
+            return $summary;
+        }
+
+        $workspaceId = (string) $request->attributes->get('workspace_id');
+        $activeWorkspaceUsage = (array) ($summary['activeWorkspaceUsage'] ?? []);
+        $summary['usage'] = array_merge($activeWorkspaceUsage, ['scope' => 'active_workspace']);
+        $summary['workspaceBreakdown'] = array_values(array_filter(
+            (array) ($summary['workspaceBreakdown'] ?? []),
+            fn ($workspace) => (string) data_get($workspace, 'workspaceId', data_get($workspace, 'workspace_id', '')) === $workspaceId,
+        ));
+
+        return $summary;
+    }
+
+    private function sanitizeCsvText(mixed $value): string
+    {
+        $text = (string) ($value ?? '');
+        if ($text !== '' && in_array($text[0], ['=', '+', '-', '@', "\t", "\r"], true)) {
+            return "'".$text;
+        }
+
+        return $text;
     }
 
     private function billingActivityQuery(string $billingAccountId, array $workspaceIds)

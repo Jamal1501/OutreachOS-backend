@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Exceptions\InsufficientCreditsException;
 use App\Http\Controllers\OperationsController;
 use App\Http\Controllers\SupportController;
+use App\Jobs\SendSupportRequestMail;
 use App\Mail\SupportRequestMail;
 use App\Models\SupportRequest;
 use App\Models\User;
@@ -13,8 +14,10 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use RuntimeException;
 use Tests\TestCase;
 
@@ -60,6 +63,26 @@ class SupportAndErrorReferenceTest extends TestCase
         ]);
     }
 
+    public function test_support_email_is_dispatched_to_the_priority_notifications_queue(): void
+    {
+        Queue::fake();
+        [$user, $workspace] = $this->workspaceFixture();
+        $request = Request::create('/api/support/requests', 'POST', [
+            'category' => 'technical_problem',
+            'subject' => 'Notification queue check',
+            'message' => 'This request should not wait behind a long discovery job.',
+        ]);
+        $request->attributes->set('workspace_id', $workspace->id);
+        $request->attributes->set('supabase_user_id', $user->supabase_user_id);
+
+        app(SupportController::class)->store($request);
+
+        Queue::assertPushed(
+            SendSupportRequestMail::class,
+            fn (SendSupportRequestMail $job) => $job->queue === 'notifications',
+        );
+    }
+
     public function test_incident_banner_is_only_visible_when_enabled_with_a_message(): void
     {
         config([
@@ -93,6 +116,25 @@ class SupportAndErrorReferenceTest extends TestCase
 
         $this->assertFalse($payload['data']['enabled']);
         $this->assertNull($payload['data']['message']);
+    }
+
+    public function test_incident_banner_expiry_must_be_after_its_future_start(): void
+    {
+        $request = Request::create('/api/operations/incident-banner', 'PUT', [
+            'enabled' => true,
+            'severity' => 'warning',
+            'message' => 'Scheduled maintenance.',
+            'startsAt' => now()->addHours(2)->toIso8601String(),
+            'expiresAt' => now()->addHour()->toIso8601String(),
+        ]);
+        $request->attributes->set('supabase_user_id', 'operator-user');
+
+        try {
+            app(OperationsController::class)->updateIncidentBanner($request);
+            $this->fail('Expected incident scheduling validation to fail.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('expiresAt', $exception->errors());
+        }
     }
 
     public function test_operator_can_list_and_resolve_persisted_support_requests(): void
