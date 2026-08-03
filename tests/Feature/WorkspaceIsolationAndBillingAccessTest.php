@@ -705,6 +705,75 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
             ]);
     }
 
+    public function test_archived_workspace_is_inaccessible_until_it_is_restored(): void
+    {
+        [$owner, $primaryWorkspace] = $this->createWorkspaceForRole('owner');
+        [, , , $billingAccount] = app(WorkspaceBillingService::class)->ensureWorkspaceBilling($primaryWorkspace->id);
+        $secondaryWorkspace = Workspace::query()->create([
+            'id' => (string) Str::uuid(),
+            'name' => 'Archived Client',
+            'slug' => 'archived-client-'.Str::lower(Str::random(8)),
+            'owner_id' => $owner->supabase_user_id,
+            'billing_account_id' => $billingAccount->id,
+            'plan_id' => 'free',
+            'settings' => ['workspaceDataKey' => 'workspace:archived-client'],
+        ]);
+        WorkspaceMember::query()->create([
+            'id' => (string) Str::uuid(),
+            'workspace_id' => $secondaryWorkspace->id,
+            'user_id' => $owner->supabase_user_id,
+            'role' => 'owner',
+            'joined_at' => now(),
+        ]);
+        $this->fakeSupabaseUser($owner);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $secondaryWorkspace->id)
+            ->getJson('/api/auth-check')
+            ->assertOk();
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $primaryWorkspace->id)
+            ->postJson('/api/workspaces/'.$secondaryWorkspace->id.'/archive')
+            ->assertOk();
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $secondaryWorkspace->id)
+            ->getJson('/api/auth-check')
+            ->assertStatus(423)
+            ->assertJsonPath('error', 'workspace_archived');
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $secondaryWorkspace->id)
+            ->getJson('/api/workspaces/bootstrap')
+            ->assertStatus(423)
+            ->assertJsonPath('error', 'workspace_archived');
+
+        $this->withToken('valid-token')
+            ->postJson('/api/workspaces/'.$secondaryWorkspace->id.'/restore')
+            ->assertOk()
+            ->assertJsonPath('data.workspace.id', $secondaryWorkspace->id);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $secondaryWorkspace->id)
+            ->getJson('/api/auth-check')
+            ->assertOk();
+    }
+
+    public function test_last_active_workspace_cannot_be_archived(): void
+    {
+        [$owner, $workspace] = $this->createWorkspaceForRole('owner');
+        $this->fakeSupabaseUser($owner);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/workspaces/'.$workspace->id.'/archive')
+            ->assertConflict()
+            ->assertJsonPath('error', 'last_active_workspace');
+
+        $this->assertFalse((bool) data_get($workspace->fresh()->settings, 'archivedAt'));
+    }
+
     public function test_unverified_email_is_rejected_when_verification_is_required(): void
     {
         [$user] = $this->createWorkspaceForRole('owner');

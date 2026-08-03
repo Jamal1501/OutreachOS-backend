@@ -33,6 +33,23 @@ class WorkspaceController extends Controller
             ?: $request->query('workspaceId')
         ));
 
+        if ($requestedWorkspaceId !== '') {
+            $requestedMembership = WorkspaceMember::query()
+                ->where('user_id', $supabaseUserId)
+                ->where('workspace_id', $requestedWorkspaceId)
+                ->first();
+            $requestedWorkspace = $requestedMembership
+                ? Workspace::query()->find($requestedWorkspaceId)
+                : null;
+
+            if ($requestedWorkspace && ! $this->workspaceIsDeleted($requestedWorkspace) && $this->workspaceIsArchived($requestedWorkspace)) {
+                return response()->json([
+                    'error' => 'workspace_archived',
+                    'message' => 'This workspace is archived. Restore it from Workspace Management before using it.',
+                ], 423);
+            }
+        }
+
         $memberships = WorkspaceMember::query()
             ->where('user_id', $supabaseUserId)
             ->orderBy('joined_at')
@@ -40,7 +57,9 @@ class WorkspaceController extends Controller
             ->filter(function (WorkspaceMember $membership) {
                 $candidate = Workspace::query()->find($membership->workspace_id);
 
-                return $candidate && ! $this->workspaceIsDeleted($candidate);
+                return $candidate
+                    && ! $this->workspaceIsDeleted($candidate)
+                    && ! $this->workspaceIsArchived($candidate);
             })
             ->values();
 
@@ -597,7 +616,26 @@ class WorkspaceController extends Controller
         $workspace->save();
         $this->dataLifecycle->cancelWorkspaceDeletion($workspaceId);
 
-        return response()->json(['message' => 'Workspace deletion canceled.']);
+        $affectedUserIds = WorkspaceMember::query()
+            ->where('workspace_id', $workspaceId)
+            ->pluck('user_id')
+            ->map(fn ($id) => (string) $id)
+            ->all();
+        $this->clearWorkspaceContextCache($workspaceId, $affectedUserIds);
+
+        $membership = WorkspaceMember::query()
+            ->where('workspace_id', $workspaceId)
+            ->where('user_id', $actorUserId)
+            ->first();
+
+        $this->logWorkspaceAudit($workspaceId, $actorUserId, 'workspace_restored', 'workspace', $workspaceId, [
+            'name' => $workspace->name,
+        ]);
+
+        return response()->json([
+            'message' => 'Workspace restored',
+            'data' => $this->workspacePayload($workspace->fresh(), $membership),
+        ]);
     }
 
     public function deletedWorkspaces(Request $request)
@@ -665,11 +703,7 @@ class WorkspaceController extends Controller
             ->map(fn ($id) => (string) $id)
             ->all();
 
-        Cache::forget(sprintf('workspace-context:workspace:%s', $targetWorkspace->id));
-        foreach ($affectedUserIds as $userId) {
-            Cache::forget(sprintf('workspace-context:user-memberships:%s', $userId));
-            Cache::forget(sprintf('workspace-context:membership:%s:%s', $targetWorkspace->id, $userId));
-        }
+        $this->clearWorkspaceContextCache((string) $targetWorkspace->id, $affectedUserIds);
 
         $this->logWorkspaceAudit($targetWorkspace->id, $currentMembership->user_id, 'workspace_deleted', 'workspace', $targetWorkspace->id, [
             'name' => $targetWorkspace->name,
@@ -683,7 +717,7 @@ class WorkspaceController extends Controller
                 ->filter(function ($row) {
                     $settings = is_string($row->settings ?? null) ? (json_decode($row->settings, true) ?: []) : ((array) ($row->settings ?? []));
 
-                    return empty($settings['deletedAt']);
+                    return empty($settings['deletedAt']) && empty($settings['archivedAt']);
                 })
                 ->map(fn ($row) => (string) $row->id)
                 ->all()
@@ -958,6 +992,19 @@ class WorkspaceController extends Controller
 
         $settings = (array) ($targetWorkspace->settings ?? []);
         if ($archived) {
+            $activeWorkspaceCount = Workspace::query()
+                ->whereIn('id', $allowedWorkspaceIds)
+                ->get()
+                ->filter(fn (Workspace $candidate) => ! $this->workspaceIsDeleted($candidate) && ! $this->workspaceIsArchived($candidate))
+                ->count();
+
+            if (empty($settings['archivedAt']) && $activeWorkspaceCount <= 1) {
+                return response()->json([
+                    'error' => 'last_active_workspace',
+                    'message' => 'Create another active workspace before archiving this one.',
+                ], 409);
+            }
+
             $settings['archivedAt'] = now()->toIso8601String();
             $settings['archivedBy'] = $currentMembership->user_id;
         } else {
@@ -966,7 +1013,12 @@ class WorkspaceController extends Controller
 
         $targetWorkspace->settings = $settings;
         $targetWorkspace->save();
-        Cache::forget(sprintf('workspace-context:workspace:%s', $targetWorkspace->id));
+        $affectedUserIds = WorkspaceMember::query()
+            ->where('workspace_id', $targetWorkspace->id)
+            ->pluck('user_id')
+            ->map(fn ($id) => (string) $id)
+            ->all();
+        $this->clearWorkspaceContextCache((string) $targetWorkspace->id, $affectedUserIds);
 
         $this->logWorkspaceAudit($targetWorkspace->id, $currentMembership->user_id, $archived ? 'workspace_archived' : 'workspace_restored', 'workspace', $targetWorkspace->id, [
             'name' => $targetWorkspace->name,
@@ -1007,6 +1059,23 @@ class WorkspaceController extends Controller
         $settings = (array) ($workspace->settings ?? []);
 
         return ! empty($settings['deletedAt']);
+    }
+
+    private function workspaceIsArchived(Workspace $workspace): bool
+    {
+        $settings = (array) ($workspace->settings ?? []);
+
+        return ! empty($settings['archivedAt']);
+    }
+
+    /** @param array<int, string> $userIds */
+    private function clearWorkspaceContextCache(string $workspaceId, array $userIds): void
+    {
+        Cache::forget(sprintf('workspace-context:workspace:%s', $workspaceId));
+        foreach (array_unique($userIds) as $userId) {
+            Cache::forget(sprintf('workspace-context:user-memberships:%s', $userId));
+            Cache::forget(sprintf('workspace-context:membership:%s:%s', $workspaceId, $userId));
+        }
     }
 
     private function authorizedWorkspaceIdsForAccount(Workspace $workspace, array $requestedWorkspaceIds): array

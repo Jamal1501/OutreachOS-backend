@@ -69,6 +69,13 @@ class ResolveWorkspaceContext
             ], 404);
         }
 
+        if (! empty($settings['archivedAt'])) {
+            return response()->json([
+                'error' => 'workspace_archived',
+                'message' => 'This workspace is archived. Restore it from Workspace Management before using it.',
+            ], 423);
+        }
+
         $membership = null;
         if ($supabaseUserId !== '') {
             $membership = Cache::remember(
