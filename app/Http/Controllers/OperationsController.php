@@ -47,7 +47,7 @@ class OperationsController extends Controller
         $processes = collect(['scheduler', 'queue-worker'])->mapWithKeys(function (string $name) use ($heartbeats) {
             $heartbeat = $heartbeats->get($name);
             $lastSeenAt = $heartbeat?->last_seen_at;
-            $stale = ! $lastSeenAt || now()->diffInMinutes($lastSeenAt) > 3;
+            $stale = ! $lastSeenAt || CarbonImmutable::parse($lastSeenAt)->lt(now()->subMinutes(3));
             $metadata = $heartbeat && is_string($heartbeat->metadata)
                 ? (json_decode($heartbeat->metadata, true) ?: [])
                 : [];

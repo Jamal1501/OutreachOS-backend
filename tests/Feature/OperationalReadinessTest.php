@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Http\Controllers\OperationsController;
 use App\Mail\OperationalAlertMail;
 use App\Services\ObservabilityService;
 use App\Services\OperationalHeartbeatService;
@@ -40,6 +41,36 @@ class OperationalReadinessTest extends TestCase
             ->assertOk()
             ->assertJsonPath('status', 'ok')
             ->assertJsonMissingPath('checks');
+    }
+
+    public function test_persisted_old_heartbeats_are_reported_as_stale(): void
+    {
+        foreach (['scheduler', 'queue-worker'] as $name) {
+            DB::table('operational_heartbeats')->insert([
+                'name' => $name,
+                'last_seen_at' => now()->subMinutes(4),
+                'metadata' => json_encode(['state' => 'idle', 'test' => true]),
+                'created_at' => now()->subMinutes(4),
+                'updated_at' => now()->subMinutes(4),
+            ]);
+        }
+        config(['observability.health.details_token' => self::DETAILS_TOKEN]);
+
+        $this->getJson('/api/health/operational')
+            ->assertServiceUnavailable()
+            ->assertJsonPath('status', 'degraded');
+
+        $this->withToken(self::DETAILS_TOKEN)
+            ->getJson('/api/health/operational/details')
+            ->assertServiceUnavailable()
+            ->assertJsonPath('checks.processes.status', 'degraded')
+            ->assertJsonPath('checks.processes.staleProcesses', ['scheduler', 'queue-worker'])
+            ->assertJsonPath('checks.processes.processes.scheduler.status', 'stale')
+            ->assertJsonPath('checks.processes.processes.queue-worker.status', 'stale');
+
+        $operatorOverview = app(OperationsController::class)->overview()->getData(true);
+        $this->assertSame('stale', $operatorOverview['data']['processes']['scheduler']['status']);
+        $this->assertSame('stale', $operatorOverview['data']['processes']['queue-worker']['status']);
     }
 
     public function test_alerts_can_be_delivered_by_email_without_a_webhook(): void

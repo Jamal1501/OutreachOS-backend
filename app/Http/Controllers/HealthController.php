@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -160,7 +161,7 @@ class HealthController extends Controller
         $stale = collect(['scheduler', 'queue-worker'])->filter(function (string $name) use ($heartbeats) {
             $lastSeen = $heartbeats->get($name)?->last_seen_at;
 
-            return ! $lastSeen || now()->diffInMinutes($lastSeen) > 3;
+            return ! $lastSeen || CarbonImmutable::parse($lastSeen)->lt(now()->subMinutes(3));
         })->values()->all();
         $processes = collect(['scheduler', 'queue-worker'])->mapWithKeys(function (string $name) use ($heartbeats, $stale) {
             $heartbeat = $heartbeats->get($name);
