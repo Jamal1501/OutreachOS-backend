@@ -100,6 +100,8 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::post('/crm/infer-locations', [SheetDataController::class, 'inferCreatorLocations'])->middleware('throttle:expensive');
     Route::post('/crm/import/creators/preview', [CrmImportController::class, 'previewCreators'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);
     Route::post('/crm/import/creators', [CrmImportController::class, 'importCreators'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);
+    Route::post('/crm/import/conversations/preview', [CrmImportController::class, 'previewConversations'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);
+    Route::post('/crm/import/conversations', [CrmImportController::class, 'importConversations'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);
     Route::get('/crm/import/batches', [CrmImportController::class, 'listBatches'])->middleware('workspace.role:owner,admin');
     Route::post('/crm/import/batches/{batchId}/activate', [CrmImportController::class, 'activateBatch'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);
     Route::post('/crm/import/batches/{batchId}/resume-held', [CrmImportController::class, 'resumeHeldBatch'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);

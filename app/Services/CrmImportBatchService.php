@@ -127,6 +127,10 @@ class CrmImportBatchService
             Task::query()->where('import_batch_id', $batch->id)->delete();
 
             foreach ($items->reverse() as $item) {
+                if ($item->action === 'history_only') {
+                    continue;
+                }
+
                 $profile = $item->creator_profile_id ? CreatorProfile::query()->find($item->creator_profile_id) : null;
                 $creator = $item->creator_id ? Creator::query()->find($item->creator_id) : null;
 

@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Exceptions\CrmImportValidationException;
 use App\Models\CrmImportBatch;
 use App\Models\WorkspaceMember;
+use App\Services\CrmConversationImportService;
 use App\Services\CrmFileImportService;
 use App\Services\CrmImportBatchService;
 use App\Services\ProjectResolverService;
@@ -18,6 +19,7 @@ class CrmImportController extends Controller
     public function __construct(
         private WorkspaceContextService $workspaceContext,
         private CrmFileImportService $importer,
+        private CrmConversationImportService $conversationImporter,
         private TaskQueueService $taskQueue,
         private CrmImportBatchService $batches,
         private ProjectResolverService $projects,
@@ -101,6 +103,58 @@ class CrmImportController extends Controller
 
         return response()->json([
             'message' => 'CRM creators imported',
+            'summary' => $summary,
+        ]);
+    }
+
+    public function previewConversations(Request $request)
+    {
+        $validated = $request->validate([
+            'file' => ['required', 'file', 'mimes:csv,txt', 'max:10240'],
+            'mapping' => ['nullable'],
+        ]);
+
+        try {
+            $preview = $this->conversationImporter->preview(
+                $request->file('file'),
+                $this->arrayInput($validated['mapping'] ?? []),
+            );
+        } catch (CrmImportValidationException $exception) {
+            return $this->invalidFileResponse($exception);
+        }
+
+        return response()->json([
+            'message' => 'Conversation history preview generated',
+            'preview' => $preview,
+        ]);
+    }
+
+    public function importConversations(Request $request)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+            'file' => ['required', 'file', 'mimes:csv,txt', 'max:10240'],
+            'mapping' => ['nullable'],
+            'defaultPlatform' => ['nullable', 'string', Rule::in(['instagram', 'tiktok', 'email'])],
+        ]);
+
+        $workbookId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
+        try {
+            $summary = $this->conversationImporter->import(
+                $workbookId,
+                $request->file('file'),
+                $this->arrayInput($validated['mapping'] ?? []),
+                [
+                    'defaultPlatform' => $validated['defaultPlatform'] ?? null,
+                    'createdByUserId' => (string) $request->attributes->get('supabase_user_id'),
+                ],
+            );
+        } catch (CrmImportValidationException $exception) {
+            return $this->invalidFileResponse($exception);
+        }
+
+        return response()->json([
+            'message' => 'Conversation history imported',
             'summary' => $summary,
         ]);
     }
