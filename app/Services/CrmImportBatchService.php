@@ -6,8 +6,10 @@ use App\Models\Creator;
 use App\Models\CreatorProfile;
 use App\Models\CreatorRelationshipEvent;
 use App\Models\CrmImportBatch;
+use App\Models\MessageTemplate;
 use App\Models\OutreachEvent;
 use App\Models\Task;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
@@ -17,11 +19,16 @@ class CrmImportBatchService
         private TaskQueueService $taskQueue,
     ) {}
 
-    public function list(string $workspaceId, int $projectId): array
+    public function list(string $workspaceId, int $projectId, ?string $importType = null): array
     {
-        return CrmImportBatch::query()
+        $query = CrmImportBatch::query()
             ->where('workspace_id', $workspaceId)
-            ->where('project_id', $projectId)
+            ->where('project_id', $projectId);
+        if ($importType !== null) {
+            $query->where('settings->importType', $importType);
+        }
+
+        return $query
             ->latest()
             ->limit(20)
             ->get()
@@ -103,11 +110,14 @@ class CrmImportBatchService
         $items = $batch->items()->oldest()->get();
         $profileIds = $items->pluck('creator_profile_id')->filter()->map(fn ($id) => (string) $id)->values()->all();
         $this->assertRollbackIsSafe($batch, $profileIds);
+        $this->assertTemplateRollbackIsSafe($items);
 
         $restored = 0;
         $removed = 0;
+        $templatesRestored = 0;
+        $templatesRemoved = 0;
 
-        DB::transaction(function () use ($batch, $items, $profileIds, &$restored, &$removed): void {
+        DB::transaction(function () use ($batch, $items, $profileIds, &$restored, &$removed, &$templatesRestored, &$templatesRemoved): void {
             $batchTaskIds = Task::query()->where('import_batch_id', $batch->id)->pluck('id')->all();
             $importedEvents = OutreachEvent::query()
                 ->whereIn('creator_profile_id', $profileIds)
@@ -127,6 +137,21 @@ class CrmImportBatchService
             Task::query()->where('import_batch_id', $batch->id)->delete();
 
             foreach ($items->reverse() as $item) {
+                if (in_array($item->action, ['template_created', 'template_updated'], true)) {
+                    $template = $item->message_template_id ? MessageTemplate::query()->find($item->message_template_id) : null;
+                    if ($item->action === 'template_created') {
+                        if ($template) {
+                            $template->delete();
+                            $templatesRemoved++;
+                        }
+                    } elseif ($template && is_array($item->template_before)) {
+                        $template->forceFill($item->template_before)->save();
+                        $templatesRestored++;
+                    }
+
+                    continue;
+                }
+
                 if ($item->action === 'history_only') {
                     continue;
                 }
@@ -168,6 +193,8 @@ class CrmImportBatchService
             'batch' => $this->toArray($batch->fresh()),
             'restored' => $restored,
             'removed' => $removed,
+            'templatesRestored' => $templatesRestored,
+            'templatesRemoved' => $templatesRemoved,
         ];
     }
 
@@ -280,5 +307,32 @@ class CrmImportBatchService
         if ($hasNewActivity) {
             throw new RuntimeException('This import can no longer be rolled back because new outreach activity has been recorded.');
         }
+    }
+
+    private function assertTemplateRollbackIsSafe(Collection $items): void
+    {
+        foreach ($items->whereIn('action', ['template_created', 'template_updated']) as $item) {
+            $template = $item->message_template_id ? MessageTemplate::query()->find($item->message_template_id) : null;
+            if (! $template) {
+                continue;
+            }
+            if ($template->tasks()->exists() || $template->outreachEvents()->exists()) {
+                throw new RuntimeException('This template import can no longer be rolled back because an imported template is already in use.');
+            }
+            if (is_array($item->template_after) && ! $this->templateMatchesSnapshot($template, $item->template_after)) {
+                throw new RuntimeException('This template import can no longer be rolled back because an imported template was edited afterward.');
+            }
+        }
+    }
+
+    private function templateMatchesSnapshot(MessageTemplate $template, array $snapshot): bool
+    {
+        foreach (['angle_id', 'platform', 'niche', 'stage', 'copy', 'notes', 'psychological_trigger'] as $field) {
+            if (($template->{$field} ?? null) !== ($snapshot[$field] ?? null)) {
+                return false;
+            }
+        }
+
+        return (array) ($template->metadata ?? []) == (array) ($snapshot['metadata'] ?? []);
     }
 }

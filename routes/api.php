@@ -9,6 +9,7 @@ use App\Http\Controllers\CspReportController;
 use App\Http\Controllers\DuplicateLinkController;
 use App\Http\Controllers\HealthController;
 use App\Http\Controllers\MessagePerformanceController;
+use App\Http\Controllers\MessageTemplateImportController;
 use App\Http\Controllers\OperationsController;
 use App\Http\Controllers\PipelineController;
 use App\Http\Controllers\SheetDataController;
@@ -125,6 +126,10 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
 
     Route::get('/messages/list', [SheetDataController::class, 'messagesList']);
     Route::get('/messages/performance', [MessagePerformanceController::class, 'index']);
+    Route::post('/messages/import/preview', [MessageTemplateImportController::class, 'preview'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);
+    Route::post('/messages/import', [MessageTemplateImportController::class, 'import'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);
+    Route::get('/messages/import/batches', [MessageTemplateImportController::class, 'index'])->middleware('workspace.role:owner,admin');
+    Route::post('/messages/import/batches/{batchId}/rollback', [MessageTemplateImportController::class, 'rollback'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);
     Route::post('/messages/create', [SheetDataController::class, 'createMessage']);
     Route::put('/messages/{id}', [SheetDataController::class, 'updateMessage']);
     Route::delete('/messages/{id}', [SheetDataController::class, 'deleteMessage'])->middleware('workspace.role:owner,admin');

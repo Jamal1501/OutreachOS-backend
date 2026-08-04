@@ -18,9 +18,12 @@ class CrmImportBatchItem extends Model
         'batch_id',
         'creator_id',
         'creator_profile_id',
+        'message_template_id',
         'action',
         'creator_before',
         'profile_before',
+        'template_before',
+        'template_after',
     ];
 
     protected function casts(): array
@@ -28,6 +31,8 @@ class CrmImportBatchItem extends Model
         return [
             'creator_before' => 'array',
             'profile_before' => 'array',
+            'template_before' => 'array',
+            'template_after' => 'array',
         ];
     }
 
