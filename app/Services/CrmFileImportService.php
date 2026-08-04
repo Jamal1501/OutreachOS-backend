@@ -2,8 +2,10 @@
 
 namespace App\Services;
 
+use App\Exceptions\CrmImportValidationException;
 use App\Models\Creator;
 use App\Models\CreatorProfile;
+use Carbon\Carbon;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -12,8 +14,8 @@ use RuntimeException;
 class CrmFileImportService
 {
     private const FIELD_ALIASES = [
-        'platform' => ['platform', 'social_platform', 'channel', 'network'],
-        'handle' => ['handle', 'username', 'user_name', 'creator_username', 'creator_handle', 'creator', 'profile', 'account'],
+        'platform' => ['platform', 'social_platform', 'channel', 'network', 'social_network'],
+        'handle' => ['handle', 'username', 'user_name', 'creator_username', 'creator_handle', 'creator', 'profile', 'account', 'ig_account', 'instagram_handle', 'tiktok_handle'],
         'name' => ['name', 'full_name', 'creator_name', 'display_name'],
         'email' => ['contact_email', 'email', 'creator_email', 'business_email', 'mail'],
         'followers' => ['followers', 'followers_count', 'follower_count', 'audience_size'],
@@ -26,12 +28,17 @@ class CrmFileImportService
         'city' => ['city', 'creator_city'],
         'language' => ['primary_language', 'language'],
         'notes' => ['notes', 'comment', 'comments'],
-        'profile_url' => ['profile_url', 'url', 'dm_link', 'dm_url', 'link'],
+        'profile_url' => ['profile_url', 'profile_link', 'social_url', 'instagram_url', 'tiktok_url', 'url', 'dm_link', 'dm_url', 'link'],
         'avatar_url' => ['profile_pic_url', 'avatar_url', 'profile_picture'],
         'preferred_channel' => ['preferred_channel', 'preferred_contact_channel'],
         'duplicate_flag' => ['duplicate_flag', 'duplicate'],
         'accepted' => ['accepted_(y/n)', 'accepted', 'accepted_flag'],
         'follow_up_needed' => ['follow_up_needed_(y/n)', 'follow_up_needed'],
+        'last_contacted_at' => ['last_contacted_at', 'last_contacted', 'contacted_at', 'last_outreach_at', 'last_message_at'],
+        'last_reply_at' => ['last_reply_at', 'last_reply', 'replied_at', 'responded_at', 'response_date'],
+        'next_follow_up_at' => ['next_follow_up_at', 'next_follow_up', 'follow_up_due_at', 'follow_up_date', 'next_action_at'],
+        'conversation_url' => ['conversation_url', 'thread_url', 'message_thread_url', 'conversation_link'],
+        'outreach_channel' => ['outreach_channel', 'conversation_channel', 'contact_channel', 'existing_outreach_channel'],
     ];
 
     public function __construct(
@@ -53,25 +60,45 @@ class CrmFileImportService
         ];
     }
 
-    public function importCreatorsCsv(string $workbookId, UploadedFile $file, array $mapping = []): array
+    public function importCreatorsCsv(string $workbookId, UploadedFile $file, array $mapping = [], array $options = []): array
     {
         $project = $this->projects->resolveByWorkbookId($workbookId);
         $data = $this->readCsvData($file);
         $rows = $data['rows'];
         $mapping = $this->normalizeMapping($mapping);
+        $defaultPlatform = $this->normalizePlatform((string) ($options['defaultPlatform'] ?? ''));
         $createdCreators = 0;
         $createdProfiles = 0;
         $updatedProfiles = 0;
         $skipped = 0;
+        $errorCount = 0;
+        $errors = [];
         $avatarUrls = [];
+        $profileIds = [];
 
-        DB::transaction(function () use ($project, $rows, $file, $mapping, &$createdCreators, &$createdProfiles, &$updatedProfiles, &$skipped, &$avatarUrls): void {
+        DB::transaction(function () use ($project, $rows, $file, $mapping, $defaultPlatform, &$createdCreators, &$createdProfiles, &$updatedProfiles, &$skipped, &$errorCount, &$errors, &$avatarUrls, &$profileIds): void {
             foreach ($rows as $index => $row) {
-                $platform = $this->normalizePlatform($this->value($row, 'platform', $mapping));
-                $handle = $this->normalizeHandle($this->value($row, 'handle', $mapping));
+                $rawPlatform = $this->value($row, 'platform', $mapping);
+                $rawHandle = $this->value($row, 'handle', $mapping);
+                $profileUrlValue = $this->value($row, 'profile_url', $mapping);
+                $platform = $this->resolvePlatform($rawPlatform, $rawHandle, $profileUrlValue, $defaultPlatform);
+                $handle = $this->normalizeHandle($rawHandle !== '' ? $rawHandle : $profileUrlValue, $platform);
 
                 if ($platform === '' || $handle === '') {
                     $skipped++;
+                    $errorCount++;
+                    if (count($errors) < 200) {
+                        $errors[] = [
+                            'rowNumber' => (int) ($row['__row_number'] ?? ($index + 2)),
+                            'reason' => $platform === ''
+                                ? ($rawPlatform !== '' ? 'Unsupported platform value.' : 'Platform could not be inferred. Choose a default platform or map a profile URL.')
+                                : 'Handle could not be read. Map a handle or profile URL column.',
+                            'platform' => $rawPlatform,
+                            'handle' => $rawHandle,
+                            'profileUrl' => $profileUrlValue,
+                            'row' => $this->errorRowPreview((array) ($row['__display'] ?? [])),
+                        ];
+                    }
 
                     continue;
                 }
@@ -80,7 +107,17 @@ class CrmFileImportService
                 $displayName = $this->nullableString($this->value($row, 'name', $mapping));
                 $identityKey = $this->creatorIdentityKey($platform, $handle, $email, $displayName);
 
-                $creator = Creator::query()
+                $profile = CreatorProfile::query()
+                    ->where('project_id', $project->id)
+                    ->where('platform', $platform)
+                    ->whereRaw('LOWER(handle) = ?', [$handle])
+                    ->first();
+
+                $creator = $profile?->creator_id
+                    ? Creator::query()->find($profile->creator_id)
+                    : null;
+
+                $creator ??= Creator::query()
                     ->where('project_id', $project->id)
                     ->where('external_identity_key', $identityKey)
                     ->first();
@@ -102,6 +139,7 @@ class CrmFileImportService
 
                 $creator->display_name = $displayName ?: ($creator->display_name ?: ltrim($handle, '@'));
                 $creator->primary_email = $email ?: $creator->primary_email;
+                $creator->external_identity_key = $this->creatorIdentityKey($platform, $handle, $creator->primary_email, $creator->display_name);
                 $creator->country = $this->nullableString($this->value($row, 'country', $mapping)) ?: $creator->country;
                 $creator->city = $this->nullableString($this->value($row, 'city', $mapping)) ?: $creator->city;
                 $creator->primary_language = $this->nullableString($this->value($row, 'language', $mapping)) ?: $creator->primary_language;
@@ -110,16 +148,10 @@ class CrmFileImportService
                 $creator->metadata = array_filter(array_merge((array) ($creator->metadata ?? []), [
                     'last_file_import' => [
                         'filename' => $file->getClientOriginalName(),
-                        'row_number' => $index + 2,
+                        'row_number' => (int) ($row['__row_number'] ?? ($index + 2)),
                     ],
                 ]));
                 $creator->save();
-
-                $profile = CreatorProfile::query()
-                    ->where('project_id', $project->id)
-                    ->where('platform', $platform)
-                    ->where('handle', $handle)
-                    ->first();
 
                 $wasNewProfile = ! $profile;
                 $profile ??= new CreatorProfile([
@@ -129,16 +161,17 @@ class CrmFileImportService
                 ]);
 
                 $profile->creator_id = $creator->id;
+                $profile->platform = $platform;
+                $profile->handle = $handle;
                 $profile->username = ltrim($handle, '@');
-                $profileUrl = $this->nullableString($this->value($row, 'profile_url', $mapping));
+                $profileUrl = $this->nullableString($profileUrlValue) ?: $this->profileUrlFromValue($rawHandle);
                 $profile->profile_url = $profileUrl ?: $profile->profile_url;
                 $profile->dm_link = $profileUrl ?: $profile->dm_link;
                 $profile->profile_pic_url = $this->nullableString($this->value($row, 'avatar_url', $mapping)) ?: $profile->profile_pic_url;
                 if ((string) ($profile->profile_pic_url ?? '') !== '') {
                     $avatarUrls[] = (string) $profile->profile_pic_url;
                 }
-                $profile->status = $this->nullableString($this->value($row, 'status', $mapping)) ?: ($profile->status ?: 'IMPORTED');
-                $profile->lifecycle_state = $this->normalizeLifecycleState((string) $profile->status);
+                $this->applyImportedWorkflowState($profile, $row, $mapping, $wasNewProfile);
                 $profile->followers_count = $this->nullableInt($this->value($row, 'followers', $mapping)) ?? $profile->followers_count;
                 $profile->engagement_rate_pct = $this->nullableFloat($this->value($row, 'engagement_rate', $mapping)) ?? $profile->engagement_rate_pct;
                 $profile->preferred_channel = $this->nullableString($this->value($row, 'preferred_channel', $mapping)) ?: $profile->preferred_channel;
@@ -148,14 +181,15 @@ class CrmFileImportService
                 $profile->accepted_flag = $this->parseYesNo($this->value($row, 'accepted', $mapping)) ?? (bool) $profile->accepted_flag;
                 $profile->follow_up_needed = $this->parseYesNo($this->value($row, 'follow_up_needed', $mapping)) ?? (bool) $profile->follow_up_needed;
                 $profile->source_provider = 'file_upload';
-                $profile->source_reference = 'csv:'.$file->getClientOriginalName().':'.($index + 2);
+                $profile->source_reference = 'csv:'.$file->getClientOriginalName().':'.((int) ($row['__row_number'] ?? ($index + 2)));
                 $profile->source_metadata = array_filter(array_merge((array) ($profile->source_metadata ?? []), [
                     'import_filename' => $file->getClientOriginalName(),
-                    'import_row_number' => $index + 2,
+                    'import_row_number' => (int) ($row['__row_number'] ?? ($index + 2)),
                     'imported_from' => 'crm_file_upload',
                 ]));
                 $profile->last_synced_at = now();
                 $profile->save();
+                $profileIds[] = (string) $profile->id;
 
                 if ($wasNewProfile) {
                     $createdProfiles++;
@@ -173,7 +207,11 @@ class CrmFileImportService
             'createdProfiles' => $createdProfiles,
             'updatedProfiles' => $updatedProfiles,
             'skipped' => $skipped,
+            'errorCount' => $errorCount,
+            'errors' => $errors,
+            'errorsTruncated' => $errorCount > count($errors),
             'totalProfiles' => CreatorProfile::query()->where('project_id', $project->id)->count(),
+            'profileIds' => array_values(array_unique($profileIds)),
         ];
     }
 
@@ -191,15 +229,15 @@ class CrmFileImportService
 
         try {
             $firstLine = fgets($handle);
-            if ($firstLine === false) {
-                return [];
+            if ($firstLine === false || trim(preg_replace('/^\xEF\xBB\xBF/', '', $firstLine) ?? '') === '') {
+                throw new CrmImportValidationException('The CSV file is empty. Add a header row and at least one creator.');
             }
             $delimiter = $this->detectDelimiter($firstLine);
             rewind($handle);
 
             $headers = fgetcsv($handle, 0, $delimiter);
             if (! is_array($headers) || $headers === []) {
-                return [];
+                throw new CrmImportValidationException('The CSV header row could not be read.');
             }
 
             $headerMeta = array_map(fn ($header) => [
@@ -207,11 +245,20 @@ class CrmFileImportService
                 'key' => $this->normalizeHeader((string) $header),
             ], $headers);
             $normalizedHeaders = array_column($headerMeta, 'key');
+            if (array_filter($normalizedHeaders) === []) {
+                throw new CrmImportValidationException('The CSV header row is empty. Add named columns before importing.');
+            }
+            $duplicateHeaders = array_keys(array_filter(array_count_values(array_filter($normalizedHeaders)), fn (int $count) => $count > 1));
+            if ($duplicateHeaders !== []) {
+                throw new CrmImportValidationException('Duplicate CSV columns were found after normalization: '.implode(', ', $duplicateHeaders).'. Rename them and try again.');
+            }
             $rows = [];
             $displayRows = [];
             $rowLimit = 5000;
+            $rowNumber = 1;
 
             while (($values = fgetcsv($handle, 0, $delimiter)) !== false) {
+                $rowNumber++;
                 if (count($rows) >= $rowLimit) {
                     throw new RuntimeException("CSV import limit is {$rowLimit} rows.");
                 }
@@ -232,11 +279,17 @@ class CrmFileImportService
                 }
 
                 if (array_filter($row, fn ($value) => trim((string) $value) !== '') !== []) {
+                    $row['__row_number'] = $rowNumber;
+                    $row['__display'] = $displayRow;
                     $rows[] = $row;
                     if (count($displayRows) < 5) {
                         $displayRows[] = $displayRow;
                     }
                 }
+            }
+
+            if ($rows === []) {
+                throw new CrmImportValidationException('The CSV contains headers but no creator rows.');
             }
 
             return [
@@ -270,8 +323,8 @@ class CrmFileImportService
     private function importFields(): array
     {
         return [
-            ['key' => 'platform', 'label' => 'Platform', 'required' => true],
-            ['key' => 'handle', 'label' => 'Handle', 'required' => true],
+            ['key' => 'platform', 'label' => 'Platform', 'required' => false],
+            ['key' => 'handle', 'label' => 'Handle', 'required' => false],
             ['key' => 'name', 'label' => 'Name', 'required' => false],
             ['key' => 'email', 'label' => 'Email', 'required' => false],
             ['key' => 'followers', 'label' => 'Followers', 'required' => false],
@@ -282,6 +335,14 @@ class CrmFileImportService
             ['key' => 'country', 'label' => 'Country', 'required' => false],
             ['key' => 'city', 'label' => 'City', 'required' => false],
             ['key' => 'profile_url', 'label' => 'Profile URL', 'required' => false],
+            ['key' => 'language', 'label' => 'Language', 'required' => false],
+            ['key' => 'avatar_url', 'label' => 'Avatar URL', 'required' => false],
+            ['key' => 'preferred_channel', 'label' => 'Preferred channel', 'required' => false],
+            ['key' => 'last_contacted_at', 'label' => 'Last contacted', 'required' => false],
+            ['key' => 'last_reply_at', 'label' => 'Last reply', 'required' => false],
+            ['key' => 'next_follow_up_at', 'label' => 'Next follow-up', 'required' => false],
+            ['key' => 'conversation_url', 'label' => 'Conversation URL', 'required' => false],
+            ['key' => 'outreach_channel', 'label' => 'Existing outreach channel', 'required' => false],
             ['key' => 'notes', 'label' => 'Notes', 'required' => false],
         ];
     }
@@ -341,20 +402,99 @@ class CrmFileImportService
     {
         $platform = Str::lower(trim($platform));
 
-        return in_array($platform, ['instagram', 'tiktok', 'email'], true) ? $platform : '';
+        return match ($platform) {
+            'instagram', 'insta', 'ig', 'instagram reels', 'instagram_reels' => 'instagram',
+            'tiktok', 'tik tok', 'tik_tok', 'tt' => 'tiktok',
+            'email', 'e-mail', 'mail' => 'email',
+            default => '',
+        };
     }
 
-    private function normalizeHandle(string $handle): string
+    private function resolvePlatform(string $rawPlatform, string $rawHandle, string $profileUrl, string $defaultPlatform): string
+    {
+        if (trim($rawPlatform) !== '') {
+            return $this->normalizePlatform($rawPlatform);
+        }
+
+        $inferred = $this->inferPlatformFromUrl($profileUrl) ?: $this->inferPlatformFromUrl($rawHandle);
+
+        return $inferred ?: $defaultPlatform;
+    }
+
+    private function inferPlatformFromUrl(string $value): string
+    {
+        $normalizedUrl = $this->normalizeProfileUrlValue($value);
+        $host = Str::lower((string) parse_url($normalizedUrl ?: trim($value), PHP_URL_HOST));
+        if ($host === '') {
+            return '';
+        }
+
+        if ($host === 'instagram.com' || Str::endsWith($host, '.instagram.com')) {
+            return 'instagram';
+        }
+
+        if ($host === 'tiktok.com' || Str::endsWith($host, '.tiktok.com')) {
+            return 'tiktok';
+        }
+
+        return '';
+    }
+
+    private function normalizeHandle(string $handle, string $platform = ''): string
     {
         $handle = trim($handle);
         if ($handle === '') {
             return '';
         }
 
-        $handle = preg_replace('#^https?://(www\.)?(instagram\.com/|tiktok\.com/@?)#i', '', $handle) ?? $handle;
-        $handle = trim($handle, "/ \t\n\r\0\x0B");
+        if ($platform === 'email') {
+            return filter_var($handle, FILTER_VALIDATE_EMAIL) ? Str::lower($handle) : '';
+        }
 
-        return Str::startsWith($handle, '@') ? $handle : '@'.$handle;
+        $normalizedUrl = $this->normalizeProfileUrlValue($handle);
+        if ($normalizedUrl !== null) {
+            $path = trim(rawurldecode((string) parse_url($normalizedUrl, PHP_URL_PATH)), '/');
+            $segments = array_values(array_filter(explode('/', $path)));
+            if ($platform === 'instagram' && isset($segments[0]) && ! in_array(Str::lower($segments[0]), ['p', 'reel', 'reels', 'stories', 'explore'], true)) {
+                $handle = $segments[0];
+            } elseif ($platform === 'tiktok' && isset($segments[0]) && Str::startsWith($segments[0], '@')) {
+                $handle = $segments[0];
+            } else {
+                return '';
+            }
+        }
+
+        $handle = trim(explode('?', explode('#', $handle)[0])[0], "/@ \t\n\r\0\x0B");
+        if ($handle === '' || preg_match('/^[a-z0-9._-]{1,100}$/i', $handle) !== 1) {
+            return '';
+        }
+
+        return '@'.Str::lower($handle);
+    }
+
+    private function errorRowPreview(array $row): array
+    {
+        $preview = [];
+        foreach (array_slice($row, 0, 50, true) as $header => $value) {
+            $preview[(string) $header] = Str::limit((string) $value, 500, '…');
+        }
+
+        return $preview;
+    }
+
+    private function profileUrlFromValue(string $value): ?string
+    {
+        return $this->normalizeProfileUrlValue($value);
+    }
+
+    private function normalizeProfileUrlValue(string $value): ?string
+    {
+        $value = trim($value);
+        if (preg_match('#^(?:www\.)?(?:instagram|tiktok)\.com/#i', $value) === 1) {
+            $value = 'https://'.$value;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_URL) ? $value : null;
     }
 
     private function creatorIdentityKey(string $platform, string $handle, ?string $email, ?string $displayName): string
@@ -373,8 +513,104 @@ class CrmFileImportService
     private function normalizeLifecycleState(string $status): string
     {
         $state = Str::lower(trim(str_replace([' ', '-'], '_', $status)));
+        $state = preg_replace('/_+/', '_', $state) ?? $state;
 
-        return $state !== '' ? $state : 'imported';
+        return match ($state) {
+            '', 'new', 'not_contacted', 'uncontacted', 'prospect', 'imported' => 'imported',
+            'approved', 'approved_for_outreach', 'ready_for_outreach', 'qualified' => 'approved_for_outreach',
+            'contacted', 'email_sent', 'dm_sent', 'message_sent', 'awaiting_reply' => 'contacted',
+            'replied', 'interested', 'response_received', 'responded' => 'replied',
+            'follow_up', 'followup', 'follow_up_due', 'needs_follow_up' => 'follow_up',
+            'negotiating', 'discussing_terms', 'in_negotiation' => 'negotiating',
+            'accepted', 'confirmed', 'booked' => 'accepted',
+            'declined', 'not_interested', 'rejected' => 'declined',
+            'lost' => 'lost',
+            'archived' => 'archived',
+            'won', 'posted', 'completed' => 'won',
+            default => $state,
+        };
+    }
+
+    private function applyImportedWorkflowState(CreatorProfile $profile, array $row, array $mapping, bool $wasNewProfile): void
+    {
+        $rawStatus = $this->value($row, 'status', $mapping);
+        $lifecycle = $rawStatus !== ''
+            ? $this->normalizeLifecycleState($rawStatus)
+            : ($wasNewProfile ? 'imported' : $this->normalizeLifecycleState((string) ($profile->lifecycle_state ?: $profile->status)));
+
+        $lastContactedAt = $this->nullableDate($this->value($row, 'last_contacted_at', $mapping));
+        $lastReplyAt = $this->nullableDate($this->value($row, 'last_reply_at', $mapping));
+        $nextFollowUpAt = $this->nullableDate($this->value($row, 'next_follow_up_at', $mapping));
+        $conversationUrl = $this->nullableString($this->value($row, 'conversation_url', $mapping));
+        $outreachChannel = $this->normalizeOutreachChannel($this->value($row, 'outreach_channel', $mapping))
+            ?: $this->normalizeOutreachChannel($this->value($row, 'preferred_channel', $mapping));
+
+        $profile->status = Str::upper($lifecycle);
+        $profile->lifecycle_state = $lifecycle === 'follow_up' ? 'contacted' : $lifecycle;
+        $profile->conversation_url = $conversationUrl ?: $profile->conversation_url;
+        $profile->conversation_channel = $outreachChannel ?: $profile->conversation_channel;
+        $profile->last_outreach_channel = $outreachChannel ?: $profile->last_outreach_channel;
+        $profile->last_outreach_at = $lastContactedAt ?: $profile->last_outreach_at;
+        $profile->dm_sent_at = $lastContactedAt ?: $profile->dm_sent_at;
+        $profile->responded_at = $lastReplyAt ?: $profile->responded_at;
+        $profile->follow_up_due_at = $nextFollowUpAt ?: $profile->follow_up_due_at;
+        $profile->next_action_at = $nextFollowUpAt ?: $profile->next_action_at;
+
+        $automationState = (array) ($profile->automation_state ?? []);
+        $automationState['imported_workflow_state'] = $lifecycle;
+        $automationState['imported_workflow_state_at'] = now()->toIso8601String();
+        $profile->automation_state = $automationState;
+
+        if (in_array($lifecycle, ['contacted', 'replied', 'follow_up', 'negotiating', 'accepted'], true)) {
+            $profile->dm_sent_at ??= $lastContactedAt ?: now();
+            $profile->last_outreach_at ??= $profile->dm_sent_at;
+        }
+
+        if (in_array($lifecycle, ['replied', 'negotiating', 'accepted'], true)) {
+            $profile->responded_at ??= $lastReplyAt ?: now();
+        }
+
+        if ($lifecycle === 'follow_up') {
+            $profile->follow_up_needed = true;
+            $profile->follow_up_due_at ??= $nextFollowUpAt ?: now();
+            $profile->next_action_at ??= $profile->follow_up_due_at;
+        }
+
+        if ($lifecycle === 'accepted') {
+            $profile->accepted_flag = true;
+            $profile->follow_up_needed = false;
+            $profile->follow_up_due_at = null;
+        }
+
+        if (in_array($lifecycle, ['declined', 'lost', 'archived', 'won'], true)) {
+            $profile->follow_up_needed = false;
+            $profile->follow_up_due_at = null;
+            $profile->next_action_at = null;
+        }
+    }
+
+    private function nullableDate(string $value): ?Carbon
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private function normalizeOutreachChannel(string $value): string
+    {
+        return match (Str::lower(trim($value))) {
+            'instagram', 'ig', 'insta', 'dm', 'instagram dm' => 'instagram',
+            'tiktok', 'tt', 'tik tok', 'tiktok dm' => 'tiktok',
+            'email', 'e-mail', 'mail' => 'email',
+            default => '',
+        };
     }
 
     private function nullableString(string $value): ?string
@@ -386,14 +622,41 @@ class CrmFileImportService
 
     private function nullableInt(string $value): ?int
     {
-        $value = preg_replace('/[^0-9.-]/', '', trim($value)) ?? '';
+        $value = Str::lower(trim($value));
+        if ($value === '') {
+            return null;
+        }
 
-        return $value !== '' && is_numeric($value) ? (int) round((float) $value) : null;
+        $multiplier = 1;
+        if (preg_match('/([kmb])$/', $value, $match) === 1) {
+            $multiplier = ['k' => 1000, 'm' => 1000000, 'b' => 1000000000][$match[1]];
+            $value = substr($value, 0, -1);
+        }
+
+        $value = preg_replace('/[^0-9,.-]/', '', $value) ?? '';
+        if ($multiplier > 1) {
+            $value = str_replace(',', '.', $value);
+        } else {
+            $value = preg_replace('/(?<=\d)[,.](?=\d{3}(?:\D|$))/', '', $value) ?? $value;
+            $value = str_replace(',', '.', $value);
+        }
+
+        return $value !== '' && is_numeric($value) ? (int) round(((float) $value) * $multiplier) : null;
     }
 
     private function nullableFloat(string $value): ?float
     {
-        $value = preg_replace('/[^0-9.-]/', '', trim($value)) ?? '';
+        $value = preg_replace('/[^0-9,.-]/', '', trim($value)) ?? '';
+        if (str_contains($value, ',') && str_contains($value, '.')) {
+            if (strrpos($value, ',') > strrpos($value, '.')) {
+                $value = str_replace('.', '', $value);
+                $value = str_replace(',', '.', $value);
+            } else {
+                $value = str_replace(',', '', $value);
+            }
+        } else {
+            $value = str_replace(',', '.', $value);
+        }
 
         return $value !== '' && is_numeric($value) ? round((float) $value, 2) : null;
     }
