@@ -459,6 +459,8 @@ class TaskQueueService
         $settings = $this->resolveTaskSettings($this->resolveWorkspaceForSheet($sheetId, $project));
         $limitRequested = max(1, (int) ($options['limit'] ?? ($settings['max_new_tasks_per_generation'] ?? 12)));
         $forceForImportedProfiles = (bool) ($options['forceForImportedProfiles'] ?? false);
+        $importBatchId = trim((string) ($options['importBatchId'] ?? '')) ?: null;
+        $assignedUserId = trim((string) ($options['assignedUserId'] ?? '')) ?: null;
         $maxActiveTasks = (int) ($settings[$this->timePressureEnabled($settings) ? 'time_pressure_active_task_limit' : 'max_active_tasks'] ?? 18);
         $maxNewTasksPerGeneration = (int) ($settings['max_new_tasks_per_generation'] ?? 12);
 
@@ -569,6 +571,8 @@ class TaskQueueService
                 continue;
             }
 
+            $candidate['import_batch_id'] = $importBatchId;
+            $candidate['assigned_user_id'] = $assignedUserId ?: $profile->assigned_user_id;
             $eligible++;
             $candidates[] = $candidate;
         }
@@ -1369,6 +1373,10 @@ class TaskQueueService
 
     private function buildCandidateForProfile(CreatorProfile $profile, array $settings): ?array
     {
+        if ($profile->workflow_paused_at !== null) {
+            return null;
+        }
+
         $statusValues = array_values(array_filter(array_unique([
             strtoupper(trim((string) ($profile->status ?: ''))),
             strtoupper(trim((string) ($profile->lifecycle_state ?: ''))),
@@ -1562,6 +1570,10 @@ class TaskQueueService
 
     private function explainProfileTaskIneligibility(CreatorProfile $profile, array $settings): string
     {
+        if ($profile->workflow_paused_at !== null) {
+            return 'workflow_paused_for_migration_review';
+        }
+
         $statusValues = array_values(array_filter(array_unique([
             strtoupper(trim((string) ($profile->status ?: ''))),
             strtoupper(trim((string) ($profile->lifecycle_state ?: ''))),
@@ -2111,6 +2123,8 @@ class TaskQueueService
         return Task::create([
             'project_id' => $projectId,
             'creator_profile_id' => $profile?->id,
+            'import_batch_id' => $candidate['import_batch_id'] ?? null,
+            'assigned_user_id' => $candidate['assigned_user_id'] ?? $profile?->assigned_user_id,
             'message_template_id' => $template?->id,
             'external_task_key' => $taskId,
             'platform' => $platform,
@@ -2600,6 +2614,8 @@ class TaskQueueService
             'externalChannel' => (string) ($task->external_channel ?: $task->creatorProfile?->conversation_channel ?: ''),
             'conversationUrl' => (string) ($task->conversation_url ?: $task->creatorProfile?->conversation_url ?: $task->open_url ?: ''),
             'creatorProfileId' => (string) ($task->creator_profile_id ?: ''),
+            'importBatchId' => (string) ($task->import_batch_id ?: ''),
+            'assignedUserId' => (string) ($task->assigned_user_id ?: ''),
             'valueScore' => (int) ($task->creatorProfile?->value_score ?? 0),
             'email' => $this->profileHasUsableEmail($task->creatorProfile) ? (string) $task->creatorProfile?->creator?->primary_email : '',
             'lastOutreachAt' => optional($task->creatorProfile?->last_outreach_at)?->toIso8601String() ?? '',

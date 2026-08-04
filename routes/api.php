@@ -13,6 +13,7 @@ use App\Http\Controllers\OperationsController;
 use App\Http\Controllers\PipelineController;
 use App\Http\Controllers\SheetDataController;
 use App\Http\Controllers\SupportController;
+use App\Http\Controllers\TaskAssignmentController;
 use App\Http\Controllers\WorkspaceController;
 use App\Http\Controllers\WorkspaceOnboardingController;
 use Illuminate\Support\Facades\Route;
@@ -99,6 +100,10 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::post('/crm/infer-locations', [SheetDataController::class, 'inferCreatorLocations'])->middleware('throttle:expensive');
     Route::post('/crm/import/creators/preview', [CrmImportController::class, 'previewCreators'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);
     Route::post('/crm/import/creators', [CrmImportController::class, 'importCreators'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);
+    Route::get('/crm/import/batches', [CrmImportController::class, 'listBatches'])->middleware('workspace.role:owner,admin');
+    Route::post('/crm/import/batches/{batchId}/activate', [CrmImportController::class, 'activateBatch'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);
+    Route::post('/crm/import/batches/{batchId}/resume-held', [CrmImportController::class, 'resumeHeldBatch'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);
+    Route::post('/crm/import/batches/{batchId}/rollback', [CrmImportController::class, 'rollbackBatch'])->middleware(['workspace.role:owner,admin', 'throttle:expensive']);
     Route::put('/crm/{id}', [SheetDataController::class, 'updateCreator']);
     Route::delete('/crm/{id}', [SheetDataController::class, 'deleteCreator'])->middleware('workspace.role:owner,admin');
     Route::post('/crm/link-profiles', [SheetDataController::class, 'linkProfiles']);
@@ -140,6 +145,7 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::post('/tasks/resolve-outreach', [ApifyController::class, 'resolveOutreachTask']);
     Route::post('/tasks/{taskId}/complete', [ApifyController::class, 'completeTask']);
     Route::post('/tasks/{taskId}/snooze', [ApifyController::class, 'snoozeTask']);
+    Route::put('/tasks/{taskId}/assignment', [TaskAssignmentController::class, 'update'])->middleware('workspace.role:owner,admin');
 
     Route::get('/billing/summary', [BillingController::class, 'summary']);
     Route::get('/billing/catalog', [BillingController::class, 'catalog']);

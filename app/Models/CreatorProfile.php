@@ -54,6 +54,9 @@ class CreatorProfile extends Model
         'source_reference',
         'source_metadata',
         'last_synced_at',
+        'import_batch_id',
+        'assigned_user_id',
+        'workflow_paused_at',
     ];
 
     protected function casts(): array
@@ -76,6 +79,7 @@ class CreatorProfile extends Model
             'task_suppressed_until' => 'datetime',
             'source_metadata' => 'array',
             'last_synced_at' => 'datetime',
+            'workflow_paused_at' => 'datetime',
         ];
     }
 

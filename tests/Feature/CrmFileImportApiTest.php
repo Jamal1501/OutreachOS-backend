@@ -300,6 +300,197 @@ class CrmFileImportApiTest extends TestCase
         $this->assertTrue(Task::query()->where('creator_profile_id', $followUp->id)->exists());
     }
 
+    public function test_migration_import_requires_unknown_stage_mapping_and_stays_paused_until_activation(): void
+    {
+        [$user, $workspace] = $this->createMemberWorkspace('owner');
+        $this->fakeSupabaseUser($user);
+        $csv = "Platform,Handle,Stage\ninstagram,@migration_creator,Contract sent";
+
+        $preview = $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->post('/api/crm/import/creators/preview', [
+                'file' => UploadedFile::fake()->createWithContent('migration.csv', $csv),
+            ])
+            ->assertOk()
+            ->assertJsonPath('preview.workflow.unknownStageCount', 1)
+            ->assertJsonPath('preview.workflow.stages.0.requiresMapping', true);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->post('/api/crm/import/creators', [
+                'file' => UploadedFile::fake()->createWithContent('migration.csv', $csv),
+                'pauseWorkflow' => '1',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonPath('message', 'Map every workflow stage before importing. Still unmapped: Contract sent.');
+        $this->assertDatabaseMissing('creator_profiles', ['handle' => '@migration_creator']);
+
+        $summary = $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->post('/api/crm/import/creators', [
+                'file' => UploadedFile::fake()->createWithContent('migration.csv', $csv),
+                'stageMapping' => json_encode(['Contract sent' => 'replied'], JSON_THROW_ON_ERROR),
+                'pauseWorkflow' => '1',
+                'assignedUserId' => $user->supabase_user_id,
+                'missingNextActionStrategy' => 'schedule',
+                'missingNextActionDays' => 5,
+            ])
+            ->assertOk()
+            ->assertJsonPath('summary.createdProfiles', 1)
+            ->assertJsonPath('summary.pausedProfiles', 1)
+            ->json('summary');
+
+        $profile = CreatorProfile::query()->where('handle', '@migration_creator')->firstOrFail();
+        $this->assertSame('replied', $profile->lifecycle_state);
+        $this->assertNotNull($profile->workflow_paused_at);
+        $this->assertFalse(Task::query()->where('creator_profile_id', $profile->id)->exists());
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/crm/import/batches/'.$summary['batchId'].'/activate', [
+                'sheetId' => 'workspace:test-import',
+                'assignedUserId' => $user->supabase_user_id,
+            ])
+            ->assertOk()
+            ->assertJsonPath('result.batch.status', 'activated');
+
+        $this->assertNull($profile->fresh()->workflow_paused_at);
+        $this->assertDatabaseHas('tasks', [
+            'creator_profile_id' => $profile->id,
+            'import_batch_id' => $summary['batchId'],
+            'assigned_user_id' => $user->supabase_user_id,
+        ]);
+
+        $task = Task::query()->where('creator_profile_id', $profile->id)->firstOrFail();
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->putJson('/api/tasks/'.$task->external_task_key.'/assignment', [
+                'sheetId' => 'workspace:test-import',
+                'assignedUserId' => null,
+            ])
+            ->assertOk()
+            ->assertJsonPath('assignedUserId', null);
+        $this->assertDatabaseHas('tasks', ['id' => $task->id, 'assigned_user_id' => null]);
+    }
+
+    public function test_migration_batch_preserves_custom_context_and_can_be_rolled_back(): void
+    {
+        [$user, $workspace] = $this->createMemberWorkspace('owner');
+        $this->fakeSupabaseUser($user);
+        $csv = implode("\n", [
+            'Platform,Handle,Stage,Conversation Summary,Latest Sent Message,Latest Reply,Client Segment',
+            'instagram,@context_creator,Interested,Discussing a summer launch,Hi there,Sounds good,VIP',
+        ]);
+
+        $summary = $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->post('/api/crm/import/creators', [
+                'file' => UploadedFile::fake()->createWithContent('context.csv', $csv),
+                'pauseWorkflow' => '1',
+            ])
+            ->assertOk()
+            ->json('summary');
+
+        $profile = CreatorProfile::query()->where('handle', '@context_creator')->firstOrFail();
+        $creator = $profile->creator()->firstOrFail();
+        $this->assertSame('VIP', data_get($creator->metadata, 'custom_fields.client_segment'));
+        $this->assertStringContainsString('summer launch', (string) $creator->notes);
+        $this->assertSame(2, OutreachEvent::query()->where('creator_profile_id', $profile->id)->count());
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/crm/import/batches/'.$summary['batchId'].'/rollback')
+            ->assertOk()
+            ->assertJsonPath('result.removed', 1);
+
+        $this->assertDatabaseMissing('creator_profiles', ['id' => $profile->id]);
+        $this->assertDatabaseMissing('creators', ['id' => $creator->id]);
+    }
+
+    public function test_held_active_workflow_can_be_safely_scheduled_after_activation(): void
+    {
+        [$user, $workspace] = $this->createMemberWorkspace('owner');
+        $this->fakeSupabaseUser($user);
+        $csv = "Platform,Handle,Stage,Last Contacted\ninstagram,@held_creator,Contacted,2026-08-01";
+
+        $summary = $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->post('/api/crm/import/creators', [
+                'file' => UploadedFile::fake()->createWithContent('held.csv', $csv),
+                'pauseWorkflow' => '1',
+                'missingNextActionStrategy' => 'keep_paused',
+            ])
+            ->assertOk()
+            ->json('summary');
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/crm/import/batches/'.$summary['batchId'].'/activate', [
+                'sheetId' => 'workspace:test-import',
+            ])
+            ->assertOk()
+            ->assertJsonPath('result.batch.summary.heldForReviewProfiles', 1);
+
+        $profile = CreatorProfile::query()->where('handle', '@held_creator')->firstOrFail();
+        $this->assertNotNull($profile->workflow_paused_at);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/crm/import/batches/'.$summary['batchId'].'/resume-held', [
+                'sheetId' => 'workspace:test-import',
+                'days' => 4,
+            ])
+            ->assertOk()
+            ->assertJsonPath('result.resumed', 1)
+            ->assertJsonPath('result.batch.summary.heldForReviewProfiles', 0);
+
+        $profile->refresh();
+        $this->assertNull($profile->workflow_paused_at);
+        $this->assertNotNull($profile->follow_up_due_at);
+        $this->assertFalse((bool) data_get($profile->automation_state, 'migration_hold'));
+    }
+
+    public function test_rollback_restores_an_existing_creator_instead_of_deleting_it(): void
+    {
+        [$user, $workspace] = $this->createMemberWorkspace('owner');
+        $this->fakeSupabaseUser($user);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->post('/api/crm/import/creators', [
+                'file' => UploadedFile::fake()->createWithContent('original.csv', "Platform,Handle,Name,Email\ninstagram,@existing_creator,Original Name,original@example.test"),
+            ])
+            ->assertOk();
+
+        $profile = CreatorProfile::query()->where('handle', '@existing_creator')->firstOrFail();
+        $creatorId = $profile->creator_id;
+        $summary = $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->post('/api/crm/import/creators', [
+                'file' => UploadedFile::fake()->createWithContent('update.csv', "Platform,Handle,Name,Email,Stage\ninstagram,@existing_creator,Changed Name,changed@example.test,Interested"),
+                'pauseWorkflow' => '1',
+            ])
+            ->assertOk()
+            ->json('summary');
+
+        $this->assertDatabaseHas('creators', ['id' => $creatorId, 'display_name' => 'Changed Name']);
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/crm/import/batches/'.$summary['batchId'].'/rollback')
+            ->assertOk()
+            ->assertJsonPath('result.restored', 1);
+
+        $this->assertDatabaseHas('creators', [
+            'id' => $creatorId,
+            'display_name' => 'Original Name',
+            'primary_email' => 'original@example.test',
+        ]);
+        $this->assertDatabaseHas('creator_profiles', [
+            'id' => $profile->id,
+            'workflow_paused_at' => null,
+        ]);
+    }
+
     private function createMemberWorkspace(string $role): array
     {
         $user = User::query()->create([

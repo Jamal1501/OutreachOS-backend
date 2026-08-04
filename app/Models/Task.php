@@ -49,6 +49,8 @@ class Task extends Model
         'notes',
         'completed_at',
         'metadata',
+        'import_batch_id',
+        'assigned_user_id',
     ];
 
     protected function casts(): array
