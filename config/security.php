@@ -7,7 +7,7 @@ return [
         'report_uri' => env('SECURITY_CSP_REPORT_URI', '/api/csp-report'),
         'connect_src' => array_filter(array_map('trim', explode(',', env(
             'SECURITY_CSP_CONNECT_SRC',
-            "'self',https://*.supabase.co,https://loveframes-outreach-api-1.onrender.com,https://*.onrender.com"
+            "'self',https://*.supabase.co,https://loveframes-outreach-api-1.onrender.com"
         )))),
         'img_src' => array_filter(array_map('trim', explode(',', env(
             'SECURITY_CSP_IMG_SRC',

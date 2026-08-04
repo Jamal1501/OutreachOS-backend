@@ -181,6 +181,18 @@ class BillingController extends Controller
     public function exportActivity(Request $request)
     {
         [$billingAccountId, $workspaceIds] = $this->billingActivityScope($request);
+        $workspaceId = (string) $request->attributes->get('workspace_id');
+        $this->observability->audit(
+            $workspaceId,
+            'billing_activity_exported',
+            'billing',
+            $billingAccountId !== '' ? $billingAccountId : null,
+            [
+                'scope' => $billingAccountId !== '' ? 'billing_account' : 'workspace',
+                'workspace_count' => count($workspaceIds),
+            ],
+            (string) $request->attributes->get('supabase_user_id'),
+        );
 
         return response()->streamDownload(function () use ($billingAccountId, $workspaceIds): void {
             $output = fopen('php://output', 'wb');

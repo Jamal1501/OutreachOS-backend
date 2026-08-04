@@ -96,6 +96,12 @@ class BillingActivityAuthorizationTest extends TestCase
         $this->assertSame('Creator enrichment: 9 workflow credits used', $workspaceBRow[2]);
         $this->assertSame('9', $workspaceBRow[4]);
         $this->assertSame("'@private-provider-reference", $workspaceBRow[6]);
+        $this->assertDatabaseHas('workspace_audit_events', [
+            'workspace_id' => $workspaceA->id,
+            'actor_user_id' => $owner->supabase_user_id,
+            'event_type' => 'billing_activity_exported',
+            'subject_type' => 'billing',
+        ]);
     }
 
     private function sharedBillingFixture(): array

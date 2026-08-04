@@ -23,6 +23,13 @@ class ValidateProductionConfigurationCommand extends Command
             || $this->present(config('observability.alerts.webhook_url'));
         $healthDetailsToken = trim((string) config('observability.health.details_token'));
         $tiktokEnabled = (bool) config('outreach.launch.enable_tiktok');
+        $corsOrigins = (array) config('cors.allowed_origins', []);
+        $corsOriginPatterns = (array) config('cors.allowed_origins_patterns', []);
+        $corsRestricted = ! $this->containsAny($corsOrigins, ['*', 'localhost', '127.0.0.1', '192.168.', '.onrender.com', '.vercel.app'])
+            && ! $this->containsAny($corsOriginPatterns, ['localhost', '127\\.0\\.0\\.1', '192\\.168', 'onrender\\.com', 'vercel\\.app']);
+        $cspConnectSources = (array) config('security.csp.connect_src', []);
+        $cspRestricted = ! $this->containsAny($cspConnectSources, ['https://*.onrender.com', 'https://*.vercel.app'])
+            && ! in_array('*', $cspConnectSources, true);
 
         $checks = [
             $this->check('Production environment', app()->environment('production'), true, 'APP_ENV must be production.'),
@@ -45,6 +52,9 @@ class ValidateProductionConfigurationCommand extends Command
             $this->check('Raw scraper disabled', ! config('outreach.launch.enable_raw_scraper'), true, 'FEATURE_RAW_SCRAPER must remain false.'),
             $this->check('Legacy application key disabled', ! config('services.app_security.allow_legacy_key'), true, 'ALLOW_LEGACY_APP_KEY must be false.'),
             $this->check('Verified email required', config('outreach.launch.require_verified_email'), true, 'ACCESS_REQUIRE_VERIFIED_EMAIL must be true.'),
+            $this->check('Production CORS restricted', $corsRestricted, true, 'Remove development origins and broad Render or Vercel origin patterns.'),
+            $this->check('Content Security Policy enforced', config('security.csp.enabled') && ! config('security.csp.report_only'), true, 'Enable CSP and disable report-only mode in production.'),
+            $this->check('CSP connection sources restricted', $cspRestricted, true, 'Remove broad Render or Vercel wildcard connection sources.'),
             $this->check('Operational alerts deliverable', $alertsEnabled && $hasAlertDestination, true, 'Enable alerts and configure an email or webhook destination.'),
             $this->check('Protected health diagnostics', strlen($healthDetailsToken) >= 32, false, 'Set OBSERVABILITY_HEALTH_DETAILS_TOKEN to a random value of at least 32 characters.'),
             $this->check('Real mail transport', $mailConfigured, false, 'Set MAIL_MAILER=resend and configure RESEND_API_KEY before using invitations or email alerts.'),
@@ -77,5 +87,18 @@ class ValidateProductionConfigurationCommand extends Command
     private function present(mixed $value): bool
     {
         return trim((string) $value) !== '';
+    }
+
+    private function containsAny(array $values, array $needles): bool
+    {
+        foreach ($values as $value) {
+            foreach ($needles as $needle) {
+                if (str_contains((string) $value, $needle)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 }

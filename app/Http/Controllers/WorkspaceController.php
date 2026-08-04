@@ -748,6 +748,14 @@ class WorkspaceController extends Controller
             return response()->json(['error' => 'Workspace not found.'], 404);
         }
 
+        $this->logWorkspaceAudit(
+            $workspaceId,
+            (string) $request->attributes->get('supabase_user_id'),
+            'workspace_export_requested',
+            'workspace',
+            $workspaceId,
+        );
+
         return response()->streamDownload(function () use ($workspaceId): void {
             $this->dataLifecycle->streamWorkspaceExport($workspaceId, static function (string $chunk): void {
                 echo $chunk;

@@ -899,6 +899,26 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
         $this->assertStringContainsString('Creator enrichment: 7 workflow credits used', $export->streamedContent());
     }
 
+    public function test_workspace_export_is_recorded_in_the_audit_log(): void
+    {
+        [$user, $workspace] = $this->createWorkspaceForRole('owner');
+        $this->fakeSupabaseUser($user);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->get('/api/workspaces/'.$workspace->id.'/export')
+            ->assertOk()
+            ->assertHeader('content-type', 'application/json; charset=UTF-8');
+
+        $this->assertDatabaseHas('workspace_audit_events', [
+            'workspace_id' => $workspace->id,
+            'actor_user_id' => $user->supabase_user_id,
+            'event_type' => 'workspace_export_requested',
+            'subject_type' => 'workspace',
+            'subject_id' => $workspace->id,
+        ]);
+    }
+
     public function test_account_owner_must_handle_owned_workspaces_before_account_deletion(): void
     {
         [$user, $workspace] = $this->createWorkspaceForRole('owner');
