@@ -149,10 +149,11 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::post('/tasks/create', [ApifyController::class, 'createTask']);
     Route::get('/tasks/cold-retry', [ApifyController::class, 'coldRetryTasks']);
     Route::get('/tasks/list', [ApifyController::class, 'listTasks']);
+    Route::get('/tasks/team-summary', [ApifyController::class, 'teamTaskSummary'])->middleware('workspace.role:owner,admin');
     Route::post('/tasks/resolve-outreach', [ApifyController::class, 'resolveOutreachTask']);
     Route::post('/tasks/{taskId}/complete', [ApifyController::class, 'completeTask']);
     Route::post('/tasks/{taskId}/snooze', [ApifyController::class, 'snoozeTask']);
-    Route::put('/tasks/{taskId}/assignment', [TaskAssignmentController::class, 'update'])->middleware('workspace.role:owner,admin');
+    Route::put('/tasks/{taskId}/assignment', [TaskAssignmentController::class, 'update']);
 
     Route::get('/billing/summary', [BillingController::class, 'summary']);
     Route::get('/billing/catalog', [BillingController::class, 'catalog']);

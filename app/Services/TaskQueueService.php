@@ -9,6 +9,7 @@ use App\Models\Workspace;
 use App\Services\TaskEngine\TaskAutomationSettings;
 use App\Services\TaskEngine\TaskDecisionPolicy;
 use Carbon\Carbon;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -61,6 +62,62 @@ class TaskQueueService
         });
 
         return array_map(fn (array $row) => $this->normalizeSheetTaskRow($row), $rows);
+    }
+
+    public function teamWorkload(string $sheetId): array
+    {
+        $project = $this->projects->findByWorkbookId($sheetId);
+        if (! $project) {
+            return ['members' => [], 'unassignedOpen' => 0];
+        }
+
+        $members = [];
+        $unassignedOpen = 0;
+        $completedCutoff = now()->subDays(30);
+
+        foreach (Task::query()
+            ->where('project_id', $project->id)
+            ->select(['assigned_user_id', 'status', 'due_at', 'completed_at'])
+            ->cursor() as $task) {
+            $status = strtoupper(trim((string) $task->status));
+            $isOpen = ! in_array($status, self::TERMINAL_TASK_STATUSES, true);
+            $assignee = trim((string) ($task->assigned_user_id ?? ''));
+
+            if ($assignee === '') {
+                if ($isOpen) {
+                    $unassignedOpen++;
+                }
+
+                continue;
+            }
+
+            $members[$assignee] ??= [
+                'assignedUserId' => $assignee,
+                'open' => 0,
+                'overdue' => 0,
+                'completedTotal' => 0,
+                'completed30Days' => 0,
+            ];
+
+            if ($isOpen) {
+                $members[$assignee]['open']++;
+                if ($task->due_at && $task->due_at->isPast()) {
+                    $members[$assignee]['overdue']++;
+                }
+
+                continue;
+            }
+
+            $members[$assignee]['completedTotal']++;
+            if ($task->completed_at && $task->completed_at->greaterThanOrEqualTo($completedCutoff)) {
+                $members[$assignee]['completed30Days']++;
+            }
+        }
+
+        return [
+            'members' => array_values($members),
+            'unassignedOpen' => $unassignedOpen,
+        ];
     }
 
     public function listColdRetry(string $sheetId): array
@@ -248,7 +305,7 @@ class TaskQueueService
         ];
     }
 
-    public function snoozeTask(string $sheetId, string $taskId, Carbon $until, ?string $reason = null): array
+    public function snoozeTask(string $sheetId, string $taskId, Carbon $until, ?string $reason = null, ?string $actorUserId = null, ?string $workspaceRole = null): array
     {
         $project = $this->projects->findByWorkbookId($sheetId);
         if ($project) {
@@ -262,6 +319,8 @@ class TaskQueueService
                 })
                 ->with('creatorProfile')
                 ->firstOrFail();
+
+            $this->claimOrAuthorizeTask($task, $actorUserId, $workspaceRole);
 
             $meta = (array) ($task->metadata ?? []);
             if ($reason) {
@@ -373,11 +432,11 @@ class TaskQueueService
         return $this->normalizeSheetTaskRow($row);
     }
 
-    public function completeTask(string $sheetId, string $taskId, array $payload = []): array
+    public function completeTask(string $sheetId, string $taskId, array $payload = [], ?string $actorUserId = null, ?string $workspaceRole = null): array
     {
         $project = $this->projects->findByWorkbookId($sheetId);
         if ($project) {
-            return $this->completeTaskInDatabase($sheetId, $taskId, $payload);
+            return $this->completeTaskInDatabase($sheetId, $taskId, $payload, $actorUserId, $workspaceRole);
         }
 
         if (str_starts_with($sheetId, 'workspace:')) {
@@ -857,7 +916,7 @@ class TaskQueueService
         return $this->normalizeDbTask($task);
     }
 
-    private function completeTaskInDatabase(string $sheetId, string $taskId, array $payload = []): array
+    private function completeTaskInDatabase(string $sheetId, string $taskId, array $payload = [], ?string $actorUserId = null, ?string $workspaceRole = null): array
     {
         $project = $this->projects->findByWorkbookId($sheetId);
         if (! $project) {
@@ -874,6 +933,8 @@ class TaskQueueService
             })
             ->with(['creatorProfile.creator', 'messageTemplate'])
             ->firstOrFail();
+
+        $this->claimOrAuthorizeTask($task, $actorUserId, $workspaceRole);
 
         $settings = $this->resolveTaskSettings($this->resolveWorkspaceForSheet($sheetId, $project));
         $status = strtoupper(trim((string) ($payload['status'] ?? 'COMPLETED')));
@@ -2252,6 +2313,35 @@ class TaskQueueService
         $role = is_string($role) ? trim($role) : '';
 
         return $role !== '' ? $role : null;
+    }
+
+    private function claimOrAuthorizeTask(Task $task, ?string $actorUserId, ?string $workspaceRole): void
+    {
+        if (in_array(strtolower(trim((string) $workspaceRole)), ['owner', 'admin'], true)) {
+            return;
+        }
+
+        $actorUserId = trim((string) $actorUserId);
+        if ($actorUserId === '') {
+            throw new AuthorizationException('A signed-in workspace member is required to manage this task.');
+        }
+
+        $currentAssignee = trim((string) ($task->assigned_user_id ?? ''));
+        if ($currentAssignee !== '' && $currentAssignee !== $actorUserId) {
+            throw new AuthorizationException('This task is assigned to another workspace member.');
+        }
+
+        if ($currentAssignee === '') {
+            Task::query()
+                ->whereKey($task->getKey())
+                ->whereNull('assigned_user_id')
+                ->update(['assigned_user_id' => $actorUserId]);
+            $task->refresh();
+
+            if ((string) $task->assigned_user_id !== $actorUserId) {
+                throw new AuthorizationException('Another workspace member claimed this task first.');
+            }
+        }
     }
 
     private function timePressureEnabled(array $settings): bool

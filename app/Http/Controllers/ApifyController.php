@@ -541,7 +541,13 @@ class ApifyController extends Controller
         ]);
 
         $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
-        $result = $this->taskQueue->completeTask($sheetId, $taskId, $validated);
+        $result = $this->taskQueue->completeTask(
+            $sheetId,
+            $taskId,
+            $validated,
+            (string) $request->attributes->get('supabase_user_id'),
+            (string) $request->attributes->get('workspace_role'),
+        );
 
         return response()->json([
             'message' => 'Task completed and logged',
@@ -560,7 +566,14 @@ class ApifyController extends Controller
 
         $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
         $until = Carbon::parse((string) $validated['until']);
-        $result = $this->taskQueue->snoozeTask($sheetId, $taskId, $until, $validated['reason'] ?? null);
+        $result = $this->taskQueue->snoozeTask(
+            $sheetId,
+            $taskId,
+            $until,
+            $validated['reason'] ?? null,
+            (string) $request->attributes->get('supabase_user_id'),
+            (string) $request->attributes->get('workspace_role'),
+        );
 
         return response()->json([
             'message' => 'Task snoozed',
@@ -634,6 +647,21 @@ class ApifyController extends Controller
             'sheetId' => $sheetId,
             'tasks' => $tasks,
             'queueHealth' => $queueHealth,
+        ]);
+    }
+
+    public function teamTaskSummary(Request $request)
+    {
+        $validated = $request->validate([
+            'sheetId' => ['nullable', 'string'],
+        ]);
+
+        $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
+
+        return response()->json([
+            'message' => 'Team task summary fetched',
+            'sheetId' => $sheetId,
+            ...$this->taskQueue->teamWorkload($sheetId),
         ]);
     }
 
