@@ -263,6 +263,25 @@ class DataLifecycleService
         }
 
         DB::transaction(function () use ($userId) {
+            if (Schema::hasTable('tasks') && Schema::hasColumn('tasks', 'assigned_user_id')) {
+                DB::table('tasks')->where(function ($query) use ($userId) {
+                    $query->where('assigned_user_id', $userId)
+                        ->orWhere('assigned_by_user_id', $userId)
+                        ->orWhere('completed_by_user_id', $userId);
+                })->update([
+                    'assigned_user_id' => null,
+                    'assigned_by_user_id' => null,
+                    'assigned_at' => null,
+                    'completed_by_user_id' => null,
+                    'updated_at' => now(),
+                ]);
+            }
+            if (Schema::hasTable('creator_profiles') && Schema::hasColumn('creator_profiles', 'assigned_user_id')) {
+                DB::table('creator_profiles')->where('assigned_user_id', $userId)->update([
+                    'assigned_user_id' => null,
+                    'updated_at' => now(),
+                ]);
+            }
             DB::table('workspace_members')->where('user_id', $userId)->delete();
             DB::table('users')->where('supabase_user_id', $userId)->delete();
         });

@@ -341,7 +341,7 @@ class WorkspaceController extends Controller
         $currentMembership = $request->attributes->get('workspace_membership');
 
         $validated = $request->validate([
-            'workspaceIds' => ['required', 'array'],
+            'workspaceIds' => ['present', 'array'],
             'workspaceIds.*' => ['uuid'],
             'role' => ['nullable', Rule::in(['admin', 'member'])],
         ]);
@@ -378,8 +378,21 @@ class WorkspaceController extends Controller
             ->all();
 
         $finalWorkspaceIds = array_values(array_unique(array_merge($workspaceIds, $existingOwnerMemberships)));
+        $removedWorkspaceIds = WorkspaceMember::query()
+            ->whereIn('workspace_id', $accountWorkspaceIds)
+            ->where('user_id', $targetUserId)
+            ->where('role', '!=', 'owner')
+            ->whereNotIn('workspace_id', $finalWorkspaceIds ?: ['00000000-0000-0000-0000-000000000000'])
+            ->pluck('workspace_id')
+            ->map(fn ($id) => (string) $id)
+            ->all();
 
-        DB::transaction(function () use ($accountWorkspaceIds, $finalWorkspaceIds, $targetUserId, $role, $currentMembership) {
+        DB::transaction(function () use ($accountWorkspaceIds, $finalWorkspaceIds, $removedWorkspaceIds, $targetUserId, $role, $currentMembership) {
+            $releasedByWorkspace = [];
+            foreach ($removedWorkspaceIds as $removedWorkspaceId) {
+                $releasedByWorkspace[$removedWorkspaceId] = $this->releaseMemberAssignments($removedWorkspaceId, $targetUserId);
+            }
+
             WorkspaceMember::query()
                 ->whereIn('workspace_id', $accountWorkspaceIds)
                 ->where('user_id', $targetUserId)
@@ -417,6 +430,7 @@ class WorkspaceController extends Controller
                     'role' => $role,
                     'workspace_ids' => $finalWorkspaceIds,
                     'has_access' => in_array($workspaceId, $finalWorkspaceIds, true),
+                    'released_assignments' => $releasedByWorkspace[$workspaceId] ?? null,
                 ]);
             }
         });
@@ -894,16 +908,23 @@ class WorkspaceController extends Controller
             return response()->json(['error' => 'Only workspace owners can remove admins.'], 403);
         }
 
-        $member->delete();
+        $releasedAssignments = DB::transaction(function () use ($workspace, $member) {
+            $releasedAssignments = $this->releaseMemberAssignments((string) $workspace->id, (string) $member->user_id);
+            $member->delete();
+
+            return $releasedAssignments;
+        });
         Cache::forget(sprintf('workspace-context:user-memberships:%s', $member->user_id));
         Cache::forget(sprintf('workspace-context:membership:%s:%s', $workspace->id, $member->user_id));
         $this->logWorkspaceAudit($workspace->id, $currentMembership->user_id, 'member_removed', 'user', $member->user_id, [
             'membership_id' => $member->id,
             'role' => $member->role,
+            'released_assignments' => $releasedAssignments,
         ]);
 
         return response()->json([
             'message' => 'Workspace member removed',
+            'releasedAssignments' => $releasedAssignments,
             'data' => $this->workspacePayload($workspace->fresh(), $currentMembership),
         ]);
     }
@@ -1125,7 +1146,7 @@ class WorkspaceController extends Controller
 
         $ids = array_values(array_unique(array_filter(array_map(
             fn ($id) => trim((string) $id),
-            $requestedWorkspaceIds ?: [(string) $workspace->id]
+            $requestedWorkspaceIds
         ))));
 
         return array_values(array_filter($ids, fn ($id) => isset($allowed[$id])));
@@ -1599,6 +1620,33 @@ class WorkspaceController extends Controller
         ]);
 
         return DB::table('billing_accounts')->where('id', $accountId)->lockForUpdate()->first();
+    }
+
+    /** @return array{tasks: int, creators: int} */
+    private function releaseMemberAssignments(string $workspaceId, string $userId): array
+    {
+        $projectIds = DB::table('projects')
+            ->where('workspace_id', $workspaceId)
+            ->pluck('id');
+        $releasedTasks = DB::table('tasks')
+            ->whereIn('project_id', $projectIds)
+            ->where('assigned_user_id', $userId)
+            ->whereNotIn('status', ['COMPLETED', 'DONE', 'SKIPPED', 'ARCHIVED'])
+            ->update([
+                'assigned_user_id' => null,
+                'assigned_by_user_id' => null,
+                'assigned_at' => null,
+                'updated_at' => now(),
+            ]);
+        $releasedProfiles = DB::table('creator_profiles')
+            ->whereIn('project_id', $projectIds)
+            ->where('assigned_user_id', $userId)
+            ->update([
+                'assigned_user_id' => null,
+                'updated_at' => now(),
+            ]);
+
+        return ['tasks' => $releasedTasks, 'creators' => $releasedProfiles];
     }
 
     private function uniqueSlug(string $name): string

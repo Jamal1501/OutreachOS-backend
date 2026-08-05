@@ -77,22 +77,27 @@ class TaskQueueService
 
         foreach (Task::query()
             ->where('project_id', $project->id)
-            ->select(['assigned_user_id', 'status', 'due_at', 'completed_at'])
+            ->select(['assigned_user_id', 'completed_by_user_id', 'status', 'due_at', 'completed_at'])
             ->cursor() as $task) {
             $status = strtoupper(trim((string) $task->status));
             $isOpen = ! in_array($status, self::TERMINAL_TASK_STATUSES, true);
             $assignee = trim((string) ($task->assigned_user_id ?? ''));
 
-            if ($assignee === '') {
-                if ($isOpen) {
-                    $unassignedOpen++;
-                }
+            if ($isOpen && $assignee === '') {
+                $unassignedOpen++;
 
                 continue;
             }
 
-            $members[$assignee] ??= [
-                'assignedUserId' => $assignee,
+            $workloadUserId = $isOpen
+                ? $assignee
+                : trim((string) ($task->completed_by_user_id ?: $task->assigned_user_id));
+            if ($workloadUserId === '') {
+                continue;
+            }
+
+            $members[$workloadUserId] ??= [
+                'assignedUserId' => $workloadUserId,
                 'open' => 0,
                 'overdue' => 0,
                 'completedTotal' => 0,
@@ -100,17 +105,17 @@ class TaskQueueService
             ];
 
             if ($isOpen) {
-                $members[$assignee]['open']++;
+                $members[$workloadUserId]['open']++;
                 if ($task->due_at && $task->due_at->isPast()) {
-                    $members[$assignee]['overdue']++;
+                    $members[$workloadUserId]['overdue']++;
                 }
 
                 continue;
             }
 
-            $members[$assignee]['completedTotal']++;
+            $members[$workloadUserId]['completedTotal']++;
             if ($task->completed_at && $task->completed_at->greaterThanOrEqualTo($completedCutoff)) {
-                $members[$assignee]['completed30Days']++;
+                $members[$workloadUserId]['completed30Days']++;
             }
         }
 
@@ -1013,6 +1018,9 @@ class TaskQueueService
 
         $task->status = $status;
         $task->completed_at = in_array($status, ['COMPLETED', 'DONE', 'SKIPPED'], true) ? now() : null;
+        $task->completed_by_user_id = in_array($status, self::TERMINAL_TASK_STATUSES, true)
+            ? ($actorUserId ?: $task->completed_by_user_id)
+            : null;
         $task->completion_outcome = $outcome !== '' ? $outcome : null;
         $task->skip_reason = $skipReason !== '' ? $skipReason : null;
         $task->skip_reason_detail = $skipReasonDetail !== '' ? $skipReasonDetail : null;
@@ -1044,7 +1052,7 @@ class TaskQueueService
                 }
             }
 
-            $relatedTaskUpdates = $this->applyRelatedWarmupTasksAfterOutreach($project->id, $sheetId, $profile, $task, $payload, $senderAccount);
+            $relatedTaskUpdates = $this->applyRelatedWarmupTasksAfterOutreach($project->id, $sheetId, $profile, $task, $payload, $senderAccount, $actorUserId);
             $cleanupTaskUpdates = $this->cleanupSupersededOpenTasks($project->id, $profile, $task, $payload);
             $profile->refresh();
             $this->maybeCreateImmediateNextTask($project->id, $profile, $task, $settings);
@@ -1119,6 +1127,11 @@ class TaskQueueService
 
         if ($existing) {
             $meta = (array) ($existing->metadata ?? []);
+            if ($originalTask->assigned_user_id) {
+                $existing->assigned_user_id = $originalTask->assigned_user_id;
+                $existing->assigned_by_user_id = $originalTask->assigned_by_user_id;
+                $existing->assigned_at = $originalTask->assigned_at ?: now();
+            }
             $existing->metadata = array_merge($meta, [
                 'selected_after_changed_task_id' => (string) ($originalTask->external_task_key ?: $originalTask->id),
                 'selected_after_original_task_type' => (string) $originalTask->task_type,
@@ -1160,6 +1173,7 @@ class TaskQueueService
                 'group_context' => in_array($replacementTaskType, ['DM_INVITE', 'EMAIL_SEND'], true) ? 'first_outreach' : 'next_step',
             ]
         );
+        $candidate['assigned_user_id'] = $originalTask->assigned_user_id;
 
         $task = $this->createDatabaseTask($projectId, $profile, $candidate, MessageTemplate::query()->where('project_id', $projectId)->get()->all(), true);
 
@@ -1211,13 +1225,14 @@ class TaskQueueService
             notes: $notes,
             metadata: $meta
         );
+        $candidate['assigned_user_id'] = $originalTask->assigned_user_id;
 
         $task = $this->createDatabaseTask($projectId, $profile, $candidate, MessageTemplate::query()->where('project_id', $projectId)->get()->all());
 
         return $this->normalizeDbTask($task->load(['creatorProfile.creator', 'messageTemplate']));
     }
 
-    private function applyRelatedWarmupTasksAfterOutreach(string $projectId, string $sheetId, CreatorProfile $profile, Task $completedTask, array $payload, string $senderAccount = ''): array
+    private function applyRelatedWarmupTasksAfterOutreach(string $projectId, string $sheetId, CreatorProfile $profile, Task $completedTask, array $payload, string $senderAccount = '', ?string $actorUserId = null): array
     {
         $status = strtoupper((string) ($completedTask->status ?? ''));
         if (! in_array($status, self::TERMINAL_TASK_STATUSES, true)) {
@@ -1258,6 +1273,7 @@ class TaskQueueService
                 $outcome = $relatedTask->task_type === 'FOLLOW_REQUEST' ? 'followed' : 'commented';
                 $relatedTask->status = 'COMPLETED';
                 $relatedTask->completed_at = $now;
+                $relatedTask->completed_by_user_id = $actorUserId ?: $completedTask->completed_by_user_id;
                 $relatedTask->completion_outcome = $outcome;
                 $relatedTask->notes = trim(((string) ($relatedTask->notes ?? '')).' Completed alongside '.$actionType.' from Outreach Panel.');
                 $relatedTask->metadata = array_merge($meta, [
@@ -2168,6 +2184,7 @@ class TaskQueueService
                 'thread_reference' => (string) ($profile->conversation_url ?: ''),
             ]
         );
+        $candidate['assigned_user_id'] = $task->assigned_user_id;
 
         $this->createDatabaseTask($projectId, $profile, $candidate, MessageTemplate::query()->where('project_id', $projectId)->get()->all());
     }
@@ -2180,12 +2197,15 @@ class TaskQueueService
         $groupMeta = $this->groupMetaForTask($taskType, (array) ($candidate['metadata'] ?? []), $manual);
         $messageDraft = $this->sanitizeStoredMessageDraft((string) ($candidate['message_draft'] ?? ''));
         $taskId = (string) Str::uuid();
+        $assignedUserId = $candidate['assigned_user_id'] ?? $profile?->assigned_user_id;
 
         return Task::create([
             'project_id' => $projectId,
             'creator_profile_id' => $profile?->id,
             'import_batch_id' => $candidate['import_batch_id'] ?? null,
-            'assigned_user_id' => $candidate['assigned_user_id'] ?? $profile?->assigned_user_id,
+            'assigned_user_id' => $assignedUserId,
+            'assigned_by_user_id' => $candidate['assigned_by_user_id'] ?? null,
+            'assigned_at' => $assignedUserId ? ($candidate['assigned_at'] ?? now()) : null,
             'message_template_id' => $template?->id,
             'external_task_key' => $taskId,
             'platform' => $platform,
@@ -2330,12 +2350,49 @@ class TaskQueueService
         if ($currentAssignee !== '' && $currentAssignee !== $actorUserId) {
             throw new AuthorizationException('This task is assigned to another workspace member.');
         }
+        if ($task->creator_profile_id) {
+            $profileOwnedByAnotherMember = CreatorProfile::query()
+                ->whereKey($task->creator_profile_id)
+                ->whereNotNull('assigned_user_id')
+                ->where('assigned_user_id', '!=', $actorUserId)
+                ->exists();
+            $taskOwnedByAnotherMember = Task::query()
+                ->where('project_id', $task->project_id)
+                ->where('creator_profile_id', $task->creator_profile_id)
+                ->whereNotIn('status', self::TERMINAL_TASK_STATUSES)
+                ->whereNotNull('assigned_user_id')
+                ->where('assigned_user_id', '!=', $actorUserId)
+                ->exists();
+            if ($profileOwnedByAnotherMember || $taskOwnedByAnotherMember) {
+                throw new AuthorizationException('Another workspace member owns this creator workflow.');
+            }
+        }
 
         if ($currentAssignee === '') {
-            Task::query()
-                ->whereKey($task->getKey())
-                ->whereNull('assigned_user_id')
-                ->update(['assigned_user_id' => $actorUserId]);
+            DB::transaction(function () use ($task, $actorUserId) {
+                $assignment = [
+                    'assigned_user_id' => $actorUserId,
+                    'assigned_by_user_id' => $actorUserId,
+                    'assigned_at' => now(),
+                ];
+                $claimed = Task::query()
+                    ->whereKey($task->getKey())
+                    ->whereNull('assigned_user_id')
+                    ->update($assignment);
+
+                if ($claimed !== 1) {
+                    return;
+                }
+
+                if ($task->creator_profile_id) {
+                    CreatorProfile::query()->whereKey($task->creator_profile_id)->update(['assigned_user_id' => $actorUserId]);
+                    Task::query()
+                        ->where('project_id', $task->project_id)
+                        ->where('creator_profile_id', $task->creator_profile_id)
+                        ->whereNotIn('status', self::TERMINAL_TASK_STATUSES)
+                        ->update($assignment);
+                }
+            });
             $task->refresh();
 
             if ((string) $task->assigned_user_id !== $actorUserId) {

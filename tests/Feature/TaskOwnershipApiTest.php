@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Models\Creator;
+use App\Models\CreatorProfile;
 use App\Models\Project;
 use App\Models\Task;
 use App\Models\User;
@@ -19,7 +21,9 @@ class TaskOwnershipApiTest extends TestCase
     public function test_members_can_claim_and_release_their_own_tasks_but_cannot_take_another_members_task(): void
     {
         [$owner, $memberA, $memberB, $workspace, $project] = $this->fixture();
-        $task = $this->task($project);
+        $profile = $this->profile($project);
+        $task = $this->task($project, creatorProfileId: $profile->id);
+        $siblingTask = $this->task($project, creatorProfileId: $profile->id);
 
         $this->fakeSupabaseUsers([
             'member-a-token' => $memberA,
@@ -42,6 +46,8 @@ class TaskOwnershipApiTest extends TestCase
             ])
             ->assertForbidden();
         $this->assertSame($memberA->supabase_user_id, $task->fresh()->assigned_user_id);
+        $this->assertSame($memberA->supabase_user_id, $siblingTask->fresh()->assigned_user_id);
+        $this->assertSame($memberA->supabase_user_id, $profile->fresh()->assigned_user_id);
 
         $this->withToken('member-b-token')
             ->withHeader('X-Workspace-Id', $workspace->id)
@@ -60,6 +66,8 @@ class TaskOwnershipApiTest extends TestCase
             ->assertOk()
             ->assertJsonPath('assignedUserId', null);
         $this->assertNull($task->fresh()->assigned_user_id);
+        $this->assertNull($siblingTask->fresh()->assigned_user_id);
+        $this->assertNull($profile->fresh()->assigned_user_id);
     }
 
     public function test_owner_can_view_team_workload_and_members_cannot(): void
@@ -88,6 +96,137 @@ class TaskOwnershipApiTest extends TestCase
             ->withHeader('X-Workspace-Id', $workspace->id)
             ->getJson('/api/tasks/team-summary?sheetId='.urlencode($project->workbook_id))
             ->assertForbidden();
+    }
+
+    public function test_completed_work_is_credited_to_the_actual_member(): void
+    {
+        [$owner, $memberA, $memberB, $workspace, $project] = $this->fixture();
+        $this->task(
+            $project,
+            $memberA->supabase_user_id,
+            'COMPLETED',
+            now()->subDay(),
+            now(),
+            completedByUserId: $memberB->supabase_user_id,
+        );
+
+        $this->fakeSupabaseUsers(['owner-token' => $owner]);
+        $response = $this->withToken('owner-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->getJson('/api/tasks/team-summary?sheetId='.urlencode($project->workbook_id))
+            ->assertOk();
+
+        $summary = collect($response->json('members'));
+        $this->assertNull($summary->firstWhere('assignedUserId', $memberA->supabase_user_id));
+        $this->assertSame(1, $summary->firstWhere('assignedUserId', $memberB->supabase_user_id)['completed30Days']);
+    }
+
+    public function test_completing_a_task_records_the_actual_actor(): void
+    {
+        [$owner, $memberA, $memberB, $workspace, $project] = $this->fixture();
+        $task = $this->task($project, $memberA->supabase_user_id);
+
+        $this->fakeSupabaseUsers(['owner-token' => $owner]);
+        $this->withToken('owner-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/tasks/'.$task->external_task_key.'/complete', [
+                'sheetId' => $project->workbook_id,
+                'status' => 'COMPLETED',
+                'outcome' => 'sent',
+            ])
+            ->assertOk();
+
+        $this->assertSame($owner->supabase_user_id, $task->fresh()->completed_by_user_id);
+    }
+
+    public function test_member_cannot_claim_an_unassigned_task_from_another_members_creator_workflow(): void
+    {
+        [$owner, $memberA, $memberB, $workspace, $project] = $this->fixture();
+        $profile = $this->profile($project, $memberB->supabase_user_id);
+        $task = $this->task($project, creatorProfileId: $profile->id);
+
+        $this->fakeSupabaseUsers(['member-a-token' => $memberA]);
+        $this->withToken('member-a-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/tasks/'.$task->external_task_key.'/complete', [
+                'sheetId' => $project->workbook_id,
+                'status' => 'COMPLETED',
+            ])
+            ->assertForbidden();
+
+        $this->assertSame('PENDING', $task->fresh()->status);
+        $this->assertNull($task->fresh()->assigned_user_id);
+    }
+
+    public function test_owner_can_bulk_assign_unassigned_creator_workflows(): void
+    {
+        [$owner, $memberA, $memberB, $workspace, $project] = $this->fixture();
+        $profiles = collect(range(1, 3))->map(fn () => $this->profile($project));
+        foreach ($profiles as $profile) {
+            $this->task($project, creatorProfileId: $profile->id);
+            $this->task($project, creatorProfileId: $profile->id);
+        }
+
+        $this->fakeSupabaseUsers(['owner-token' => $owner]);
+        $this->withToken('owner-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/tasks/assign-unassigned', [
+                'sheetId' => $project->workbook_id,
+                'assignedUserId' => $memberA->supabase_user_id,
+                'limit' => 2,
+            ])
+            ->assertOk()
+            ->assertJsonPath('assignedWorkflows', 2)
+            ->assertJsonPath('updatedTasks', 4);
+
+        $this->assertSame(4, Task::query()->where('assigned_user_id', $memberA->supabase_user_id)->count());
+        $this->assertSame(2, CreatorProfile::query()->where('assigned_user_id', $memberA->supabase_user_id)->count());
+    }
+
+    public function test_removing_a_member_releases_their_open_work(): void
+    {
+        [$owner, $memberA, $memberB, $workspace, $project] = $this->fixture();
+        $profile = $this->profile($project, $memberA->supabase_user_id);
+        $task = $this->task($project, $memberA->supabase_user_id, creatorProfileId: $profile->id);
+        $membership = WorkspaceMember::query()
+            ->where('workspace_id', $workspace->id)
+            ->where('user_id', $memberA->supabase_user_id)
+            ->firstOrFail();
+
+        $this->fakeSupabaseUsers(['owner-token' => $owner]);
+        $this->withToken('owner-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->deleteJson('/api/workspaces/members/'.$membership->id)
+            ->assertOk()
+            ->assertJsonPath('releasedAssignments.tasks', 1)
+            ->assertJsonPath('releasedAssignments.creators', 1);
+
+        $this->assertNull($task->fresh()->assigned_user_id);
+        $this->assertNull($profile->fresh()->assigned_user_id);
+        $this->assertDatabaseMissing('workspace_members', ['id' => $membership->id]);
+    }
+
+    public function test_removing_workspace_access_also_releases_open_work(): void
+    {
+        [$owner, $memberA, $memberB, $workspace, $project] = $this->fixture();
+        $profile = $this->profile($project, $memberA->supabase_user_id);
+        $task = $this->task($project, $memberA->supabase_user_id, creatorProfileId: $profile->id);
+
+        $this->fakeSupabaseUsers(['owner-token' => $owner]);
+        $this->withToken('owner-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->putJson('/api/workspaces/members/'.$memberA->supabase_user_id.'/workspaces', [
+                'workspaceIds' => [],
+                'role' => 'member',
+            ])
+            ->assertOk();
+
+        $this->assertNull($task->fresh()->assigned_user_id);
+        $this->assertNull($profile->fresh()->assigned_user_id);
+        $this->assertDatabaseMissing('workspace_members', [
+            'workspace_id' => $workspace->id,
+            'user_id' => $memberA->supabase_user_id,
+        ]);
     }
 
     private function fixture(): array
@@ -132,10 +271,38 @@ class TaskOwnershipApiTest extends TestCase
         ]);
     }
 
-    private function task(Project $project, ?string $assignedUserId = null, string $status = 'PENDING', mixed $dueAt = null, mixed $completedAt = null): Task
+    private function profile(Project $project, ?string $assignedUserId = null): CreatorProfile
     {
+        $handle = 'creator_'.Str::lower(Str::random(8));
+        $creator = Creator::query()->create([
+            'project_id' => $project->id,
+            'external_identity_key' => 'instagram:'.$handle,
+            'display_name' => 'Task Creator',
+        ]);
+
+        return CreatorProfile::query()->create([
+            'project_id' => $project->id,
+            'creator_id' => $creator->id,
+            'platform' => 'instagram',
+            'handle' => $handle,
+            'status' => 'APPROVED',
+            'lifecycle_state' => 'approved',
+            'assigned_user_id' => $assignedUserId,
+        ]);
+    }
+
+    private function task(
+        Project $project,
+        ?string $assignedUserId = null,
+        string $status = 'PENDING',
+        mixed $dueAt = null,
+        mixed $completedAt = null,
+        ?string $creatorProfileId = null,
+        ?string $completedByUserId = null,
+    ): Task {
         return Task::query()->create([
             'project_id' => $project->id,
+            'creator_profile_id' => $creatorProfileId,
             'external_task_key' => (string) Str::uuid(),
             'task_type' => 'DM_INVITE',
             'priority' => 'MEDIUM',
@@ -143,6 +310,7 @@ class TaskOwnershipApiTest extends TestCase
             'due_at' => $dueAt ?? now()->addDay(),
             'completed_at' => $completedAt,
             'assigned_user_id' => $assignedUserId,
+            'completed_by_user_id' => $completedByUserId,
         ]);
     }
 

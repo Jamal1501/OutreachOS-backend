@@ -154,6 +154,7 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::post('/tasks/{taskId}/complete', [ApifyController::class, 'completeTask']);
     Route::post('/tasks/{taskId}/snooze', [ApifyController::class, 'snoozeTask']);
     Route::put('/tasks/{taskId}/assignment', [TaskAssignmentController::class, 'update']);
+    Route::post('/tasks/assign-unassigned', [TaskAssignmentController::class, 'assignUnassigned'])->middleware('workspace.role:owner,admin');
 
     Route::get('/billing/summary', [BillingController::class, 'summary']);
     Route::get('/billing/catalog', [BillingController::class, 'catalog']);

@@ -51,6 +51,9 @@ class Task extends Model
         'metadata',
         'import_batch_id',
         'assigned_user_id',
+        'assigned_by_user_id',
+        'assigned_at',
+        'completed_by_user_id',
     ];
 
     protected function casts(): array
@@ -60,6 +63,7 @@ class Task extends Model
             'snoozed_until' => 'datetime',
             'waiting_until' => 'datetime',
             'completed_at' => 'datetime',
+            'assigned_at' => 'datetime',
             'follow_up_count' => 'integer',
             'metadata' => 'array',
         ];
