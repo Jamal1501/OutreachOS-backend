@@ -49,13 +49,16 @@ class AiPersonalizationService
         $tonePreference = $this->normalizeTonePreference((string) ($payload['tonePreference'] ?? $taskContext['tonePreference'] ?? ''));
         $previousMessage = trim((string) ($payload['previousMessage'] ?? ''));
         $conversationGoal = trim((string) ($payload['conversationGoal'] ?? ''));
-        $messageType = trim((string) ($payload['messageType'] ?? '')) ?: $this->defaultMessageType((string) ($creator['platform'] ?? 'instagram'));
+        $messageType = $this->normalizeMessageType(
+            trim((string) ($payload['messageType'] ?? '')) ?: $this->defaultMessageType((string) ($creator['platform'] ?? 'instagram'))
+        );
         $evidencePack = $this->buildEvidencePack($creator, $projectContext, $taskContext, $templateContext, $replyContext);
 
         $schema = [
             'type' => 'object',
             'properties' => [
                 'personalizedMessage' => ['type' => 'string'],
+                'emailSubject' => ['type' => 'string'],
                 'personalizationNotes' => ['type' => 'string'],
                 'creativeAngle' => ['type' => 'string'],
                 'contentIdea' => ['type' => 'string'],
@@ -100,7 +103,7 @@ class AiPersonalizationService
                     'additionalProperties' => false,
                 ],
             ],
-            'required' => ['personalizedMessage', 'personalizationNotes', 'creativeAngle', 'contentIdea', 'fitScore', 'confidenceScore', 'toneUsed', 'messageType', 'analysis'],
+            'required' => ['personalizedMessage', 'emailSubject', 'personalizationNotes', 'creativeAngle', 'contentIdea', 'fitScore', 'confidenceScore', 'toneUsed', 'messageType', 'analysis'],
             'additionalProperties' => false,
         ];
 
@@ -162,7 +165,8 @@ Length guidance:
 - Follow-up DM: 160-340 characters.
 - Warm-up comment: 60-160 characters, no sales pitch.
 - Ultra short tone: keep DM under 300 characters unless email.
-- Email: start with a short `Subject: ...` line, then a blank line, then a 90-150 word email body.
+- Email: return a short subject in `emailSubject` and a 90-150 word email body in `personalizedMessage`. Do not put `Subject:` inside the message body.
+- DM, comment, post, and answer: `emailSubject` must be an empty string. Never include a subject line or email formatting.
 - Email sign-off must use TASK CONTEXT senderSignature when provided.
 - Never end with placeholders like "your name", "[Name]", "(your name)", "company name", or "[Company]".
 - If no senderSignature is provided but a brand/company is clear, sign with the company name only. If neither is available, use a plain sign-off without a fake name.
@@ -196,15 +200,18 @@ PROMPT;
             0.45,
         );
 
-        $result['messageType'] = (string) ($result['messageType'] ?? $messageType);
         $result = $this->sanitizeGeneratedPayload($result);
+        $returnedMessageType = $this->normalizeMessageType((string) ($result['messageType'] ?? ''));
 
-        $violations = $this->detectCheapOutreachViolations((string) ($result['personalizedMessage'] ?? ''));
+        $violations = array_values(array_unique(array_merge(
+            $this->detectCheapOutreachViolations((string) ($result['personalizedMessage'] ?? '')),
+            $this->detectChannelContractViolations($result, $messageType, $returnedMessageType),
+        )));
         if (! empty($violations)) {
             $repairPrompt = $userPrompt
                 ."\n\n---\n\nQUALITY REPAIR REQUIRED\n"
-                .'The first draft used banned generic outreach wording: '.implode(', ', $violations).".\n"
-                .'Rewrite from scratch. Avoid the mirrored-observation opener. Lead with a creator-native content idea plus offer relevance, use evidence only when it sounds natural, do not reuse any banned phrase, and never use the em dash character.';
+                .'The first draft violated these requirements: '.implode(', ', $violations).".\n"
+                .'Rewrite from scratch for MESSAGE TYPE '.$messageType.'. The selected message type is mandatory. Avoid the mirrored-observation opener, use evidence only when it sounds natural, do not reuse any banned phrase, and never use the em dash character.';
 
             $repaired = $this->ai->structured(
                 $systemPrompt,
@@ -215,14 +222,13 @@ PROMPT;
                 0.35,
             );
 
-            $repaired['messageType'] = (string) ($repaired['messageType'] ?? $messageType);
             $repaired = $this->sanitizeGeneratedPayload($repaired);
             $repaired['personalizationNotes'] = trim((string) ($repaired['personalizationNotes'] ?? '').' Auto-repaired first draft after banned generic wording was detected.');
 
-            return $this->guardAgainstCheapOutreach($repaired);
+            return $this->guardAgainstCheapOutreach($this->enforceChannelContract($repaired, $messageType, $taskContext));
         }
 
-        return $this->guardAgainstCheapOutreach($result);
+        return $this->guardAgainstCheapOutreach($this->enforceChannelContract($result, $messageType, $taskContext));
     }
 
     private function buildUserPrompt(
@@ -245,6 +251,7 @@ PROMPT;
         $sections[] = "PROJECT / BRAND CONTEXT\n".($projectContext !== '' ? $projectContext : 'No project context supplied. Keep the message neutral, professional, and low-assumption.');
         $sections[] = "OUTREACH STAGE\n".($stage !== '' ? $stage : 'unspecified');
         $sections[] = "MESSAGE TYPE\n".$messageType;
+        $sections[] = "CHANNEL CONTRACT - mandatory\n".$this->channelContractInstruction($messageType);
         $sections[] = "GENERATION MODE\n".($generationMode !== '' ? $generationMode : 'fresh_draft');
         $sections[] = "TONE PREFERENCE\n".$tonePreference;
 
@@ -559,6 +566,75 @@ INSTRUCTIONS;
         $allowed = ['warm_direct', 'casual', 'premium', 'playful', 'professional', 'ultra_short'];
 
         return in_array($normalized, $allowed, true) ? $normalized : 'warm_direct';
+    }
+
+    private function normalizeMessageType(string $value): string
+    {
+        $normalized = strtolower(trim($value));
+
+        return in_array($normalized, ['dm', 'post', 'comment', 'answer', 'email'], true)
+            ? $normalized
+            : 'dm';
+    }
+
+    private function channelContractInstruction(string $messageType): string
+    {
+        return match ($messageType) {
+            'email' => 'Write an email only. Return a non-empty emailSubject separately. personalizedMessage must contain the email body only, use 90-150 words, and read like an email rather than a social DM.',
+            'comment' => 'Write one short public social comment only. emailSubject must be empty. Do not use a greeting, subject line, email sign-off, or private-message format.',
+            'answer' => 'Write a direct reply to the creator only. emailSubject must be empty. Continue the conversation naturally and do not use a subject line or cold-email format.',
+            'post' => 'Write social post copy only. emailSubject must be empty. Do not use email or direct-message formatting.',
+            default => 'Write a social-platform DM only. emailSubject must be empty. Do not use a subject line, formal email structure, or email sign-off.',
+        };
+    }
+
+    private function detectChannelContractViolations(array $result, string $requestedMessageType, string $returnedMessageType): array
+    {
+        $message = trim((string) ($result['personalizedMessage'] ?? ''));
+        $emailSubject = trim((string) ($result['emailSubject'] ?? ''));
+        $violations = [];
+
+        if ($returnedMessageType !== $requestedMessageType) {
+            $violations[] = 'returned '.$returnedMessageType.' instead of selected '.$requestedMessageType;
+        }
+
+        if ($requestedMessageType === 'email') {
+            $wordCount = str_word_count(strip_tags($message));
+            if ($wordCount < 45) {
+                $violations[] = 'email body is too short and reads like a DM';
+            }
+        } else {
+            if ($emailSubject !== '' || preg_match('/^\s*subject\s*:/i', $message)) {
+                $violations[] = 'non-email draft contains an email subject';
+            }
+            if ($requestedMessageType === 'dm' && (mb_strlen($message) > 650 || str_word_count(strip_tags($message)) > 90)) {
+                $violations[] = 'DM is formatted like a long email';
+            }
+        }
+
+        return $violations;
+    }
+
+    private function enforceChannelContract(array $result, string $messageType, array $taskContext): array
+    {
+        $message = trim((string) ($result['personalizedMessage'] ?? ''));
+        $subjectFromBody = '';
+
+        if (preg_match('/^\s*subject\s*:\s*([^\r\n]+)(?:\r?\n)+/i', $message, $matches)) {
+            $subjectFromBody = trim((string) ($matches[1] ?? ''));
+            $message = trim((string) preg_replace('/^\s*subject\s*:\s*[^\r\n]+(?:\r?\n)+/i', '', $message, 1));
+        }
+
+        $result['messageType'] = $messageType;
+        $result['personalizedMessage'] = $message;
+        $result['emailSubject'] = $messageType === 'email'
+            ? (trim((string) ($result['emailSubject'] ?? ''))
+                ?: $subjectFromBody
+                ?: trim((string) ($taskContext['emailSubject'] ?? ''))
+                ?: 'Creator collaboration idea')
+            : '';
+
+        return $result;
     }
 
     private function sanitizeGeneratedPayload(array $result): array
