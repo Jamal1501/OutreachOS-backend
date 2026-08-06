@@ -135,6 +135,7 @@ class OperatorViewNextBestActionTest extends TestCase
             ],
             [
                 ['id' => 'task-1', 'type' => 'DM_FOLLOWUP', 'status' => 'pending', 'dueDate' => '2026-06-26 09:00:00'],
+                ['id' => 'task-2', 'creatorProfileId' => '2', 'type' => 'REVIEW_CREATOR', 'groupType' => 'reply_review', 'status' => 'pending', 'dueDate' => '2026-06-27 10:00:00'],
             ],
             [
                 ['key' => 'dup-1', 'risk' => 'high'],
@@ -148,11 +149,81 @@ class OperatorViewNextBestActionTest extends TestCase
             ],
         ]);
 
-        $this->assertStringStartsWith('Today:', $health['dailyBrief']);
-        $this->assertContains('duplicate_blockers', array_column($health['bottlenecks'], 'key'));
+        $this->assertStringStartsWith('Right now:', $health['dailyBrief']);
+        $this->assertContains('duplicate_reviews', array_column($health['bottlenecks'], 'key'));
         $this->assertContains('overdue_tasks', array_column($health['bottlenecks'], 'key'));
         $this->assertContains('replies_waiting', array_column($health['bottlenecks'], 'key'));
+        $this->assertSame(1, $health['counts']['repliesWaiting']);
         $this->assertSame(1, $health['counts']['qualifiedButNoTask']);
+    }
+
+    public function test_replied_lifecycle_without_an_open_reply_review_is_not_counted_as_waiting(): void
+    {
+        $health = $this->invokePrivate('workflowHealth', [
+            [
+                ['id' => 'creator-1', 'lifecycleState' => 'replied', 'email' => '', 'profileUrl' => 'https://instagram.com/creator'],
+            ],
+            [],
+            [],
+            [],
+            [],
+            [],
+        ]);
+
+        $this->assertSame(0, $health['counts']['repliesWaiting']);
+        $this->assertNotContains('replies_waiting', array_column($health['bottlenecks'], 'key'));
+    }
+
+    public function test_duplicate_signals_for_the_same_creator_pair_count_as_one_review(): void
+    {
+        $warnings = $this->invokePrivate('detectDuplicateWarnings', [[
+            [
+                'id' => 'creator-1',
+                'handle' => '@same',
+                'email' => 'same@example.com',
+                'fullName' => 'Same Creator',
+                'platform' => 'instagram',
+                'lifecycleState' => 'needs_review',
+            ],
+            [
+                'id' => 'creator-2',
+                'handle' => '@same',
+                'email' => 'same@example.com',
+                'fullName' => 'Same Creator',
+                'platform' => 'tiktok',
+                'lifecycleState' => 'needs_review',
+            ],
+        ]]);
+
+        $this->assertCount(1, $warnings);
+        $this->assertCount(2, $warnings[0]['creators']);
+        $this->assertStringContainsString('Shared handle detected', $warnings[0]['reason']);
+        $this->assertStringContainsString('Shared email detected', $warnings[0]['reason']);
+    }
+
+    public function test_reviewed_not_duplicate_creator_is_excluded_from_duplicate_warnings(): void
+    {
+        $warnings = $this->invokePrivate('detectDuplicateWarnings', [[
+            [
+                'id' => 'creator-1',
+                'handle' => '@same',
+                'email' => 'same@example.com',
+                'fullName' => 'Same Creator',
+                'platform' => 'instagram',
+                'lifecycleState' => 'enriched',
+                'duplicateReviewOutcome' => 'not_duplicate',
+            ],
+            [
+                'id' => 'creator-2',
+                'handle' => '@same',
+                'email' => 'same@example.com',
+                'fullName' => 'Same Creator',
+                'platform' => 'tiktok',
+                'lifecycleState' => 'needs_review',
+            ],
+        ]]);
+
+        $this->assertSame([], $warnings);
     }
 
     public function test_meaningful_signals_get_action_routes(): void

@@ -646,6 +646,7 @@ class OperatorViewService
             'valueTier' => Str::lower($this->scoring->tier($score)),
             'preferredChannel' => (string) ($row['Preferred_Channel'] ?? ''),
             'duplicateRisk' => trim((string) ($row['Duplicate_Flag'] ?? '')) !== '' ? 'medium' : 'low',
+            'duplicateReviewOutcome' => (string) ($this->extractTaggedValue((string) ($row['Notes'] ?? ''), 'duplicate_review_outcome') ?? ''),
             'creatorIdentityId' => $identityId !== '' ? $identityId : null,
             'linkedProfileCount' => $linkedProfileCount,
             'evidence' => [
@@ -708,6 +709,7 @@ class OperatorViewService
             'valueTier' => Str::lower($this->scoring->tier($this->presentableValueScore((float) ($profile->value_score ?? 0), (int) ($profile->followers_count ?? 0), $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null))),
             'preferredChannel' => (string) ($profile->preferred_channel ?: ''),
             'duplicateRisk' => $profile->duplicate_flag ? 'medium' : 'low',
+            'duplicateReviewOutcome' => (string) ($sourceMetadata['duplicate_review_outcome'] ?? ''),
             'creatorIdentityId' => (string) ($creator?->external_identity_key ?: ''),
             'linkedProfileCount' => $linkedProfileCount ?? 1,
             'openTaskCount' => 0,
@@ -795,6 +797,10 @@ class OperatorViewService
                 'profileUrl' => (string) ($task->open_url ?: ''),
                 'profilePicUrl' => (string) ($task->creatorProfile?->profile_pic_url ?: ''),
                 'notes' => (string) ($task->notes ?: ''),
+                'groupKey' => (string) ($task->group_key ?: ''),
+                'groupType' => (string) ($task->group_type ?: ''),
+                'metadata' => is_array($task->metadata) ? $task->metadata : [],
+                'assignedUserId' => (string) ($task->assigned_user_id ?: ''),
             ];
         }, $tasks);
 
@@ -955,7 +961,7 @@ class OperatorViewService
 
         $openTasks = array_values(array_filter($tasks, fn (array $task) => $this->isOpenTask($task)));
         $overdueTasks = array_values(array_filter($openTasks, fn (array $task) => $this->isTaskOverdue($task)));
-        $repliesWaiting = (int) ($stateCounts['replied'] ?? 0);
+        $repliesWaiting = $this->replyReviewCount($openTasks);
         $negotiating = (int) ($stateCounts['negotiating'] ?? 0);
         $accepted = (int) ($stateCounts['accepted'] ?? 0);
         $won = (int) ($stateCounts['won'] ?? 0);
@@ -984,11 +990,11 @@ class OperatorViewService
 
         $bottlenecks = array_values(array_filter([
             count($duplicates) > 0 ? [
-                'key' => 'duplicate_blockers',
-                'label' => 'Duplicate blockers',
+                'key' => 'duplicate_reviews',
+                'label' => 'Duplicate reviews',
                 'count' => count($duplicates),
                 'severity' => 'high',
-                'detail' => 'Identity conflicts should be resolved before new outreach.',
+                'detail' => 'Potential identity matches need one review before new outreach.',
                 'route' => '/duplicates',
             ] : null,
             count($overdueTasks) > 0 ? [
@@ -1095,11 +1101,11 @@ class OperatorViewService
             $parts[] = $repliesWaiting.' creator '.($repliesWaiting === 1 ? 'reply needs' : 'replies need').' handling';
         }
         if ($outreachQueue > 0) {
-            $parts[] = $outreachQueue.' creator'.($outreachQueue === 1 ? ' is' : 's are').' in the outreach queue';
+            $parts[] = $outreachQueue.' creator'.($outreachQueue === 1 ? ' has' : 's have').' first outreach ready';
         }
 
         $topBlocker = $bottlenecks[0] ?? null;
-        if (is_array($topBlocker)) {
+        if (is_array($topBlocker) && (string) ($topBlocker['key'] ?? '') !== 'replies_waiting') {
             $parts[] = (int) ($topBlocker['count'] ?? 0).' '.strtolower((string) ($topBlocker['label'] ?? 'blockers'));
         }
 
@@ -1107,7 +1113,39 @@ class OperatorViewService
             return 'No urgent workflow issue is waiting. Use live discovery or CRM review to create the next useful action.';
         }
 
-        return 'Today: '.implode(', ', array_slice($parts, 0, 3)).'.';
+        return 'Right now: '.implode(', ', array_slice($parts, 0, 3)).'.';
+    }
+
+    private function replyReviewCount(array $openTasks): int
+    {
+        $replyReviews = [];
+
+        foreach ($openTasks as $task) {
+            $metadata = is_array($task['metadata'] ?? null) ? $task['metadata'] : [];
+            $groupKey = strtolower((string) ($task['groupKey'] ?? ''));
+            $groupType = strtolower((string) ($task['groupType'] ?? ''));
+            $sourceRule = strtolower((string) ($metadata['source_rule'] ?? ''));
+            $groupContext = strtolower((string) ($metadata['group_context'] ?? ''));
+            $notes = strtolower((string) ($task['notes'] ?? ''));
+
+            $isReplyReview = in_array($groupKey, ['reply-review', 'reply_review'], true)
+                || in_array($groupType, ['reply-review', 'reply_review'], true)
+                || in_array($sourceRule, ['reply-review', 'reply_review'], true)
+                || in_array($groupContext, ['reply-review', 'reply_review'], true)
+                || (strtoupper((string) ($task['type'] ?? '')) === 'REVIEW_CREATOR'
+                    && str_contains($notes, 'creator replied'));
+
+            if (! $isReplyReview) {
+                continue;
+            }
+
+            $identity = (string) (($task['creatorProfileId'] ?? '') ?: ($task['id'] ?? ''));
+            if ($identity !== '') {
+                $replyReviews[$identity] = true;
+            }
+        }
+
+        return count($replyReviews);
     }
 
     private function isOpenTask(array $task): bool
@@ -1203,6 +1241,10 @@ class OperatorViewService
         $groups = [];
 
         foreach ($creators as $creator) {
+            if (strtolower(trim((string) ($creator['duplicateReviewOutcome'] ?? ''))) === 'not_duplicate') {
+                continue;
+            }
+
             $handleKey = strtolower(ltrim((string) ($creator['handle'] ?? ''), '@'));
             $emailKey = strtolower(trim((string) ($creator['email'] ?? '')));
             $nameKey = strtolower(trim((string) ($creator['fullName'] ?? '')));
@@ -1218,13 +1260,15 @@ class OperatorViewService
             }
         }
 
-        $warnings = [];
+        $warningsByCreatorSet = [];
 
         foreach ($groups as $key => $items) {
             $uniqueIds = array_values(array_unique(array_map(fn (array $item) => $item['id'], $items)));
             if (count($uniqueIds) < 2) {
                 continue;
             }
+            sort($uniqueIds);
+            $creatorSetKey = implode('|', $uniqueIds);
 
             $reason = str_starts_with($key, 'email:')
                 ? 'Shared email detected'
@@ -1242,13 +1286,35 @@ class OperatorViewService
                 ];
             }
 
-            $warnings[] = [
-                'key' => $key,
-                'risk' => $risk,
-                'reason' => $reason,
-                'creators' => array_values($creatorLookup),
-            ];
+            if (! isset($warningsByCreatorSet[$creatorSetKey])) {
+                $warningsByCreatorSet[$creatorSetKey] = [
+                    'key' => 'duplicate-set:'.sha1($creatorSetKey),
+                    'risk' => $risk,
+                    'reasons' => [],
+                    'creators' => [],
+                ];
+            }
+
+            if ($risk === 'high') {
+                $warningsByCreatorSet[$creatorSetKey]['risk'] = 'high';
+            }
+            $warningsByCreatorSet[$creatorSetKey]['reasons'][$reason] = true;
+            $warningsByCreatorSet[$creatorSetKey]['creators'] = array_replace(
+                $warningsByCreatorSet[$creatorSetKey]['creators'],
+                $creatorLookup
+            );
         }
+
+        $warnings = array_values(array_map(function (array $warning) {
+            $reasons = array_keys($warning['reasons']);
+
+            return [
+                'key' => $warning['key'],
+                'risk' => $warning['risk'],
+                'reason' => implode(' · ', $reasons),
+                'creators' => array_values($warning['creators']),
+            ];
+        }, $warningsByCreatorSet));
 
         usort($warnings, fn (array $a, array $b) => strcmp((string) ($a['risk'] ?? ''), (string) ($b['risk'] ?? ''))
         );
