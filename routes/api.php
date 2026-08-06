@@ -7,6 +7,7 @@ use App\Http\Controllers\CreatorRelationshipController;
 use App\Http\Controllers\CrmImportController;
 use App\Http\Controllers\CspReportController;
 use App\Http\Controllers\DuplicateLinkController;
+use App\Http\Controllers\GmailIntegrationController;
 use App\Http\Controllers\HealthController;
 use App\Http\Controllers\MessagePerformanceController;
 use App\Http\Controllers\MessageTemplateImportController;
@@ -36,6 +37,7 @@ Route::get('/avatar-proxy', [SheetDataController::class, 'avatarProxy'])->middle
 Route::post('/csp-report', [CspReportController::class, 'store'])->middleware('throttle:60,1');
 Route::post('/billing/webhooks/stripe', [BillingController::class, 'stripeWebhook'])->middleware('throttle:60,1');
 Route::get('/status/banner', [SupportController::class, 'banner'])->middleware('throttle:30,1');
+Route::get('/integrations/gmail/callback', [GmailIntegrationController::class, 'callback'])->middleware('throttle:30,1');
 
 Route::middleware(['api.auth', 'throttle:api'])->group(function () {
     Route::get('/workspaces/bootstrap', [WorkspaceController::class, 'bootstrap']);
@@ -81,6 +83,14 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     Route::delete('/workspaces/{workspaceId}', [WorkspaceController::class, 'deleteWorkspace'])->middleware('workspace.role:owner');
     Route::get('/workspaces/{workspaceId}/export', [WorkspaceController::class, 'exportWorkspace'])->middleware('workspace.role:owner');
     Route::get('/workspaces/audit', [WorkspaceController::class, 'auditEvents'])->middleware('workspace.role:owner,admin');
+
+    Route::get('/integrations/gmail', [GmailIntegrationController::class, 'index']);
+    Route::middleware('workspace.role:owner,admin')->group(function () {
+        Route::post('/integrations/gmail/connect', [GmailIntegrationController::class, 'connect'])->middleware('throttle:10,1');
+        Route::put('/integrations/gmail/{id}/default', [GmailIntegrationController::class, 'makeDefault']);
+        Route::delete('/integrations/gmail/{id}', [GmailIntegrationController::class, 'disconnect']);
+    });
+    Route::post('/integrations/gmail/send', [GmailIntegrationController::class, 'send'])->middleware('throttle:30,1');
 
     if (config('outreach.launch.enable_raw_scraper', false)) {
         Route::middleware('workspace.role:owner,admin')->group(function () {

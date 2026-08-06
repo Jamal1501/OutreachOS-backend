@@ -61,4 +61,13 @@ return [
         'webhook_secret' => env('STRIPE_WEBHOOK_SECRET'),
     ],
 
+    'gmail' => [
+        'enabled' => env('GOOGLE_GMAIL_ENABLED', false),
+        'client_id' => env('GOOGLE_GMAIL_CLIENT_ID'),
+        'client_secret' => env('GOOGLE_GMAIL_CLIENT_SECRET'),
+        'redirect_uri' => env('GOOGLE_GMAIL_REDIRECT_URI'),
+        'frontend_url' => env('FRONTEND_URL', 'http://localhost:5173'),
+        'oauth_state_ttl_minutes' => env('GOOGLE_GMAIL_OAUTH_STATE_TTL_MINUTES', 10),
+    ],
+
 ];

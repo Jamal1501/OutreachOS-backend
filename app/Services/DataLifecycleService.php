@@ -85,7 +85,7 @@ class DataLifecycleService
         $workspace = Workspace::query()->findOrFail($workspaceId);
         $projectIds = DB::table('projects')->where('workspace_id', $workspaceId)->pluck('id')->all();
         $projectTables = ['creators', 'creator_profiles', 'message_templates', 'tasks', 'outreach_events', 'discovery_runs', 'discovery_items', 'enrichment_jobs', 'connected_accounts'];
-        $workspaceTables = ['workspace_members', 'workspace_invitations', 'workspace_audit_events', 'duplicate_links', 'learning_events', 'creator_relationship_events', 'ai_usage_logs', 'apify_usage_logs', 'workspace_usage_events', 'credit_purchases', 'support_requests'];
+        $workspaceTables = ['workspace_members', 'workspace_invitations', 'workspace_audit_events', 'duplicate_links', 'learning_events', 'creator_relationship_events', 'ai_usage_logs', 'apify_usage_logs', 'workspace_usage_events', 'credit_purchases', 'support_requests', 'outbound_email_deliveries'];
         $billingTables = ['workspace_subscriptions', 'workspace_credit_wallets'];
         $billingAccountId = (string) ($workspace->billing_account_id ?? '');
         $buffer = '';
@@ -134,6 +134,13 @@ class DataLifecycleService
         foreach ($projectTables as $table) {
             if (Schema::hasTable($table) && Schema::hasColumn($table, 'project_id')) {
                 $query = DB::table($table)->whereIn('project_id', $projectIds);
+                if ($table === 'connected_accounts' && Schema::hasColumn($table, 'oauth_credentials')) {
+                    $query->select([
+                        'id', 'project_id', 'platform', 'provider', 'external_account_id', 'username', 'status',
+                        'scopes', 'connected_by_user_id', 'token_expires_at', 'last_used_at', 'last_error',
+                        'last_synced_at', 'metadata', 'created_at', 'updated_at',
+                    ]);
+                }
                 $streamTable($table, $query);
             }
         }
@@ -221,7 +228,7 @@ class DataLifecycleService
     {
         DB::transaction(function () use ($workspaceId) {
             DB::table('projects')->where('workspace_id', $workspaceId)->delete();
-            foreach (['duplicate_links', 'learning_events', 'creator_relationship_events', 'ai_usage_logs', 'apify_usage_logs', 'support_requests', 'workspace_invitations', 'workspace_members'] as $table) {
+            foreach (['duplicate_links', 'learning_events', 'creator_relationship_events', 'ai_usage_logs', 'apify_usage_logs', 'support_requests', 'outbound_email_deliveries', 'oauth_connection_states', 'workspace_invitations', 'workspace_members'] as $table) {
                 if (Schema::hasTable($table) && Schema::hasColumn($table, 'workspace_id')) {
                     DB::table($table)->where('workspace_id', $workspaceId)->delete();
                 }

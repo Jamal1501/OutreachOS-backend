@@ -25,14 +25,27 @@ class ConnectedAccount extends Model
         'status',
         'scopes',
         'credentials_reference',
+        'oauth_credentials',
+        'connected_by_user_id',
+        'token_expires_at',
+        'last_used_at',
+        'last_error',
         'last_synced_at',
         'metadata',
+    ];
+
+    protected $hidden = [
+        'oauth_credentials',
+        'credentials_reference',
     ];
 
     protected function casts(): array
     {
         return [
             'scopes' => 'array',
+            'oauth_credentials' => 'encrypted:array',
+            'token_expires_at' => 'datetime',
+            'last_used_at' => 'datetime',
             'last_synced_at' => 'datetime',
             'metadata' => 'array',
         ];
