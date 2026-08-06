@@ -123,6 +123,13 @@ class OperatorViewNextBestActionTest extends TestCase
         ]));
     }
 
+    public function test_daily_brief_explains_the_outreach_count_in_plain_language(): void
+    {
+        $brief = $this->invokePrivate('dailyBrief', [[], 0, 2, 0]);
+
+        $this->assertSame('Right now: 2 creators are waiting for their first outreach task to be completed.', $brief);
+    }
+
     public function test_workflow_health_surfaces_bottlenecks_from_full_data(): void
     {
         Carbon::setTestNow('2026-06-27 12:00:00');

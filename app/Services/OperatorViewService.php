@@ -1101,7 +1101,7 @@ class OperatorViewService
             $parts[] = $repliesWaiting.' creator '.($repliesWaiting === 1 ? 'reply needs' : 'replies need').' handling';
         }
         if ($outreachQueue > 0) {
-            $parts[] = $outreachQueue.' creator'.($outreachQueue === 1 ? ' has' : 's have').' first outreach ready';
+            $parts[] = $outreachQueue.' creator'.($outreachQueue === 1 ? ' is' : 's are').' waiting for their first outreach task to be completed';
         }
 
         $topBlocker = $bottlenecks[0] ?? null;
