@@ -265,6 +265,29 @@ class BillingController extends Controller
         ]);
     }
 
+    public function cancelSubscriptionCheckout(Request $request)
+    {
+        $workspaceId = (string) $request->attributes->get('workspace_id');
+
+        try {
+            $cancelled = $this->stripeBilling->cancelPendingSubscriptionCheckout($workspaceId);
+        } catch (RuntimeException $exception) {
+            if ($exception->getMessage() === 'subscription_checkout_creating') {
+                return response()->json([
+                    'message' => 'The checkout is still being created. Please wait a moment and try again.',
+                    'code' => 'subscription_checkout_creating',
+                ], 409);
+            }
+
+            throw $exception;
+        }
+
+        return response()->json([
+            'message' => $cancelled ? 'Subscription checkout canceled' : 'No pending subscription checkout was found',
+            'data' => ['cancelled' => $cancelled],
+        ]);
+    }
+
     public function customerPortal(Request $request)
     {
         $workspaceId = (string) $request->attributes->get('workspace_id');

@@ -144,6 +144,56 @@ class StripeBillingService
         ];
     }
 
+    public function cancelPendingSubscriptionCheckout(string $workspaceId): bool
+    {
+        [$subscription] = $this->billing->ensureWorkspaceBilling($workspaceId);
+        $reservation = DB::transaction(function () use ($subscription): ?array {
+            $record = WorkspaceSubscription::query()->where('id', $subscription->id)->lockForUpdate()->firstOrFail();
+            if ($this->subscriptionIsManagedInStripe($record)) {
+                return null;
+            }
+
+            $pending = (array) (((array) ($record->metadata ?? []))['pending_subscription_checkout'] ?? []);
+            if ($pending === []) {
+                return null;
+            }
+
+            $sessionId = trim((string) ($pending['id'] ?? ''));
+            $intentToken = trim((string) ($pending['intent_token'] ?? ''));
+            if ($sessionId === '' || $intentToken === '') {
+                throw new RuntimeException('subscription_checkout_creating');
+            }
+
+            return ['session_id' => $sessionId, 'intent_token' => $intentToken];
+        });
+
+        if ($reservation === null) {
+            return false;
+        }
+
+        $this->request(
+            'POST',
+            '/checkout/sessions/'.rawurlencode($reservation['session_id']).'/expire',
+            [],
+            'subscription-checkout-expire-'.hash('sha256', $reservation['intent_token']),
+        );
+
+        return DB::transaction(function () use ($subscription, $reservation): bool {
+            $record = WorkspaceSubscription::query()->where('id', $subscription->id)->lockForUpdate()->firstOrFail();
+            $metadata = (array) ($record->metadata ?? []);
+            $pending = (array) ($metadata['pending_subscription_checkout'] ?? []);
+            if (($pending['intent_token'] ?? null) !== $reservation['intent_token']) {
+                return false;
+            }
+
+            unset($metadata['pending_subscription_checkout']);
+            $record->metadata = $metadata;
+            $record->save();
+
+            return true;
+        });
+    }
+
     public function createCustomerPortalSession(string $workspaceId, string $returnUrl): array
     {
         [$subscription] = $this->billing->ensureWorkspaceBilling($workspaceId);

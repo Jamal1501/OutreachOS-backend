@@ -175,6 +175,7 @@ Route::middleware(['api.auth', 'workspace.context', 'throttle:api'])->group(func
     });
     Route::middleware('workspace.role:owner')->group(function () {
         Route::post('/billing/checkout/subscription', [BillingController::class, 'checkoutSubscription'])->middleware('throttle:expensive');
+        Route::post('/billing/checkout/subscription/cancel', [BillingController::class, 'cancelSubscriptionCheckout'])->middleware('throttle:expensive');
         Route::post('/billing/checkout/topup', [BillingController::class, 'checkoutTopup'])->middleware('throttle:expensive');
         Route::post('/billing/customer-portal', [BillingController::class, 'customerPortal'])->middleware('throttle:expensive');
     });

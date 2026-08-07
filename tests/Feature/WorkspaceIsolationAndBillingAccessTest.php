@@ -147,6 +147,40 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
         $this->assertSame(1, $checkoutCalls);
     }
 
+    public function test_canceling_pending_checkout_expires_it_before_allowing_another_plan(): void
+    {
+        [$owner, $workspace] = $this->createWorkspaceForRole('owner');
+        $checkoutCalls = 0;
+        $this->fakeSubscriptionCheckoutProviders($owner, $checkoutCalls);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/billing/checkout/subscription', [
+                'planId' => 'pro',
+                'successUrl' => 'https://www.socialcore.app/billing?checkout=success',
+                'cancelUrl' => 'https://www.socialcore.app/billing?checkout=cancelled',
+            ])
+            ->assertOk();
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/billing/checkout/subscription/cancel')
+            ->assertOk()
+            ->assertJsonPath('data.cancelled', true);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/billing/checkout/subscription', [
+                'planId' => 'enterprise',
+                'successUrl' => 'https://www.socialcore.app/billing?checkout=success',
+                'cancelUrl' => 'https://www.socialcore.app/billing?checkout=cancelled',
+            ])
+            ->assertOk();
+
+        $this->assertSame(2, $checkoutCalls);
+        Http::assertSent(fn ($request) => $request->url() === 'https://api.stripe.com/v1/checkout/sessions/cs_guarded_checkout/expire');
+    }
+
     public function test_database_enforces_one_subscription_per_billing_account(): void
     {
         [, $workspace] = $this->createWorkspaceForRole('owner');
@@ -1489,6 +1523,9 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
                     'url' => 'https://checkout.stripe.com/c/pay/cs_guarded_checkout',
                     'expires_at' => now()->addHours(23)->timestamp,
                 ]);
+            }
+            if ($request->url() === 'https://api.stripe.com/v1/checkout/sessions/cs_guarded_checkout/expire') {
+                return Http::response(['id' => 'cs_guarded_checkout', 'status' => 'expired']);
             }
 
             return Http::response(['error' => 'unexpected_test_request'], 500);
