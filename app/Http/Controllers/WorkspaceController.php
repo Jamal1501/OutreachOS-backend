@@ -7,6 +7,7 @@ use App\Mail\WorkspaceInvitationMail;
 use App\Models\Workspace;
 use App\Models\WorkspaceMember;
 use App\Services\DataLifecycleService;
+use App\Services\StripeBillingService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -19,7 +20,10 @@ use Illuminate\Validation\Rule;
 
 class WorkspaceController extends Controller
 {
-    public function __construct(private DataLifecycleService $dataLifecycle) {}
+    public function __construct(
+        private DataLifecycleService $dataLifecycle,
+        private StripeBillingService $stripeBilling,
+    ) {}
 
     public function bootstrap(Request $request)
     {
@@ -690,6 +694,13 @@ class WorkspaceController extends Controller
         $targetWorkspace = Workspace::query()->find($targetWorkspaceId);
         if (! $targetWorkspace) {
             return response()->json(['error' => 'Workspace not found.'], 404);
+        }
+
+        if ($this->stripeBilling->hasActivePaidSubscription((string) $targetWorkspace->id)) {
+            return response()->json([
+                'message' => 'Cancel the active subscription in Billing & Subscription before scheduling workspace deletion.',
+                'code' => 'active_subscription_must_be_canceled',
+            ], 409);
         }
 
         $settings = (array) ($targetWorkspace->settings ?? []);

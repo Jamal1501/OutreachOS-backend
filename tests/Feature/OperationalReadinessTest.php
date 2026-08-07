@@ -43,6 +43,43 @@ class OperationalReadinessTest extends TestCase
             ->assertJsonMissingPath('checks');
     }
 
+    public function test_operational_health_reports_abandoned_stripe_webhook_processing(): void
+    {
+        foreach (['scheduler', 'queue-worker'] as $name) {
+            DB::table('operational_heartbeats')->insert([
+                'name' => $name,
+                'last_seen_at' => now(),
+                'metadata' => json_encode(['test' => true]),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+        DB::table('stripe_webhook_events')->insert([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'stripe_event_id' => 'evt_abandoned_health_check',
+            'type' => 'checkout.session.completed',
+            'status' => 'processing',
+            'attempt_count' => 1,
+            'last_attempt_at' => now()->subMinutes(11),
+            'created_at' => now()->subMinutes(11),
+            'updated_at' => now()->subMinutes(11),
+        ]);
+        config([
+            'observability.health.details_token' => self::DETAILS_TOKEN,
+            'outreach.billing.stripe_webhook_processing_lease_minutes' => 10,
+        ]);
+
+        $this->getJson('/api/health/operational')
+            ->assertServiceUnavailable()
+            ->assertJsonPath('status', 'degraded');
+
+        $this->withToken(self::DETAILS_TOKEN)
+            ->getJson('/api/health/operational/details')
+            ->assertServiceUnavailable()
+            ->assertJsonPath('checks.stripeWebhooks.status', 'degraded')
+            ->assertJsonPath('checks.stripeWebhooks.staleProcessingWebhooks', 1);
+    }
+
     public function test_persisted_old_heartbeats_are_reported_as_stale(): void
     {
         foreach (['scheduler', 'queue-worker'] as $name) {

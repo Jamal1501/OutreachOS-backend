@@ -43,6 +43,8 @@ return [
         'ai_request_credit_cost' => env('OUTREACH_AI_REQUEST_CREDIT_COST', 1),
         'default_discovery_credit_cost' => env('OUTREACH_DEFAULT_DISCOVERY_CREDIT_COST', 25),
         'stripe_webhook_tolerance' => env('OUTREACH_STRIPE_WEBHOOK_TOLERANCE', 300),
+        'stripe_webhook_processing_lease_minutes' => env('OUTREACH_STRIPE_WEBHOOK_PROCESSING_LEASE_MINUTES', 10),
+        'stripe_webhook_max_attempts' => env('OUTREACH_STRIPE_WEBHOOK_MAX_ATTEMPTS', 8),
         'plan_prices' => [
             'pro' => env('OUTREACH_PLAN_PRO_PRICE_CENTS', 14900),
             'enterprise' => env('OUTREACH_PLAN_ENTERPRISE_PRICE_CENTS', 39900),

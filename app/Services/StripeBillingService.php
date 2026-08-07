@@ -27,6 +27,24 @@ class StripeBillingService
         $config = $this->billing->getPlanCheckoutConfig($workspaceId, $planId);
         [$currentSubscription] = $this->billing->ensureWorkspaceBilling($workspaceId);
         $billingAccountId = (string) ($currentSubscription->billing_account_id ?: '');
+        if ($this->subscriptionIsManagedInStripe($currentSubscription)) {
+            throw new RuntimeException('active_subscription_exists');
+        }
+
+        $metadata = (array) ($currentSubscription->metadata ?? []);
+        $pendingCheckout = (array) ($metadata['pending_subscription_checkout'] ?? []);
+        $pendingExpiresAt = isset($pendingCheckout['expires_at'])
+            ? CarbonImmutable::parse((string) $pendingCheckout['expires_at'])
+            : null;
+        if ($pendingExpiresAt?->isFuture()
+            && ($pendingCheckout['plan_id'] ?? null) === $config['id']
+            && trim((string) ($pendingCheckout['url'] ?? '')) !== '') {
+            return [
+                'id' => (string) ($pendingCheckout['id'] ?? ''),
+                'url' => (string) $pendingCheckout['url'],
+            ];
+        }
+
         $customerId = $this->ensureStripeCustomer($workspaceId);
 
         $trialDays = 0;
@@ -70,7 +88,34 @@ class StripeBillingService
             ]],
         ];
 
-        $response = $this->request('POST', '/checkout/sessions', $payload);
+        $idempotencyKey = 'subscription-checkout-'.hash('sha256', implode('|', [
+            $billingAccountId,
+            $config['id'],
+            $successUrl,
+            $cancelUrl,
+            now()->utc()->format('Y-m-d-H'),
+        ]));
+        $response = $this->request('POST', '/checkout/sessions', $payload, $idempotencyKey);
+        $checkoutExpiresAt = isset($response['expires_at'])
+            ? CarbonImmutable::createFromTimestampUTC((int) $response['expires_at'])
+            : now()->addHours(23);
+
+        DB::transaction(function () use ($currentSubscription, $response, $config, $checkoutExpiresAt): void {
+            $record = WorkspaceSubscription::query()->where('id', $currentSubscription->id)->lockForUpdate()->firstOrFail();
+            if ($this->subscriptionIsManagedInStripe($record)) {
+                throw new RuntimeException('active_subscription_exists');
+            }
+            $metadata = (array) ($record->metadata ?? []);
+            $metadata['pending_subscription_checkout'] = [
+                'id' => (string) ($response['id'] ?? ''),
+                'url' => (string) ($response['url'] ?? ''),
+                'plan_id' => $config['id'],
+                'expires_at' => $checkoutExpiresAt->toIso8601String(),
+                'created_at' => now()->toIso8601String(),
+            ];
+            $record->metadata = $metadata;
+            $record->save();
+        });
         $this->observability->reportBillingEvent($workspaceId, 'subscription_checkout_created', [
             'stripe_checkout_session_id' => (string) ($response['id'] ?? ''),
             'plan_id' => $config['id'],
@@ -83,6 +128,34 @@ class StripeBillingService
             'id' => (string) ($response['id'] ?? ''),
             'url' => (string) ($response['url'] ?? ''),
         ];
+    }
+
+    public function createCustomerPortalSession(string $workspaceId, string $returnUrl): array
+    {
+        [$subscription] = $this->billing->ensureWorkspaceBilling($workspaceId);
+        $customerId = trim((string) ($subscription->stripe_customer_id ?? ''));
+        if ($customerId === '') {
+            throw new RuntimeException('stripe_customer_not_found');
+        }
+
+        $response = $this->request('POST', '/billing_portal/sessions', [
+            'customer' => $customerId,
+            'return_url' => $returnUrl,
+        ]);
+
+        $this->observability->reportBillingEvent($workspaceId, 'customer_portal_opened', [], (string) ($subscription->billing_account_id ?? ''), $customerId);
+
+        return [
+            'id' => (string) ($response['id'] ?? ''),
+            'url' => (string) ($response['url'] ?? ''),
+        ];
+    }
+
+    public function hasActivePaidSubscription(string $workspaceId): bool
+    {
+        [$subscription] = $this->billing->ensureWorkspaceBilling($workspaceId);
+
+        return $this->subscriptionIsManagedInStripe($subscription);
     }
 
     private function workspaceEligibleForPaidTrial(string $workspaceId, string $planId): bool
@@ -167,6 +240,12 @@ class StripeBillingService
         if (! is_array($event)) {
             throw new RuntimeException('Invalid Stripe webhook payload.');
         }
+
+        return $this->handleWebhookEvent($event);
+    }
+
+    private function handleWebhookEvent(array $event): array
+    {
 
         $eventId = trim((string) ($event['id'] ?? ''));
         $type = (string) ($event['type'] ?? '');
@@ -359,7 +438,7 @@ class StripeBillingService
         $planId = strtolower($planId);
         $this->billing->getPlanCheckoutConfig($workspaceId, $planId);
 
-        DB::transaction(function () use ($workspaceId, $billingAccountId, $planId, $status, $customerId, $subscriptionId, $periodStart, $periodEnd, $trialEndsAt) {
+        DB::transaction(function () use ($workspaceId, $billingAccountId, $planId, $status, $customerId, $subscriptionId, $periodStart, $periodEnd, $trialEndsAt, $subscription) {
             [$record] = $this->billing->ensureWorkspaceBilling($workspaceId);
             $record = WorkspaceSubscription::query()
                 ->where('id', $record->id)
@@ -381,6 +460,10 @@ class StripeBillingService
             $record->trial_ends_at = $trialEndsAt;
             $metadata = (array) ($record->metadata ?? []);
             $metadata['stripe_synced_at'] = now()->toIso8601String();
+            $metadata['cancel_at_period_end'] = (bool) ($subscription['cancel_at_period_end'] ?? false);
+            $metadata['cancel_at'] = $this->timestampToCarbon($subscription['cancel_at'] ?? null)?->toIso8601String();
+            $metadata['canceled_at'] = $this->timestampToCarbon($subscription['canceled_at'] ?? null)?->toIso8601String();
+            unset($metadata['pending_subscription_checkout']);
 
             if ($trialEndsAt !== null && in_array($planId, ['pro', 'enterprise'], true)) {
                 $metadata['paid_plan_trial_used_'.$planId] = true;
@@ -442,7 +525,7 @@ class StripeBillingService
                 'workspace_id' => $workspaceId,
                 'billing_account_id' => (string) ($subscription?->billing_account_id ?: ''),
             ],
-        ]);
+        ], 'stripe-customer-'.hash('sha256', (string) ($subscription?->billing_account_id ?: $workspaceId)));
 
         $customerId = trim((string) ($response['id'] ?? ''));
         if ($customerId === '') {
@@ -561,6 +644,8 @@ class StripeBillingService
             'stripe_event_id' => $eventId,
             'type' => $type,
             'status' => 'processing',
+            'attempt_count' => 1,
+            'last_attempt_at' => now(),
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -575,16 +660,41 @@ class StripeBillingService
                 ->lockForUpdate()
                 ->first();
 
-            if ($row && in_array($row->status, ['processing', 'processed'], true)) {
+            if ($row && $row->status === 'processed') {
                 return false;
             }
 
             if ($row) {
+                $leaseMinutes = max(1, (int) config('outreach.billing.stripe_webhook_processing_lease_minutes', 10));
+                $lastAttemptAt = $row->last_attempt_at ?: $row->updated_at;
+                if ($row->status === 'processing'
+                    && $lastAttemptAt
+                    && CarbonImmutable::parse($lastAttemptAt)->gt(now()->subMinutes($leaseMinutes))) {
+                    return false;
+                }
+
+                $attemptCount = (int) ($row->attempt_count ?? 0) + 1;
+                $maxAttempts = max(1, (int) config('outreach.billing.stripe_webhook_max_attempts', 8));
+                if ($attemptCount > $maxAttempts) {
+                    DB::table('stripe_webhook_events')
+                        ->where('stripe_event_id', $eventId)
+                        ->update([
+                            'status' => 'dead_lettered',
+                            'last_error' => 'Maximum webhook processing attempts exceeded.',
+                            'updated_at' => now(),
+                        ]);
+                    $this->observability->reportWebhookFailure('stripe', $eventId, $type, 'Maximum webhook processing attempts exceeded.');
+
+                    return false;
+                }
+
                 DB::table('stripe_webhook_events')
                     ->where('stripe_event_id', $eventId)
                     ->update([
                         'type' => $type,
                         'status' => 'processing',
+                        'attempt_count' => $attemptCount,
+                        'last_attempt_at' => now(),
                         'last_error' => null,
                         'updated_at' => now(),
                     ]);
@@ -624,6 +734,89 @@ class StripeBillingService
         return $this->request('GET', '/subscriptions/'.urlencode($subscriptionId));
     }
 
+    public function reconcileStripeSubscriptions(?int $limit = null, ?string $workspaceId = null): array
+    {
+        if (trim((string) config('services.stripe.secret_key')) === '') {
+            return ['checked' => 0, 'errors' => 0];
+        }
+
+        $query = WorkspaceSubscription::query()
+            ->whereNotNull('stripe_subscription_id')
+            ->where('stripe_subscription_id', '!=', '')
+            ->orderBy('updated_at');
+        if ($workspaceId !== null && trim($workspaceId) !== '') {
+            $query->where('workspace_id', $workspaceId);
+        }
+        if ($limit !== null && $limit > 0) {
+            $query->limit($limit);
+        }
+
+        $checked = 0;
+        $errors = 0;
+        foreach ($query->get() as $record) {
+            $checked++;
+            try {
+                $this->syncSubscriptionFromStripeObject($this->retrieveSubscription((string) $record->stripe_subscription_id));
+            } catch (\Throwable $exception) {
+                $errors++;
+                $this->observability->reportWebhookFailure('stripe_reconciliation', (string) $record->stripe_subscription_id, 'subscription.reconcile', $exception);
+            }
+        }
+
+        return ['checked' => $checked, 'errors' => $errors];
+    }
+
+    public function reconcileRecoverableWebhookEvents(?int $limit = null): array
+    {
+        if (trim((string) config('services.stripe.secret_key')) === '') {
+            return ['checked' => 0, 'recovered' => 0, 'errors' => 0];
+        }
+
+        $leaseMinutes = max(1, (int) config('outreach.billing.stripe_webhook_processing_lease_minutes', 10));
+        $query = DB::table('stripe_webhook_events')
+            ->where(function ($candidate) use ($leaseMinutes) {
+                $candidate->where('status', 'failed')
+                    ->orWhere(function ($processing) use ($leaseMinutes) {
+                        $processing->where('status', 'processing')
+                            ->where(function ($stale) use ($leaseMinutes) {
+                                $stale->where('last_attempt_at', '<', now()->subMinutes($leaseMinutes))
+                                    ->orWhere(function ($fallback) use ($leaseMinutes) {
+                                        $fallback->whereNull('last_attempt_at')
+                                            ->where('updated_at', '<', now()->subMinutes($leaseMinutes));
+                                    });
+                            });
+                    });
+            })
+            ->orderBy('updated_at');
+        if ($limit !== null && $limit > 0) {
+            $query->limit($limit);
+        }
+
+        $checked = 0;
+        $recovered = 0;
+        $errors = 0;
+        foreach ($query->get() as $record) {
+            $checked++;
+            try {
+                $result = $this->handleWebhookEvent($this->request('GET', '/events/'.urlencode((string) $record->stripe_event_id)));
+                if (! ($result['duplicate'] ?? false)) {
+                    $recovered++;
+                }
+            } catch (\Throwable $exception) {
+                $errors++;
+                $this->observability->reportWebhookFailure('stripe_reconciliation', (string) $record->stripe_event_id, (string) $record->type, $exception);
+            }
+        }
+
+        return ['checked' => $checked, 'recovered' => $recovered, 'errors' => $errors];
+    }
+
+    private function subscriptionIsManagedInStripe(WorkspaceSubscription $subscription): bool
+    {
+        return trim((string) ($subscription->stripe_subscription_id ?? '')) !== ''
+            && in_array(strtolower((string) $subscription->status), ['active', 'trialing', 'past_due', 'unpaid', 'incomplete'], true);
+    }
+
     private function normalizeSubscriptionStatus(string $status): string
     {
         $status = strtolower(trim($status));
@@ -646,7 +839,7 @@ class StripeBillingService
         return CarbonImmutable::createFromTimestampUTC((int) $timestamp);
     }
 
-    private function request(string $method, string $path, array $payload = []): array
+    private function request(string $method, string $path, array $payload = [], ?string $idempotencyKey = null): array
     {
         $secret = trim((string) config('services.stripe.secret_key'));
         if ($secret === '') {
@@ -657,6 +850,9 @@ class StripeBillingService
             ->timeout(45)
             ->withToken($secret)
             ->baseUrl('https://api.stripe.com/v1');
+        if ($idempotencyKey) {
+            $client = $client->withHeaders(['Idempotency-Key' => $idempotencyKey]);
+        }
 
         if ($method === 'GET') {
             $response = $client->get($path, $payload);

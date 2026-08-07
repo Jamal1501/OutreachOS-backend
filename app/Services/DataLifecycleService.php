@@ -226,6 +226,8 @@ class DataLifecycleService
 
     private function purgeWorkspace(string $workspaceId): void
     {
+        $this->assertNoActivePaidSubscription($workspaceId);
+
         DB::transaction(function () use ($workspaceId) {
             DB::table('projects')->where('workspace_id', $workspaceId)->delete();
             foreach (['duplicate_links', 'learning_events', 'creator_relationship_events', 'ai_usage_logs', 'apify_usage_logs', 'support_requests', 'outbound_email_deliveries', 'oauth_connection_states', 'workspace_invitations', 'workspace_members'] as $table) {
@@ -254,6 +256,10 @@ class DataLifecycleService
 
     private function purgeAccount(string $userId): void
     {
+        foreach (Workspace::query()->where('owner_id', $userId)->pluck('id') as $workspaceId) {
+            $this->assertNoActivePaidSubscription((string) $workspaceId);
+        }
+
         $url = rtrim((string) config('services.supabase.url'), '/');
         $serviceKey = (string) config('services.supabase.service_role_key');
         if ($url === '' || $serviceKey === '') {
@@ -292,5 +298,31 @@ class DataLifecycleService
             DB::table('workspace_members')->where('user_id', $userId)->delete();
             DB::table('users')->where('supabase_user_id', $userId)->delete();
         });
+    }
+
+    private function assertNoActivePaidSubscription(string $workspaceId): void
+    {
+        if (! Schema::hasTable('workspace_subscriptions')) {
+            return;
+        }
+
+        $workspace = Workspace::query()->find($workspaceId);
+        if (! $workspace) {
+            return;
+        }
+
+        $query = DB::table('workspace_subscriptions')
+            ->whereNotNull('stripe_subscription_id')
+            ->where('stripe_subscription_id', '!=', '')
+            ->whereIn('status', ['active', 'trialing', 'past_due', 'unpaid', 'incomplete']);
+        if ($workspace->billing_account_id && Schema::hasColumn('workspace_subscriptions', 'billing_account_id')) {
+            $query->where('billing_account_id', $workspace->billing_account_id);
+        } else {
+            $query->where('workspace_id', $workspaceId);
+        }
+
+        if ($query->exists()) {
+            throw new RuntimeException('Active Stripe subscription must be canceled before customer data can be purged.');
+        }
     }
 }

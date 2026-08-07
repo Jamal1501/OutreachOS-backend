@@ -94,6 +94,10 @@ class WorkspaceBillingService
             'subscription' => [
                 'planId' => $currentPlanId,
                 'status' => $subscription->status,
+                'managedByStripe' => trim((string) ($subscription->stripe_customer_id ?? '')) !== '',
+                'hasActiveStripeSubscription' => trim((string) ($subscription->stripe_subscription_id ?? '')) !== ''
+                    && in_array(strtolower((string) $subscription->status), ['active', 'trialing', 'past_due', 'unpaid', 'incomplete'], true),
+                'cancelAtPeriodEnd' => (bool) data_get($subscription->metadata, 'cancel_at_period_end', false),
                 'currentPeriodStart' => optional($subscription->current_period_start)?->toIso8601String(),
                 'currentPeriodEnd' => optional($subscription->current_period_end)?->toIso8601String(),
                 'trialEndsAt' => optional($subscription->trial_ends_at)?->toIso8601String(),

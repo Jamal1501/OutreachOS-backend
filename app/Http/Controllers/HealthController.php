@@ -137,13 +137,24 @@ class HealthController extends Controller
         $windowMinutes = (int) config('observability.health.failed_webhooks_window_minutes', 60);
         $threshold = (int) config('observability.health.failed_webhooks_threshold', 0);
         $failedWebhooks = DB::table('stripe_webhook_events')
-            ->where('status', 'failed')
+            ->whereIn('status', ['failed', 'dead_lettered'])
             ->where('updated_at', '>=', now()->subMinutes($windowMinutes))
+            ->count();
+        $leaseMinutes = max(1, (int) config('outreach.billing.stripe_webhook_processing_lease_minutes', 10));
+        $staleProcessing = DB::table('stripe_webhook_events')
+            ->where('status', 'processing')
+            ->where(function ($query) use ($leaseMinutes) {
+                $query->where('last_attempt_at', '<', now()->subMinutes($leaseMinutes))
+                    ->orWhere(function ($fallback) use ($leaseMinutes) {
+                        $fallback->whereNull('last_attempt_at')->where('updated_at', '<', now()->subMinutes($leaseMinutes));
+                    });
+            })
             ->count();
 
         return [
-            'status' => $failedWebhooks > $threshold ? 'degraded' : 'ok',
+            'status' => ($failedWebhooks > $threshold || $staleProcessing > 0) ? 'degraded' : 'ok',
             'failedWebhooks' => $failedWebhooks,
+            'staleProcessingWebhooks' => $staleProcessing,
             'failedWindowMinutes' => $windowMinutes,
         ];
     }

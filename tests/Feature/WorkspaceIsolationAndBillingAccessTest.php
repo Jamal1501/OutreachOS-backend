@@ -13,7 +13,9 @@ use App\Models\Workspace;
 use App\Models\WorkspaceMember;
 use App\Services\AiGatewayService;
 use App\Services\PipelineDiscoveryService;
+use App\Services\StripeBillingService;
 use App\Services\WorkspaceBillingService;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -50,6 +52,122 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
                 'packageId' => 'test-package',
             ])
             ->assertForbidden();
+    }
+
+    public function test_workspace_admins_cannot_start_financial_checkout(): void
+    {
+        [$user, $workspace] = $this->createWorkspaceForRole('admin');
+        $this->fakeSupabaseUser($user);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/billing/checkout/subscription', [
+                'planId' => 'pro',
+                'successUrl' => 'https://www.socialcore.app/billing?checkout=success',
+                'cancelUrl' => 'https://www.socialcore.app/billing?checkout=cancelled',
+            ])
+            ->assertForbidden();
+    }
+
+    public function test_active_stripe_subscription_cannot_open_another_subscription_checkout(): void
+    {
+        [$owner, $workspace] = $this->createWorkspaceForRole('owner');
+        [$subscription] = app(WorkspaceBillingService::class)->ensureWorkspaceBilling($workspace->id);
+        DB::table('workspace_subscriptions')->where('id', $subscription->id)->update([
+            'plan_id' => 'pro',
+            'status' => 'active',
+            'stripe_customer_id' => 'cus_existing',
+            'stripe_subscription_id' => 'sub_existing',
+        ]);
+        $this->fakeSupabaseUser($owner);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/billing/checkout/subscription', [
+                'planId' => 'enterprise',
+                'successUrl' => 'https://www.socialcore.app/billing?checkout=success',
+                'cancelUrl' => 'https://www.socialcore.app/billing?checkout=cancelled',
+            ])
+            ->assertConflict()
+            ->assertJsonPath('code', 'active_subscription_exists');
+    }
+
+    public function test_database_enforces_one_subscription_per_billing_account(): void
+    {
+        [, $workspace] = $this->createWorkspaceForRole('owner');
+        [$subscription] = app(WorkspaceBillingService::class)->ensureWorkspaceBilling($workspace->id);
+
+        $this->expectException(QueryException::class);
+        DB::table('workspace_subscriptions')->insert([
+            'id' => (string) Str::uuid(),
+            'workspace_id' => (string) Str::uuid(),
+            'billing_account_id' => $subscription->billing_account_id,
+            'plan_id' => 'free',
+            'status' => 'active',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    public function test_owner_can_open_stripe_customer_portal(): void
+    {
+        [$owner, $workspace] = $this->createWorkspaceForRole('owner');
+        [$subscription] = app(WorkspaceBillingService::class)->ensureWorkspaceBilling($workspace->id);
+        DB::table('workspace_subscriptions')->where('id', $subscription->id)->update([
+            'stripe_customer_id' => 'cus_portal_test',
+        ]);
+        config([
+            'services.stripe.secret_key' => 'sk_test_portal',
+            'services.supabase.url' => 'https://supabase.example.test',
+            'services.supabase.service_role_key' => 'service-role-key',
+        ]);
+        Http::fake([
+            'supabase.example.test/auth/v1/user' => Http::response([
+                'id' => $owner->supabase_user_id,
+                'email' => $owner->email,
+                'email_confirmed_at' => now()->toIso8601String(),
+                'user_metadata' => ['full_name' => $owner->name],
+            ]),
+            'api.stripe.com/v1/billing_portal/sessions' => Http::response([
+                'id' => 'bps_test',
+                'url' => 'https://billing.stripe.com/p/session/test',
+            ]),
+        ]);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/billing/customer-portal', [
+                'returnUrl' => 'https://www.socialcore.app/billing',
+            ])
+            ->assertOk()
+            ->assertJsonPath('data.url', 'https://billing.stripe.com/p/session/test');
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://api.stripe.com/v1/billing_portal/sessions'
+            && $request['customer'] === 'cus_portal_test');
+    }
+
+    public function test_workspace_deletion_is_blocked_while_stripe_subscription_is_active(): void
+    {
+        [$owner, $workspace] = $this->createWorkspaceForRole('owner');
+        [$subscription] = app(WorkspaceBillingService::class)->ensureWorkspaceBilling($workspace->id);
+        DB::table('workspace_subscriptions')->where('id', $subscription->id)->update([
+            'plan_id' => 'pro',
+            'status' => 'active',
+            'stripe_customer_id' => 'cus_delete_guard',
+            'stripe_subscription_id' => 'sub_delete_guard',
+        ]);
+        $this->fakeSupabaseUser($owner);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->deleteJson('/api/workspaces/'.$workspace->id)
+            ->assertConflict()
+            ->assertJsonPath('code', 'active_subscription_must_be_canceled');
+
+        $this->assertDatabaseMissing('data_deletion_requests', [
+            'workspace_id' => $workspace->id,
+            'status' => 'scheduled',
+        ]);
     }
 
     public function test_owner_can_invite_member_and_email_is_sent(): void
@@ -344,6 +462,112 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
 
         $this->assertSame(1, DB::table('credit_purchases')->where('stripe_payment_intent_id', 'pi_test_once')->count());
         $this->assertSame(1, DB::table('stripe_webhook_events')->where('stripe_event_id', 'evt_topup_once')->where('status', 'processed')->count());
+    }
+
+    public function test_stale_processing_stripe_webhook_is_reclaimed_and_processed(): void
+    {
+        [, $workspace] = $this->createWorkspaceForRole('owner');
+        [$subscription] = app(WorkspaceBillingService::class)->ensureWorkspaceBilling($workspace->id);
+        DB::table('workspaces')->where('id', $workspace->id)->update(['plan_id' => 'pro']);
+        DB::table('billing_accounts')->where('id', $subscription->billing_account_id)->update(['plan_id' => 'pro']);
+        DB::table('workspace_subscriptions')->where('id', $subscription->id)->update(['plan_id' => 'pro', 'status' => 'active']);
+        config([
+            'services.stripe.webhook_secret' => 'whsec_test_secret',
+            'outreach.billing.stripe_webhook_processing_lease_minutes' => 10,
+        ]);
+        DB::table('stripe_webhook_events')->insert([
+            'id' => (string) Str::uuid(),
+            'stripe_event_id' => 'evt_stale_topup',
+            'type' => 'checkout.session.completed',
+            'status' => 'processing',
+            'attempt_count' => 1,
+            'last_attempt_at' => now()->subMinutes(11),
+            'created_at' => now()->subMinutes(11),
+            'updated_at' => now()->subMinutes(11),
+        ]);
+
+        $payload = json_encode([
+            'id' => 'evt_stale_topup',
+            'type' => 'checkout.session.completed',
+            'data' => [
+                'object' => [
+                    'id' => 'cs_stale_topup',
+                    'payment_status' => 'paid',
+                    'payment_intent' => 'pi_stale_topup',
+                    'amount_total' => 1500,
+                    'currency' => 'usd',
+                    'customer' => 'cus_stale_topup',
+                    'metadata' => [
+                        'billing_type' => 'credit_topup',
+                        'workspace_id' => $workspace->id,
+                        'credit_package_id' => '11111111-1111-4111-8111-111111111111',
+                    ],
+                ],
+            ],
+        ], JSON_UNESCAPED_SLASHES);
+
+        $this->call('POST', '/api/billing/webhooks/stripe', [], [], [], [
+            'HTTP_STRIPE_SIGNATURE' => $this->stripeSignature($payload, 'whsec_test_secret'),
+            'HTTP_ACCEPT' => 'application/json',
+            'CONTENT_TYPE' => 'application/json',
+        ], $payload)
+            ->assertOk()
+            ->assertJsonPath('received', true);
+
+        $event = DB::table('stripe_webhook_events')->where('stripe_event_id', 'evt_stale_topup')->first();
+        $this->assertSame('processed', $event->status);
+        $this->assertSame(2, (int) $event->attempt_count);
+        $this->assertSame(1, DB::table('credit_purchases')->where('stripe_payment_intent_id', 'pi_stale_topup')->count());
+    }
+
+    public function test_billing_reconciliation_recovers_a_failed_topup_webhook(): void
+    {
+        [, $workspace] = $this->createWorkspaceForRole('owner');
+        [$subscription] = app(WorkspaceBillingService::class)->ensureWorkspaceBilling($workspace->id);
+        DB::table('workspaces')->where('id', $workspace->id)->update(['plan_id' => 'pro']);
+        DB::table('billing_accounts')->where('id', $subscription->billing_account_id)->update(['plan_id' => 'pro']);
+        DB::table('workspace_subscriptions')->where('id', $subscription->id)->update(['plan_id' => 'pro', 'status' => 'active']);
+        DB::table('stripe_webhook_events')->insert([
+            'id' => (string) Str::uuid(),
+            'stripe_event_id' => 'evt_reconcile_topup',
+            'type' => 'checkout.session.completed',
+            'status' => 'failed',
+            'attempt_count' => 1,
+            'last_attempt_at' => now()->subMinute(),
+            'last_error' => 'Temporary test failure',
+            'created_at' => now()->subMinute(),
+            'updated_at' => now()->subMinute(),
+        ]);
+        config(['services.stripe.secret_key' => 'sk_test_reconcile']);
+        Http::fake([
+            'api.stripe.com/v1/events/evt_reconcile_topup' => Http::response([
+                'id' => 'evt_reconcile_topup',
+                'type' => 'checkout.session.completed',
+                'data' => ['object' => [
+                    'id' => 'cs_reconcile_topup',
+                    'payment_status' => 'paid',
+                    'payment_intent' => 'pi_reconcile_topup',
+                    'amount_total' => 1500,
+                    'currency' => 'usd',
+                    'customer' => 'cus_reconcile_topup',
+                    'metadata' => [
+                        'billing_type' => 'credit_topup',
+                        'workspace_id' => $workspace->id,
+                        'credit_package_id' => '11111111-1111-4111-8111-111111111111',
+                    ],
+                ]],
+            ]),
+        ]);
+
+        $result = app(StripeBillingService::class)->reconcileRecoverableWebhookEvents();
+
+        $this->assertSame(['checked' => 1, 'recovered' => 1, 'errors' => 0], $result);
+        $this->assertDatabaseHas('stripe_webhook_events', [
+            'stripe_event_id' => 'evt_reconcile_topup',
+            'status' => 'processed',
+            'attempt_count' => 2,
+        ]);
+        $this->assertDatabaseHas('credit_purchases', ['stripe_payment_intent_id' => 'pi_reconcile_topup']);
     }
 
     public function test_canceled_subscription_cannot_spend_credits(): void

@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use RuntimeException;
 use Throwable;
 
 class BillingController extends Controller
@@ -234,15 +235,53 @@ class BillingController extends Controller
         $successUrl = $this->validatedCheckoutReturnUrl((string) $validated['successUrl']);
         $cancelUrl = $this->validatedCheckoutReturnUrl((string) $validated['cancelUrl']);
 
-        $session = $this->stripeBilling->createSubscriptionCheckoutSession(
-            $workspaceId,
-            (string) $validated['planId'],
-            $successUrl,
-            $cancelUrl,
-        );
+        try {
+            $session = $this->stripeBilling->createSubscriptionCheckoutSession(
+                $workspaceId,
+                (string) $validated['planId'],
+                $successUrl,
+                $cancelUrl,
+            );
+        } catch (RuntimeException $exception) {
+            if ($exception->getMessage() === 'active_subscription_exists') {
+                return response()->json([
+                    'message' => 'This billing account already has a subscription. Use Manage subscription to change or cancel it.',
+                    'code' => 'active_subscription_exists',
+                ], 409);
+            }
+
+            throw $exception;
+        }
 
         return response()->json([
             'message' => 'Subscription checkout session created',
+            'data' => $session,
+        ]);
+    }
+
+    public function customerPortal(Request $request)
+    {
+        $workspaceId = (string) $request->attributes->get('workspace_id');
+        $validated = $request->validate([
+            'returnUrl' => ['required', 'url'],
+        ]);
+        $returnUrl = $this->validatedCheckoutReturnUrl((string) $validated['returnUrl']);
+
+        try {
+            $session = $this->stripeBilling->createCustomerPortalSession($workspaceId, $returnUrl);
+        } catch (RuntimeException $exception) {
+            if ($exception->getMessage() === 'stripe_customer_not_found') {
+                return response()->json([
+                    'message' => 'No Stripe billing profile exists for this account yet.',
+                    'code' => 'stripe_customer_not_found',
+                ], 409);
+            }
+
+            throw $exception;
+        }
+
+        return response()->json([
+            'message' => 'Stripe customer portal session created',
             'data' => $session,
         ]);
     }
