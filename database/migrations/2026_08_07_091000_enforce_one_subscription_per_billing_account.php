@@ -47,7 +47,7 @@ return new class extends Migration
         $duplicates = DB::table('workspace_subscriptions')
             ->select($column)
             ->whereNotNull($column)
-            ->where($column, '!=', '')
+            
             ->groupBy($column)
             ->havingRaw('COUNT(*) > 1')
             ->pluck($column);

@@ -56,7 +56,7 @@ class GmailIntegrationService
         $this->assertConfigured();
 
         $state = Str::random(64);
-        DB::table('oauth_connection_states')->insert([
+        DB::table('oauth_connection_states')->insertOrIgnore([
             'state_hash' => hash('sha256', $state),
             'workspace_id' => $workspaceId,
             'project_id' => $project->id,
@@ -258,7 +258,7 @@ class GmailIntegrationService
 
         $deliveryId = (string) Str::uuid();
         try {
-            DB::table('outbound_email_deliveries')->insert([
+            DB::table('outbound_email_deliveries')->insertOrIgnore([
                 'id' => $deliveryId,
                 'workspace_id' => $workspaceId,
                 'project_id' => $project->id,
