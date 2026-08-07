@@ -20,11 +20,11 @@ class OperatorViewService
         private ProjectResolverService $projects,
     ) {}
 
-    public function build(string $sheetId): array
+    public function build(string $sheetId, ?string $assignedUserId = null, string $range = '30d'): array
     {
         $project = $this->projects->findByWorkbookId($sheetId);
         if ($project) {
-            return $this->buildFromDatabase($project->id);
+            return $this->buildFromDatabase($project->id, $assignedUserId, $range);
         }
 
         if (Str::startsWith($sheetId, 'workspace:')) {
@@ -283,12 +283,16 @@ class OperatorViewService
         return $this->buildDecisionPayload($creator, $duplicates, $relatedTasks, $timeline, $linkedProfiles);
     }
 
-    private function buildFromDatabase(int $projectId): array
+    private function buildFromDatabase(int $projectId, ?string $assignedUserId = null, string $range = '30d'): array
     {
-        $profiles = CreatorProfile::query()
+        $allProfiles = CreatorProfile::query()
             ->with('creator')
             ->where('project_id', $projectId)
             ->get();
+
+        $profiles = $assignedUserId
+            ? $allProfiles->filter(fn (CreatorProfile $profile) => (string) $profile->assigned_user_id === $assignedUserId)->values()
+            : $allProfiles;
 
         $linkedProfileCounts = CreatorProfile::query()
             ->where('project_id', $projectId)
@@ -297,14 +301,33 @@ class OperatorViewService
             ->groupBy('creator_id')
             ->pluck('aggregate', 'creator_id');
 
-        $creators = $profiles
+        $allCreators = $allProfiles
             ->map(function (CreatorProfile $profile) use ($linkedProfileCounts) {
                 return $this->normalizeCreatorProfileCard($profile, (int) ($linkedProfileCounts[$profile->creator_id] ?? 1));
             })
             ->values()
             ->all();
 
-        $duplicates = $this->detectDuplicateWarnings($creators);
+        $creators = $profiles
+            ->map(function (CreatorProfile $profile) use ($linkedProfileCounts) {
+                return $this->normalizeCreatorProfileCard($profile, (int) ($linkedProfileCounts[$profile->creator_id] ?? 1));
+            })
+            ->values()
+            ->all();
+        $personalCreatorIds = array_fill_keys(array_map(fn (array $creator) => (string) $creator['id'], $creators), true);
+
+        $duplicates = $this->detectDuplicateWarnings($allCreators);
+        if ($assignedUserId) {
+            $duplicates = array_values(array_filter($duplicates, function (array $warning) use ($personalCreatorIds) {
+                foreach ((array) ($warning['creators'] ?? []) as $creator) {
+                    if (isset($personalCreatorIds[(string) ($creator['id'] ?? '')])) {
+                        return true;
+                    }
+                }
+
+                return false;
+            }));
+        }
         $duplicateByCreator = [];
 
         foreach ($duplicates as $warning) {
@@ -313,13 +336,15 @@ class OperatorViewService
             }
         }
 
+        $taskQuery = Task::query()
+            ->with('creatorProfile')
+            ->where('project_id', $projectId)
+            ->whereNotIn('status', ['COMPLETED', 'DONE', 'SKIPPED', 'ARCHIVED']);
+        if ($assignedUserId) {
+            $taskQuery->where('assigned_user_id', $assignedUserId);
+        }
         $tasks = $this->normalizeDbTasks(
-            Task::query()
-                ->with('creatorProfile')
-                ->where('project_id', $projectId)
-                ->whereNotIn('status', ['COMPLETED', 'DONE', 'SKIPPED', 'ARCHIVED'])
-                ->orderBy('due_at')
-                ->get()
+            $taskQuery->orderBy('due_at')->get()
                 ->all()
         );
 
@@ -355,9 +380,13 @@ class OperatorViewService
         $tasksDueToday = array_values(array_filter($tasks, fn (array $task) => ! in_array($task['status'], ['completed', 'skipped'], true) && str_starts_with((string) ($task['dueDate'] ?? ''), $today)));
         usort($tasksDueToday, fn (array $a, array $b) => strcmp((string) ($a['dueDate'] ?? ''), (string) ($b['dueDate'] ?? '')));
 
+        $profileIds = $profiles->pluck('id')->map(fn ($id) => (string) $id)->values()->all();
+        $activityQuery = OutreachEvent::query()->where('project_id', $projectId);
+        if ($assignedUserId) {
+            $activityQuery->whereIn('creator_profile_id', $profileIds);
+        }
         $recentActivity = $this->meaningfulSignals($this->normalizeDbRecentActivity(
-            OutreachEvent::query()
-                ->where('project_id', $projectId)
+            $activityQuery
                 ->orderByDesc('sent_at')
                 ->limit(24)
                 ->get()
@@ -365,15 +394,28 @@ class OperatorViewService
         ));
         $workflowHealth = $this->workflowHealth($creators, $tasks, $duplicates, $readyQueue, $triageItems, $tasksDueToday);
 
-        $outreachSent = OutreachEvent::query()
+        $outreachSentQuery = OutreachEvent::query()
             ->where('project_id', $projectId)
-            ->whereIn(DB::raw('UPPER(event_type)'), $this->strictOutreachSentEventTypes())
-            ->count();
+            ->whereIn(DB::raw('UPPER(event_type)'), $this->strictOutreachSentEventTypes());
+        $replyQuery = OutreachEvent::query()
+            ->where('project_id', $projectId)
+            ->whereIn(DB::raw('UPPER(event_type)'), $this->strictReplyEventTypes());
+        if ($assignedUserId) {
+            $outreachSentQuery->whereIn('creator_profile_id', $profileIds);
+            $replyQuery->whereIn('creator_profile_id', $profileIds);
+        }
 
-        $replies = OutreachEvent::query()
-            ->where('project_id', $projectId)
-            ->whereIn(DB::raw('UPPER(event_type)'), $this->strictReplyEventTypes())
-            ->count();
+        $rangeStart = match ($range) {
+            '7d' => now()->subDays(7),
+            'all' => null,
+            default => now()->subDays(30),
+        };
+        if ($rangeStart) {
+            $outreachSentQuery->where('sent_at', '>=', $rangeStart);
+            $replyQuery->where('sent_at', '>=', $rangeStart);
+        }
+        $outreachSent = $outreachSentQuery->count();
+        $replies = $replyQuery->count();
 
         return [
             'metrics' => [
@@ -708,6 +750,7 @@ class OperatorViewService
             'valueScore' => $this->presentableValueScore((float) ($profile->value_score ?? 0), (int) ($profile->followers_count ?? 0), $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null),
             'valueTier' => Str::lower($this->scoring->tier($this->presentableValueScore((float) ($profile->value_score ?? 0), (int) ($profile->followers_count ?? 0), $profile->engagement_rate_pct !== null ? (float) $profile->engagement_rate_pct : null))),
             'preferredChannel' => (string) ($profile->preferred_channel ?: ''),
+            'assignedUserId' => (string) ($profile->assigned_user_id ?: ''),
             'duplicateRisk' => $profile->duplicate_flag ? 'medium' : 'low',
             'duplicateReviewOutcome' => (string) ($sourceMetadata['duplicate_review_outcome'] ?? ''),
             'creatorIdentityId' => (string) ($creator?->external_identity_key ?: ''),
@@ -780,8 +823,8 @@ class OperatorViewService
                 'id' => (string) ($task->external_task_key ?: $task->id),
                 'creatorProfileId' => (string) ($task->creator_profile_id ?: ''),
                 'type' => (string) $task->task_type,
-                'platform' => Str::lower((string) ($task->platform ?: 'instagram')),
-                'handle' => (string) ($task->handle ?: ''),
+                'platform' => Str::lower((string) ($task->platform ?: $task->creatorProfile?->platform ?: 'instagram')),
+                'handle' => (string) ($task->handle ?: $task->creatorProfile?->handle ?: ''),
                 'status' => match ($status) {
                     'DONE', 'COMPLETED' => 'completed',
                     'SKIPPED' => 'skipped',
@@ -794,7 +837,7 @@ class OperatorViewService
                 'createdAt' => optional($task->created_at)?->toDateTimeString() ?? '',
                 'completedAt' => optional($task->completed_at)?->toDateTimeString() ?? '',
                 'messageText' => $this->sanitizeStoredMessageDraft((string) ($task->message_draft ?: '')),
-                'profileUrl' => (string) ($task->open_url ?: ''),
+                'profileUrl' => (string) ($task->open_url ?: $task->creatorProfile?->profile_url ?: ''),
                 'profilePicUrl' => (string) ($task->creatorProfile?->profile_pic_url ?: ''),
                 'notes' => (string) ($task->notes ?: ''),
                 'groupKey' => (string) ($task->group_key ?: ''),

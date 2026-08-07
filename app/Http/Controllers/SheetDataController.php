@@ -1246,15 +1246,20 @@ class SheetDataController extends Controller
             $validated = $request->validate([
                 'sheetId' => ['nullable', 'string'],
                 'range' => ['nullable', Rule::in(['7d', '30d', 'all'])],
+                'scope' => ['nullable', Rule::in(['mine', 'workspace'])],
             ]);
 
             $sheetId = $this->resolveSheetId($request, $validated['sheetId'] ?? null);
             $workspaceId = (string) $request->attributes->get('workspace_id');
             $range = (string) ($validated['range'] ?? '30d');
-            $cacheKey = 'operator-view:'.md5($workspaceId.'|'.$sheetId.'|'.$range);
+            $scope = (string) ($validated['scope'] ?? 'workspace');
+            $assignedUserId = $scope === 'mine'
+                ? (string) $request->attributes->get('supabase_user_id')
+                : null;
+            $cacheKey = 'operator-view:'.md5($workspaceId.'|'.$sheetId.'|'.$range.'|'.$scope.'|'.($assignedUserId ?: 'workspace'));
             $data = $request->has('_')
-                ? $this->dashboardOperatorPayload($sheetId, $workspaceId, $range)
-                : Cache::remember($cacheKey, now()->addSeconds(45), fn () => $this->dashboardOperatorPayload($sheetId, $workspaceId, $range));
+                ? $this->dashboardOperatorPayload($sheetId, $workspaceId, $range, $assignedUserId)
+                : Cache::remember($cacheKey, now()->addSeconds(45), fn () => $this->dashboardOperatorPayload($sheetId, $workspaceId, $range, $assignedUserId));
 
             return response()->json([
                 'message' => 'Operator view fetched',
@@ -1265,21 +1270,32 @@ class SheetDataController extends Controller
         }
     }
 
-    private function dashboardOperatorPayload(string $sheetId, string $workspaceId, string $range = '30d'): array
+    private function dashboardOperatorPayload(string $sheetId, string $workspaceId, string $range = '30d', ?string $assignedUserId = null): array
     {
-        $data = $this->operatorView->build($sheetId);
+        $data = $this->operatorView->build($sheetId, $assignedUserId, $range);
         $summary = $this->analytics->summary($sheetId, $workspaceId, $range);
+        $personalPerformance = [
+            'messagesSent' => (int) ($data['metrics']['outreachSent'] ?? 0),
+            'outreachSent' => (int) ($data['metrics']['outreachSent'] ?? 0),
+            'repliesReceived' => (int) ($data['metrics']['repliesReceived'] ?? 0),
+            'replyRate' => (float) ($data['metrics']['replyRate'] ?? 0),
+        ];
 
         return array_merge($data, [
             'range' => $summary['range'] ?? ['label' => $range],
-            'performance' => $summary['performance'] ?? [],
+            'performance' => $assignedUserId ? $personalPerformance : ($summary['performance'] ?? []),
             'usage' => $summary['usage'] ?? [],
             'economics' => $summary['economics'] ?? [],
             'quality' => $summary['quality'] ?? [],
-            'previousPeriod' => $summary['previousPeriod'] ?? null,
+            'previousPeriod' => $assignedUserId ? null : ($summary['previousPeriod'] ?? null),
+            'workspaceMetrics' => $summary['metrics'] ?? [],
             'metricDefinitions' => array_merge((array) ($summary['definitions'] ?? []), [
-                'needsAction' => 'Creators and tasks that need an operator decision now: qualification, duplicate blockers, and due follow-ups.',
-                'outreachQueue' => 'Approved or queued creators that also have a real open outreach task.',
+                'needsAction' => $assignedUserId
+                    ? 'Creators and tasks assigned to you that need a decision now: qualification, duplicate blockers, and due follow-ups.'
+                    : 'Creators and tasks that need an operator decision now: qualification, duplicate blockers, and due follow-ups.',
+                'outreachQueue' => $assignedUserId
+                    ? 'Creators assigned to you that also have a real open outreach task.'
+                    : 'Approved or queued creators that also have a real open outreach task.',
                 'lifecycleSignals' => 'Replies, accepted/lost outcomes, state changes, and task signals worth acting on.',
                 'replyRate' => 'Replies divided by confirmed outbound send events in the selected range.',
             ]),
@@ -1288,6 +1304,7 @@ class SheetDataController extends Controller
                 'cacheTtlSeconds' => 45,
                 'source' => 'operator_view_unified',
             ],
+            'viewScope' => $assignedUserId ? 'mine' : 'workspace',
         ]);
     }
 

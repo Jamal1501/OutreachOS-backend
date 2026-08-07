@@ -98,6 +98,43 @@ class TaskOwnershipApiTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_dashboard_operator_view_is_scoped_to_the_signed_in_members_assignments(): void
+    {
+        [$owner, $memberA, $memberB, $workspace, $project] = $this->fixture();
+        $profileA = $this->profile($project, $memberA->supabase_user_id);
+        $profileB = $this->profile($project, $memberB->supabase_user_id);
+        $profileA->update(['status' => 'APPROVED_FOR_OUTREACH', 'lifecycle_state' => 'approved_for_outreach']);
+        $profileB->update(['status' => 'APPROVED_FOR_OUTREACH', 'lifecycle_state' => 'approved_for_outreach']);
+        $this->task($project, $memberA->supabase_user_id, dueAt: now(), creatorProfileId: $profileA->id);
+        $this->task($project, $memberB->supabase_user_id, dueAt: now(), creatorProfileId: $profileB->id);
+
+        $this->fakeSupabaseUsers([
+            'member-a-token' => $memberA,
+            'member-b-token' => $memberB,
+        ]);
+
+        $memberAResponse = $this->withToken('member-a-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->getJson('/api/operator/view?sheetId='.urlencode($project->workbook_id).'&scope=mine&range=30d')
+            ->assertOk()
+            ->assertJsonPath('data.viewScope', 'mine')
+            ->assertJsonPath('data.metrics.tasksDueToday', 1)
+            ->assertJsonPath('data.metrics.readyForOutreach', 1)
+            ->assertJsonPath('data.workspaceMetrics.creatorsEnriched', 2);
+
+        $this->assertSame([$profileA->handle], collect($memberAResponse->json('data.readyQueue'))->pluck('handle')->all());
+
+        $memberBResponse = $this->withToken('member-b-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->getJson('/api/operator/view?sheetId='.urlencode($project->workbook_id).'&scope=mine&range=30d')
+            ->assertOk()
+            ->assertJsonPath('data.viewScope', 'mine')
+            ->assertJsonPath('data.metrics.tasksDueToday', 1)
+            ->assertJsonPath('data.metrics.readyForOutreach', 1);
+
+        $this->assertSame([$profileB->handle], collect($memberBResponse->json('data.readyQueue'))->pluck('handle')->all());
+    }
+
     public function test_completed_work_is_credited_to_the_actual_member(): void
     {
         [$owner, $memberA, $memberB, $workspace, $project] = $this->fixture();

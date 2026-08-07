@@ -390,7 +390,7 @@ class AnalyticsSummaryService
     private function distinctCreatorCount($query): int
     {
         return (int) ($query
-            ->selectRaw("COUNT(DISTINCT COALESCE(creator_profile_id::text, LOWER(COALESCE(platform, '')) || ':' || LOWER(TRIM(LEADING '@' FROM COALESCE(handle, ''))))) as aggregate")
+            ->selectRaw("COUNT(DISTINCT COALESCE(CAST(creator_profile_id AS TEXT), LOWER(COALESCE(platform, '')) || ':' || LOWER(LTRIM(COALESCE(handle, ''), '@')))) as aggregate")
             ->value('aggregate') ?? 0);
     }
 
@@ -409,7 +409,7 @@ class AnalyticsSummaryService
     {
         return (int) (DiscoveryItem::query()
             ->where('project_id', $projectId)
-            ->selectRaw("COUNT(DISTINCT COALESCE(NULLIF(duplicate_key, ''), NULLIF(handle, ''), NULLIF(username, ''), NULLIF(post_url, ''), id::text)) as aggregate")
+            ->selectRaw("COUNT(DISTINCT COALESCE(NULLIF(duplicate_key, ''), NULLIF(handle, ''), NULLIF(username, ''), NULLIF(post_url, ''), CAST(id AS TEXT))) as aggregate")
             ->value('aggregate') ?? 0);
     }
 
@@ -553,7 +553,7 @@ class AnalyticsSummaryService
         return CreatorProfile::query()
             ->where('project_id', $projectId)
             ->whereRaw("LOWER(COALESCE(platform, '')) = ?", [$platform])
-            ->whereRaw("LOWER(TRIM(LEADING '@' FROM COALESCE(handle, ''))) = ?", [$handle])
+            ->whereRaw("LOWER(LTRIM(COALESCE(handle, ''), '@')) = ?", [$handle])
             ->first();
     }
 
