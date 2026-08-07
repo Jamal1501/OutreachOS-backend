@@ -10,6 +10,7 @@ use App\Models\Task;
 use App\Models\Workspace;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class AnalyticsSummaryService
@@ -449,18 +450,34 @@ class AnalyticsSummaryService
 
     private function manualRoiSummary(Project $project, string $workspaceId, ?CarbonImmutable $from, ?CarbonImmutable $to): array
     {
-        $workspaceKeys = array_values(array_filter(array_unique([
-            $workspaceId,
-            (string) ($project->workspace_id ?? ''),
+        $emptySummary = [
+            'manualCampaignSpendUsd' => 0.0,
+            'dealsClosed' => 0,
+            'manualEventCount' => 0,
+        ];
+
+        if (! Schema::hasTable('roi_events') || ! Schema::hasColumn('roi_events', 'project_id')) {
+            return $emptySummary;
+        }
+
+        $projectKeys = array_values(array_filter(array_unique([
             (string) ($project->id ?? ''),
             (string) ($project->workbook_id ?? ''),
             $this->workspaceSlug((string) ($project->workspace_id ?: $workspaceId)),
         ])));
+        $workspaceKeys = array_values(array_filter(array_unique([
+            $workspaceId,
+            (string) ($project->workspace_id ?? ''),
+        ])));
+        $hasWorkspaceId = Schema::hasColumn('roi_events', 'workspace_id');
 
         $query = DB::table('roi_events');
-        $query->where(function ($q) use ($workspaceKeys) {
-            foreach ($workspaceKeys as $key) {
-                $q->orWhere('project_id', $key)->orWhere('workspace_id', $key);
+        $query->where(function ($q) use ($projectKeys, $workspaceKeys, $hasWorkspaceId) {
+            if ($projectKeys !== []) {
+                $q->whereIn('project_id', $projectKeys);
+            }
+            if ($hasWorkspaceId && $workspaceKeys !== []) {
+                $q->orWhereIn('workspace_id', $workspaceKeys);
             }
         });
 
@@ -471,15 +488,7 @@ class AnalyticsSummaryService
             $query->where('event_date', '<=', $to->toDateString());
         }
 
-        try {
-            $events = $query->get(['event_type', 'amount', 'metadata']);
-        } catch (\Throwable) {
-            return [
-                'manualCampaignSpendUsd' => 0.0,
-                'dealsClosed' => 0,
-                'manualEventCount' => 0,
-            ];
-        }
+        $events = $query->get(['event_type', 'amount', 'metadata']);
 
         $manualSpend = 0.0;
         $dealsClosed = 0;

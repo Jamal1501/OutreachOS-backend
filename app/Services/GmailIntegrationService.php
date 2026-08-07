@@ -5,7 +5,6 @@ namespace App\Services;
 use App\Models\ConnectedAccount;
 use App\Models\Project;
 use App\Models\WorkspaceMember;
-use Illuminate\Database\QueryException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -257,33 +256,33 @@ class GmailIntegrationService
         }
 
         $deliveryId = (string) Str::uuid();
-        try {
-            DB::table('outbound_email_deliveries')->insertOrIgnore([
-                'id' => $deliveryId,
-                'workspace_id' => $workspaceId,
-                'project_id' => $project->id,
-                'connected_account_id' => $account->id,
-                'idempotency_key' => $payload['idempotencyKey'],
-                'sent_by_user_id' => $userId,
-                'recipient_email' => strtolower($payload['to']),
-                'subject' => $payload['subject'],
-                'status' => 'sending',
-                'metadata' => json_encode([
-                    'creator_handle' => $payload['creatorHandle'] ?? null,
-                    'task_id' => $payload['taskId'] ?? null,
-                ]),
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
-        } catch (QueryException $exception) {
+        $inserted = DB::table('outbound_email_deliveries')->insertOrIgnore([
+            'id' => $deliveryId,
+            'workspace_id' => $workspaceId,
+            'project_id' => $project->id,
+            'connected_account_id' => $account->id,
+            'idempotency_key' => $payload['idempotencyKey'],
+            'sent_by_user_id' => $userId,
+            'recipient_email' => strtolower($payload['to']),
+            'subject' => $payload['subject'],
+            'status' => 'sending',
+            'metadata' => json_encode([
+                'creator_handle' => $payload['creatorHandle'] ?? null,
+                'task_id' => $payload['taskId'] ?? null,
+            ]),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        if ($inserted === 0) {
             $existing = DB::table('outbound_email_deliveries')
                 ->where('workspace_id', $workspaceId)
                 ->where('idempotency_key', $payload['idempotencyKey'])
                 ->first();
             if (! $existing) {
-                throw $exception;
+                throw new ConflictHttpException('This email send could not be reserved. Please try again with a new request.');
             }
-            if ($existing?->status === 'sent') {
+            if ($existing->status === 'sent') {
                 return $this->deliveryResult($existing, $account);
             }
             throw new ConflictHttpException('This email send is already being processed. Do not send it again.');

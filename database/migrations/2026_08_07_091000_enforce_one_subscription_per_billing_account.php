@@ -44,10 +44,15 @@ return new class extends Migration
             return;
         }
 
+        if ($column === 'stripe_subscription_id') {
+            DB::table('workspace_subscriptions')
+                ->where($column, '')
+                ->update([$column => null, 'updated_at' => now()]);
+        }
+
         $duplicates = DB::table('workspace_subscriptions')
             ->select($column)
             ->whereNotNull($column)
-            
             ->groupBy($column)
             ->havingRaw('COUNT(*) > 1')
             ->pluck($column);

@@ -18,7 +18,7 @@ jobs:
           coverage: none
       - run: composer install --no-interaction --prefer-dist --optimize-autoloader
       - name: Audit production dependencies
-        run: composer audit --locked --no-interaction --no-dev --ignore-severity=low --ignore-severity=moderate --ignore-severity=high
+        run: composer audit --locked --no-interaction --no-dev
       - run: cp .env.example .env
       - run: php artisan key:generate
       - run: php artisan test
