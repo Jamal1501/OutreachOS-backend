@@ -249,6 +249,12 @@ class BillingController extends Controller
                     'code' => 'active_subscription_exists',
                 ], 409);
             }
+            if ($exception->getMessage() === 'subscription_checkout_pending') {
+                return response()->json([
+                    'message' => 'A subscription checkout is already open for this billing account. Complete or cancel it before starting another.',
+                    'code' => 'subscription_checkout_pending',
+                ], 409);
+            }
 
             throw $exception;
         }

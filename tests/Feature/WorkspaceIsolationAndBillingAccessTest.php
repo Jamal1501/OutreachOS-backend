@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Exceptions\ActiveDiscoveryException;
 use App\Exceptions\InsufficientCreditsException;
+use App\Mail\OperationalAlertMail;
 use App\Mail\WorkspaceAccessGrantedMail;
 use App\Mail\WorkspaceInvitationMail;
 use App\Models\DiscoveryRun;
@@ -90,6 +91,60 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
             ])
             ->assertConflict()
             ->assertJsonPath('code', 'active_subscription_exists');
+    }
+
+    public function test_pending_same_plan_checkout_prevents_a_second_stripe_session(): void
+    {
+        [$owner, $workspace] = $this->createWorkspaceForRole('owner');
+        $checkoutCalls = 0;
+        $this->fakeSubscriptionCheckoutProviders($owner, $checkoutCalls);
+
+        $payload = [
+            'planId' => 'pro',
+            'successUrl' => 'https://www.socialcore.app/billing?checkout=success',
+            'cancelUrl' => 'https://www.socialcore.app/billing?checkout=cancelled',
+        ];
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/billing/checkout/subscription', $payload)
+            ->assertOk();
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/billing/checkout/subscription', $payload)
+            ->assertConflict()
+            ->assertJsonPath('code', 'subscription_checkout_pending');
+
+        $this->assertSame(1, $checkoutCalls);
+    }
+
+    public function test_pending_different_plan_checkout_prevents_a_second_stripe_session(): void
+    {
+        [$owner, $workspace] = $this->createWorkspaceForRole('owner');
+        $checkoutCalls = 0;
+        $this->fakeSubscriptionCheckoutProviders($owner, $checkoutCalls);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/billing/checkout/subscription', [
+                'planId' => 'pro',
+                'successUrl' => 'https://www.socialcore.app/billing?checkout=success',
+                'cancelUrl' => 'https://www.socialcore.app/billing?checkout=cancelled',
+            ])
+            ->assertOk();
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/billing/checkout/subscription', [
+                'planId' => 'enterprise',
+                'successUrl' => 'https://www.socialcore.app/billing?checkout=success',
+                'cancelUrl' => 'https://www.socialcore.app/billing?checkout=cancelled',
+            ])
+            ->assertConflict()
+            ->assertJsonPath('code', 'subscription_checkout_pending');
+
+        $this->assertSame(1, $checkoutCalls);
     }
 
     public function test_database_enforces_one_subscription_per_billing_account(): void
@@ -462,6 +517,57 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
 
         $this->assertSame(1, DB::table('credit_purchases')->where('stripe_payment_intent_id', 'pi_test_once')->count());
         $this->assertSame(1, DB::table('stripe_webhook_events')->where('stripe_event_id', 'evt_topup_once')->where('status', 'processed')->count());
+    }
+
+    public function test_different_active_stripe_subscription_cannot_overwrite_local_billing(): void
+    {
+        [, $workspace] = $this->createWorkspaceForRole('owner');
+        [$subscription] = app(WorkspaceBillingService::class)->ensureWorkspaceBilling($workspace->id);
+        DB::table('workspace_subscriptions')->where('id', $subscription->id)->update([
+            'plan_id' => 'pro',
+            'status' => 'active',
+            'stripe_customer_id' => 'cus_conflict',
+            'stripe_subscription_id' => 'sub_existing',
+        ]);
+        config([
+            'services.stripe.webhook_secret' => 'whsec_test_secret',
+            'observability.alerts.enabled' => true,
+            'observability.alerts.email' => 'operator@example.test',
+        ]);
+        Mail::fake();
+
+        $payload = json_encode([
+            'id' => 'evt_subscription_conflict',
+            'type' => 'customer.subscription.created',
+            'data' => ['object' => [
+                'id' => 'sub_duplicate',
+                'status' => 'active',
+                'customer' => 'cus_conflict',
+                'metadata' => [
+                    'workspace_id' => $workspace->id,
+                    'billing_account_id' => $subscription->billing_account_id,
+                    'plan_id' => 'enterprise',
+                ],
+            ]],
+        ], JSON_UNESCAPED_SLASHES);
+
+        $this->call('POST', '/api/billing/webhooks/stripe', [], [], [], [
+            'HTTP_STRIPE_SIGNATURE' => $this->stripeSignature($payload, 'whsec_test_secret'),
+            'HTTP_ACCEPT' => 'application/json',
+            'CONTENT_TYPE' => 'application/json',
+        ], $payload)->assertServerError();
+
+        $this->assertDatabaseHas('workspace_subscriptions', [
+            'id' => $subscription->id,
+            'plan_id' => 'pro',
+            'stripe_subscription_id' => 'sub_existing',
+        ]);
+        $this->assertDatabaseHas('stripe_webhook_events', [
+            'stripe_event_id' => 'evt_subscription_conflict',
+            'status' => 'failed',
+            'last_error' => 'stripe_subscription_conflict',
+        ]);
+        Mail::assertSent(OperationalAlertMail::class);
     }
 
     public function test_stale_processing_stripe_webhook_is_reclaimed_and_processed(): void
@@ -1344,6 +1450,49 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
                 'user_metadata' => ['full_name' => $name],
             ], 200),
         ]);
+    }
+
+    private function fakeSubscriptionCheckoutProviders(User $owner, int &$checkoutCalls): void
+    {
+        config([
+            'services.stripe.secret_key' => 'sk_test_checkout',
+            'services.supabase.url' => 'https://supabase.example.test',
+            'services.supabase.service_role_key' => 'service-role-key',
+        ]);
+
+        Http::fake(function ($request) use ($owner, &$checkoutCalls) {
+            if (str_contains($request->url(), 'supabase.example.test/auth/v1/user')) {
+                return Http::response([
+                    'id' => $owner->supabase_user_id,
+                    'email' => $owner->email,
+                    'email_confirmed_at' => now()->toIso8601String(),
+                    'user_metadata' => ['full_name' => $owner->name],
+                ]);
+            }
+            if ($request->url() === 'https://api.stripe.com/v1/customers') {
+                return Http::response(['id' => 'cus_checkout_guard']);
+            }
+            if ($request->url() === 'https://api.stripe.com/v1/checkout/sessions') {
+                $checkoutCalls++;
+                $subscription = DB::table('workspace_subscriptions')->first();
+                $metadata = json_decode((string) $subscription->metadata, true);
+                $pending = (array) ($metadata['pending_subscription_checkout'] ?? []);
+                $this->assertSame('creating', $pending['status'] ?? null);
+                $this->assertNotEmpty($pending['intent_token'] ?? null);
+                $this->assertSame(
+                    'subscription-checkout-'.hash('sha256', (string) $pending['intent_token']),
+                    $request->header('Idempotency-Key')[0] ?? null,
+                );
+
+                return Http::response([
+                    'id' => 'cs_guarded_checkout',
+                    'url' => 'https://checkout.stripe.com/c/pay/cs_guarded_checkout',
+                    'expires_at' => now()->addHours(23)->timestamp,
+                ]);
+            }
+
+            return Http::response(['error' => 'unexpected_test_request'], 500);
+        });
     }
 
     private function stripeSignature(string $payload, string $secret): string

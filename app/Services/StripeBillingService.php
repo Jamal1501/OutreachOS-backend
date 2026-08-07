@@ -27,25 +27,37 @@ class StripeBillingService
         $config = $this->billing->getPlanCheckoutConfig($workspaceId, $planId);
         [$currentSubscription] = $this->billing->ensureWorkspaceBilling($workspaceId);
         $billingAccountId = (string) ($currentSubscription->billing_account_id ?: '');
-        if ($this->subscriptionIsManagedInStripe($currentSubscription)) {
-            throw new RuntimeException('active_subscription_exists');
-        }
-
-        $metadata = (array) ($currentSubscription->metadata ?? []);
-        $pendingCheckout = (array) ($metadata['pending_subscription_checkout'] ?? []);
-        $pendingExpiresAt = isset($pendingCheckout['expires_at'])
-            ? CarbonImmutable::parse((string) $pendingCheckout['expires_at'])
-            : null;
-        if ($pendingExpiresAt?->isFuture()
-            && ($pendingCheckout['plan_id'] ?? null) === $config['id']
-            && trim((string) ($pendingCheckout['url'] ?? '')) !== '') {
-            return [
-                'id' => (string) ($pendingCheckout['id'] ?? ''),
-                'url' => (string) $pendingCheckout['url'],
-            ];
-        }
-
         $customerId = $this->ensureStripeCustomer($workspaceId);
+        $checkoutIntentToken = (string) Str::uuid();
+        $checkoutReservationExpiresAt = now()->addHours(24);
+
+        DB::transaction(function () use ($currentSubscription, $config, $checkoutIntentToken, $checkoutReservationExpiresAt): void {
+            $record = WorkspaceSubscription::query()->where('id', $currentSubscription->id)->lockForUpdate()->firstOrFail();
+            if ($this->subscriptionIsManagedInStripe($record)) {
+                throw new RuntimeException('active_subscription_exists');
+            }
+
+            $metadata = (array) ($record->metadata ?? []);
+            $pendingCheckout = (array) ($metadata['pending_subscription_checkout'] ?? []);
+            $pendingExpiresAt = isset($pendingCheckout['expires_at'])
+                ? CarbonImmutable::parse((string) $pendingCheckout['expires_at'])
+                : null;
+            if ($pendingExpiresAt?->isFuture()) {
+                throw new RuntimeException('subscription_checkout_pending');
+            }
+
+            $metadata['pending_subscription_checkout'] = [
+                'intent_token' => $checkoutIntentToken,
+                'status' => 'creating',
+                'id' => null,
+                'url' => null,
+                'plan_id' => $config['id'],
+                'expires_at' => $checkoutReservationExpiresAt->toIso8601String(),
+                'created_at' => now()->toIso8601String(),
+            ];
+            $record->metadata = $metadata;
+            $record->save();
+        });
 
         $trialDays = 0;
 
@@ -62,12 +74,14 @@ class StripeBillingService
                 'workspace_id' => $workspaceId,
                 'billing_account_id' => $billingAccountId,
                 'plan_id' => $config['id'],
+                'checkout_intent_token' => $checkoutIntentToken,
             ],
             'subscription_data' => [
                 'metadata' => [
                     'workspace_id' => $workspaceId,
                     'billing_account_id' => $billingAccountId,
                     'plan_id' => $config['id'],
+                    'checkout_intent_token' => $checkoutIntentToken,
                 ],
             ],
             'line_items' => [[
@@ -88,25 +102,25 @@ class StripeBillingService
             ]],
         ];
 
-        $idempotencyKey = 'subscription-checkout-'.hash('sha256', implode('|', [
-            $billingAccountId,
-            $config['id'],
-            $successUrl,
-            $cancelUrl,
-            now()->utc()->format('Y-m-d-H'),
-        ]));
+        $idempotencyKey = 'subscription-checkout-'.hash('sha256', $checkoutIntentToken);
         $response = $this->request('POST', '/checkout/sessions', $payload, $idempotencyKey);
         $checkoutExpiresAt = isset($response['expires_at'])
             ? CarbonImmutable::createFromTimestampUTC((int) $response['expires_at'])
             : now()->addHours(23);
 
-        DB::transaction(function () use ($currentSubscription, $response, $config, $checkoutExpiresAt): void {
+        DB::transaction(function () use ($currentSubscription, $response, $config, $checkoutExpiresAt, $checkoutIntentToken): void {
             $record = WorkspaceSubscription::query()->where('id', $currentSubscription->id)->lockForUpdate()->firstOrFail();
             if ($this->subscriptionIsManagedInStripe($record)) {
                 throw new RuntimeException('active_subscription_exists');
             }
             $metadata = (array) ($record->metadata ?? []);
+            $pendingCheckout = (array) ($metadata['pending_subscription_checkout'] ?? []);
+            if (($pendingCheckout['intent_token'] ?? null) !== $checkoutIntentToken) {
+                throw new RuntimeException('subscription_checkout_reservation_lost');
+            }
             $metadata['pending_subscription_checkout'] = [
+                'intent_token' => $checkoutIntentToken,
+                'status' => 'ready',
                 'id' => (string) ($response['id'] ?? ''),
                 'url' => (string) ($response['url'] ?? ''),
                 'plan_id' => $config['id'],
@@ -448,6 +462,13 @@ class StripeBillingService
             $effectiveBillingAccountId = $billingAccountId !== '' ? $billingAccountId : (string) ($record->billing_account_id ?: '');
             if ($billingAccountId !== '' && $billingAccountId !== (string) ($record->billing_account_id ?: '')) {
                 throw new RuntimeException('Stripe subscription billing account metadata does not match workspace.');
+            }
+
+            $currentSubscriptionId = trim((string) ($record->stripe_subscription_id ?? ''));
+            if ($currentSubscriptionId !== ''
+                && $currentSubscriptionId !== $subscriptionId
+                && in_array(strtolower((string) $record->status), ['active', 'trialing', 'past_due', 'unpaid', 'incomplete'], true)) {
+                throw new RuntimeException('stripe_subscription_conflict');
             }
 
             $previousPlan = (string) ($record->plan_id ?: 'free');
