@@ -1993,7 +1993,12 @@ class SheetDataController extends Controller
         }
 
         $statuses = (array) ($filters['statuses'] ?? []);
-        if (! empty($statuses) && ! in_array(Str::lower((string) ($item['status'] ?? '')), $statuses, true)) {
+        $itemStatus = Str::lower((string) ($item['status'] ?? ''));
+        if (empty($statuses)) {
+            if ($itemStatus === 'archived') {
+                return false;
+            }
+        } elseif (! in_array($itemStatus, $statuses, true)) {
             return false;
         }
 
@@ -2104,6 +2109,12 @@ class SheetDataController extends Controller
                 'created_at',
             ])
             ->where('project_id', $project->id);
+
+        // Keep archived creators out of the normal CRM response. An explicit
+        // lifecycle filter still wins, so the archived-only view remains usable.
+        if (empty($statusFilters)) {
+            $query->whereRaw("LOWER(COALESCE(lifecycle_state, status, '')) <> 'archived'");
+        }
 
         $platformFilters = array_values((array) ($filters['platforms'] ?? []));
         if (! empty($platformFilters)) {

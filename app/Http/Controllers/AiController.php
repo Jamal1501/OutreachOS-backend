@@ -64,6 +64,7 @@ class AiController extends Controller
             'replyContext' => ['nullable', 'array', 'max:100'],
             'previousMessage' => ['nullable', 'string', 'max:5000'],
             'conversationGoal' => ['nullable', 'string', 'max:2000'],
+            'outputLanguage' => ['nullable', Rule::in(['en', 'de'])],
         ]);
 
         return response()->json($this->personalization->personalize($validated));

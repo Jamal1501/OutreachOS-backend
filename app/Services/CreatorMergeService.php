@@ -22,6 +22,7 @@ class CreatorMergeService
         private ProjectResolverService $projects,
         private CreatorLocationInferenceService $locationInference,
         private AvatarCacheService $avatarCache,
+        private CreatorSuppressionService $creatorSuppressions,
     ) {}
 
     public function mergeFromEnrichedSheet(string $sheetId, string $sourceSheet): array
@@ -88,14 +89,18 @@ class CreatorMergeService
             $creator = $this->sourceRowToCreatorRecord($sourceSheet, $sourceRow);
             $key = $this->crmKey($creator['Platform'], $creator['Handle']);
 
-            if ($creator['Handle'] === '') {
+            if ($creator['Handle'] === '' || $this->creatorSuppressions->isSuppressed(
+                (string) ($creator['Platform'] ?? ''),
+                (string) ($creator['Handle'] ?? ''),
+                (string) ($creator['Contact_Email'] ?? ''),
+            )) {
                 $skipped++;
                 $unmatched[] = [
                     'row_number' => $sourceRow['_row_number'] ?? '',
                     'handle' => '',
                     'dm_link' => $creator['DM_Link'],
-                    'status' => 'SKIPPED_NO_HANDLE',
-                    'note' => 'Missing handle in enriched source row',
+                    'status' => $creator['Handle'] === '' ? 'SKIPPED_NO_HANDLE' : 'SKIPPED_PRIVACY_SUPPRESSION',
+                    'note' => $creator['Handle'] === '' ? 'Missing handle in enriched source row' : 'Creator is on the privacy suppression list',
                 ];
 
                 continue;
@@ -177,7 +182,11 @@ class CreatorMergeService
                 $handle = $this->normalizeHandle((string) ($creatorRecord['Handle'] ?? ''));
                 $platform = strtolower(trim((string) ($creatorRecord['Platform'] ?? '')));
 
-                if ($platform === '' || $handle === '') {
+                if ($platform === '' || $handle === '' || $this->creatorSuppressions->isSuppressed(
+                    $platform,
+                    $handle,
+                    (string) ($creatorRecord['Contact_Email'] ?? ''),
+                )) {
                     $skipped++;
 
                     continue;

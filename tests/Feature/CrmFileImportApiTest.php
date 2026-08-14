@@ -58,6 +58,33 @@ class CrmFileImportApiTest extends TestCase
         ]);
     }
 
+    public function test_archived_creators_are_hidden_by_default_but_available_through_an_explicit_filter(): void
+    {
+        [$user, $workspace] = $this->createMemberWorkspace('owner');
+        $this->fakeSupabaseUser($user);
+        $csv = "Platform,Handle,Name,Status\ninstagram,@archived_creator,Archived Creator,ARCHIVED";
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->post('/api/crm/import/creators', [
+                'file' => UploadedFile::fake()->createWithContent('archived.csv', $csv),
+            ])
+            ->assertOk();
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->getJson('/api/crm/list?sheetId=workspace:test-import')
+            ->assertOk()
+            ->assertJsonPath('total', 0);
+
+        $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->getJson('/api/crm/list?sheetId=workspace:test-import&status=archived')
+            ->assertOk()
+            ->assertJsonPath('total', 1)
+            ->assertJsonPath('items.0.handle', '@archived_creator');
+    }
+
     public function test_owner_can_preview_and_import_custom_column_mapping(): void
     {
         [$user, $workspace] = $this->createMemberWorkspace('owner');

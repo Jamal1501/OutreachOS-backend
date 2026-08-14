@@ -125,7 +125,7 @@ class ScraperRegistryService
         }
 
         $fallback = $this->systemDefaultModule($platform, $stage, $configuredOnly);
-        if ($fallback) {
+        if ($fallback && in_array($planId, $fallback['allowedPlans'], true)) {
             return $fallback;
         }
 
@@ -428,7 +428,7 @@ class ScraperRegistryService
             'basic' => 1,
             'standard' => 2,
             'deep' => 3,
-            default => 99,
+            default => 0,
         };
     }
 

@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\CreatorSuppression;
 use App\Models\SupportRequest;
+use App\Services\CreatorSuppressionService;
 use App\Services\ProviderSpendGuardService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
@@ -13,7 +15,10 @@ use Illuminate\Validation\Rule;
 
 class OperationsController extends Controller
 {
-    public function __construct(private ProviderSpendGuardService $providerSpend) {}
+    public function __construct(
+        private ProviderSpendGuardService $providerSpend,
+        private CreatorSuppressionService $creatorSuppressions,
+    ) {}
 
     public function providerSpend(): mixed
     {
@@ -260,5 +265,62 @@ class OperationsController extends Controller
                 'resolvedAt' => $ticket->resolved_at?->toIso8601String(),
             ],
         ]);
+    }
+
+    public function creatorSuppressions(): mixed
+    {
+        return response()->json([
+            'data' => CreatorSuppression::query()
+                ->orderByDesc('created_at')
+                ->limit(100)
+                ->get()
+                ->map(fn (CreatorSuppression $suppression) => [
+                    'id' => (string) $suppression->id,
+                    'platform' => $suppression->platform,
+                    'handle' => $suppression->normalized_handle,
+                    'hasEmail' => filled($suppression->email_hash),
+                    'reason' => $suppression->reason,
+                    'source' => $suppression->source,
+                    'createdAt' => $suppression->created_at?->toIso8601String(),
+                ])
+                ->values(),
+        ]);
+    }
+
+    public function createCreatorSuppression(Request $request): mixed
+    {
+        $validated = $request->validate([
+            'platform' => ['nullable', 'string', Rule::in(['instagram', 'tiktok'])],
+            'handle' => ['nullable', 'string', 'max:255', Rule::requiredIf(fn () => ! $request->filled('email'))],
+            'email' => ['nullable', 'email:rfc', 'max:255', Rule::requiredIf(fn () => ! $request->filled('handle'))],
+            'reason' => ['required', 'string', 'min:3', 'max:1000'],
+        ]);
+
+        $suppression = $this->creatorSuppressions->suppress(
+            $validated['platform'] ?? null,
+            $validated['handle'] ?? null,
+            $validated['email'] ?? null,
+            $validated['reason'],
+            (string) $request->attributes->get('supabase_user_id'),
+        );
+
+        return response()->json([
+            'message' => 'Creator suppression added and matching CRM records removed.',
+            'data' => [
+                'id' => (string) $suppression->id,
+                'platform' => $suppression->platform,
+                'handle' => $suppression->normalized_handle,
+                'hasEmail' => filled($suppression->email_hash),
+                'reason' => $suppression->reason,
+                'createdAt' => $suppression->created_at?->toIso8601String(),
+            ],
+        ], 201);
+    }
+
+    public function deleteCreatorSuppression(string $id): mixed
+    {
+        CreatorSuppression::query()->findOrFail($id)->delete();
+
+        return response()->json(['message' => 'Creator suppression removed.']);
     }
 }

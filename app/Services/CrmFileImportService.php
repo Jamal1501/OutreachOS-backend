@@ -65,6 +65,7 @@ class CrmFileImportService
         private ProjectResolverService $projects,
         private AvatarCacheService $avatarCache,
         private CreatorRelationshipTimelineService $relationshipTimeline,
+        private CreatorSuppressionService $creatorSuppressions,
     ) {}
 
     public function previewCreatorsCsv(UploadedFile $file, array $mapping = [], array $options = []): array
@@ -168,6 +169,22 @@ class CrmFileImportService
                 }
 
                 $email = $this->nullableString($this->value($row, 'email', $mapping));
+                if ($this->creatorSuppressions->isSuppressed($platform, $handle, $email)) {
+                    $skipped++;
+                    $errorCount++;
+                    if (count($errors) < 200) {
+                        $errors[] = [
+                            'rowNumber' => (int) ($row['__row_number'] ?? ($index + 2)),
+                            'reason' => 'Creator is on the privacy suppression list and was not imported.',
+                            'platform' => $platform,
+                            'handle' => $rawHandle,
+                            'profileUrl' => $profileUrlValue,
+                            'row' => $this->errorRowPreview((array) ($row['__display'] ?? [])),
+                        ];
+                    }
+
+                    continue;
+                }
                 $displayName = $this->nullableString($this->value($row, 'name', $mapping));
                 $identityKey = $this->creatorIdentityKey($platform, $handle, $email, $displayName);
 

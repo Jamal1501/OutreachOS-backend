@@ -49,6 +49,7 @@ class AiPersonalizationService
         $tonePreference = $this->normalizeTonePreference((string) ($payload['tonePreference'] ?? $taskContext['tonePreference'] ?? ''));
         $previousMessage = trim((string) ($payload['previousMessage'] ?? ''));
         $conversationGoal = trim((string) ($payload['conversationGoal'] ?? ''));
+        $outputLanguage = strtolower(trim((string) ($payload['outputLanguage'] ?? 'en'))) === 'de' ? 'de' : 'en';
         $messageType = $this->normalizeMessageType(
             trim((string) ($payload['messageType'] ?? '')) ?: $this->defaultMessageType((string) ($creator['platform'] ?? 'instagram'))
         );
@@ -189,6 +190,7 @@ PROMPT;
             conversationGoal: $conversationGoal,
             generationMode: $generationMode,
             tonePreference: $tonePreference,
+            outputLanguage: $outputLanguage,
         );
 
         $result = $this->ai->structured(
@@ -245,6 +247,7 @@ PROMPT;
         string $conversationGoal,
         string $generationMode,
         string $tonePreference,
+        string $outputLanguage,
     ): string {
         $sections = [];
 
@@ -254,6 +257,9 @@ PROMPT;
         $sections[] = "CHANNEL CONTRACT - mandatory\n".$this->channelContractInstruction($messageType);
         $sections[] = "GENERATION MODE\n".($generationMode !== '' ? $generationMode : 'fresh_draft');
         $sections[] = "TONE PREFERENCE\n".$tonePreference;
+        $sections[] = "OUTPUT LANGUAGE - mandatory\n".($outputLanguage === 'de'
+            ? 'German. Write the subject, message, CTA wording, and all customer-visible analysis fields in natural German. Do not mix in English except unavoidable brand or product names.'
+            : 'English. Write the subject, message, CTA wording, and all customer-visible analysis fields in natural English.');
 
         if (! empty($taskContext)) {
             $sections[] = "TASK CONTEXT - this overrides the template if there is conflict\n".$this->json($taskContext);

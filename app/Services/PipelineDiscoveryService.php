@@ -28,6 +28,7 @@ class PipelineDiscoveryService
         private InfluencerScoringService $scoring,
         private AvatarCacheService $avatarCache,
         private OperationalHeartbeatService $heartbeat,
+        private CreatorSuppressionService $creatorSuppressions,
     ) {}
 
     public function estimate(
@@ -338,7 +339,7 @@ class PipelineDiscoveryService
                 ),
             ]);
             $this->assertNotCancelled($jobId);
-            $discoveryItems = $discovery->items;
+            $discoveryItems = $this->creatorSuppressions->filterProviderItems($platform, $discovery->items);
             $stepResults[] = [
                 'step' => 'discovery_scrape',
                 'status' => 'completed',
@@ -376,6 +377,7 @@ class PipelineDiscoveryService
                 $rankingDirection,
                 $criteria
             );
+            $profiles = $this->creatorSuppressions->filterProfiles($platform, $profiles);
             $crmMatchesByProfileUrl = $this->findExistingCrmMatches($projectId, $sheetId, $platform, $profiles);
             foreach ($profiles as &$profile) {
                 $profileKey = $this->normalizeProfileUrlKey((string) ($profile['profileUrl'] ?? ''));
@@ -468,7 +470,7 @@ class PipelineDiscoveryService
                     ]);
                 },
             ]);
-            $enrichmentItems = $enrichment->items;
+            $enrichmentItems = $this->creatorSuppressions->filterProviderItems($platform, $enrichment->items);
             $stepResults[] = [
                 'step' => 'enrichment_scrape',
                 'status' => 'completed',

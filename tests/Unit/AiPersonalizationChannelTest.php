@@ -58,6 +58,34 @@ class AiPersonalizationChannelTest extends TestCase
         $this->assertStringNotContainsString('Subject:', $result['personalizedMessage']);
     }
 
+    public function test_selected_app_language_is_part_of_the_mandatory_generation_contract(): void
+    {
+        $gateway = $this->createMock(AiGatewayService::class);
+        $gateway->expects($this->once())
+            ->method('structured')
+            ->with(
+                $this->anything(),
+                $this->callback(fn (string $prompt) => str_contains($prompt, "OUTPUT LANGUAGE - mandatory\nGerman.")),
+                $this->anything(),
+                $this->anything(),
+                $this->anything(),
+                $this->anything(),
+            )
+            ->willReturn($this->messageResult([
+                'messageType' => 'email',
+                'emailSubject' => 'Eine konkrete Content-Idee',
+                'personalizedMessage' => $this->emailBody(),
+            ]));
+
+        $result = (new AiPersonalizationService($gateway))->personalize([
+            'creator' => ['handle' => '@creator', 'platform' => 'instagram'],
+            'messageType' => 'email',
+            'outputLanguage' => 'de',
+        ]);
+
+        $this->assertSame('Eine konkrete Content-Idee', $result['emailSubject']);
+    }
+
     private function messageResult(array $overrides): array
     {
         return array_merge([

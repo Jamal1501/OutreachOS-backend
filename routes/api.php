@@ -55,6 +55,9 @@ Route::middleware(['api.auth', 'throttle:api'])->group(function () {
         Route::put('/operations/incident-banner', [OperationsController::class, 'updateIncidentBanner']);
         Route::get('/operations/support-requests', [OperationsController::class, 'supportRequests']);
         Route::patch('/operations/support-requests/{id}', [OperationsController::class, 'updateSupportRequest']);
+        Route::get('/operations/creator-suppressions', [OperationsController::class, 'creatorSuppressions']);
+        Route::post('/operations/creator-suppressions', [OperationsController::class, 'createCreatorSuppression']);
+        Route::delete('/operations/creator-suppressions/{id}', [OperationsController::class, 'deleteCreatorSuppression']);
     });
 });
 
