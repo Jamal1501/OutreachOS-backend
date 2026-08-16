@@ -7,6 +7,7 @@ use App\Services\AiDuplicateDetectionService;
 use App\Services\AiPersonalizationService;
 use App\Services\AiScoringService;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class AiController extends Controller
 {
