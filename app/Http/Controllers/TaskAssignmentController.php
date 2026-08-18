@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Task;
 use App\Models\WorkspaceMember;
 use App\Services\ProjectResolverService;
+use App\Services\TaskQueueService;
 use App\Services\WorkspaceContextService;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\Request;
@@ -17,6 +18,7 @@ class TaskAssignmentController extends Controller
     public function __construct(
         private WorkspaceContextService $workspaceContext,
         private ProjectResolverService $projects,
+        private TaskQueueService $tasks,
     ) {}
 
     public function update(Request $request, string $taskId)
@@ -99,11 +101,37 @@ class TaskAssignmentController extends Controller
             return [$task->fresh(), $updatedTaskCount];
         });
 
+        $affectedTasks = Task::query()
+            ->where('project_id', $project->id)
+            ->when(
+                $task->creator_profile_id,
+                fn ($query) => $query->where('creator_profile_id', $task->creator_profile_id),
+                fn ($query) => $query->whereKey($task->id),
+            )
+            ->whereNotIn('status', ['COMPLETED', 'DONE', 'SKIPPED', 'ARCHIVED'])
+            ->get(['id', 'external_task_key', 'assigned_user_id'])
+            ->map(fn (Task $affectedTask) => [
+                'taskId' => (string) ($affectedTask->external_task_key ?: $affectedTask->id),
+                'assignedUserId' => $affectedTask->assigned_user_id ? (string) $affectedTask->assigned_user_id : null,
+            ])
+            ->values()
+            ->all();
+        $workload = $this->tasks->teamWorkload($workbookId);
+        $mine = collect($workload['members'] ?? [])->firstWhere('assignedUserId', $actorUserId);
+        $teamOpen = (int) ($workload['unassignedOpen'] ?? 0)
+            + collect($workload['members'] ?? [])->sum(fn (array $member) => (int) ($member['open'] ?? 0));
+
         return response()->json([
             'message' => $assignedUserId === $actorUserId ? 'Task claimed' : ($assignedUserId ? 'Task assigned' : 'Task unassigned'),
             'taskId' => (string) ($task->external_task_key ?: $task->id),
             'assignedUserId' => $assignedUserId,
             'updatedTaskCount' => $updatedTaskCount,
+            'affectedTasks' => $affectedTasks,
+            'ownershipCounts' => [
+                'mine' => (int) ($mine['open'] ?? 0),
+                'unassigned' => (int) ($workload['unassignedOpen'] ?? 0),
+                'team' => $teamOpen,
+            ],
         ]);
     }
 

@@ -36,7 +36,13 @@ class TaskOwnershipApiTest extends TestCase
                 'assignedUserId' => $memberA->supabase_user_id,
             ])
             ->assertOk()
-            ->assertJsonPath('assignedUserId', $memberA->supabase_user_id);
+            ->assertJsonPath('assignedUserId', $memberA->supabase_user_id)
+            ->assertJsonCount(2, 'affectedTasks')
+            ->assertJsonPath('affectedTasks.0.assignedUserId', $memberA->supabase_user_id)
+            ->assertJsonPath('affectedTasks.1.assignedUserId', $memberA->supabase_user_id)
+            ->assertJsonPath('ownershipCounts.mine', 2)
+            ->assertJsonPath('ownershipCounts.unassigned', 0)
+            ->assertJsonPath('ownershipCounts.team', 2);
 
         $this->withToken('member-b-token')
             ->withHeader('X-Workspace-Id', $workspace->id)
