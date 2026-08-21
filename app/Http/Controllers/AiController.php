@@ -59,6 +59,7 @@ class AiController extends Controller
             'tonePreference' => ['nullable', 'string', 'max:64'],
             'stage' => ['nullable', 'string', 'max:120'],
             'projectContext' => ['nullable', 'string', 'max:5000'],
+            'outreachContext' => ['nullable', 'array', 'max:40'],
             'templateContext' => ['nullable', 'array', 'max:100'],
             'messageType' => ['nullable', 'string', 'max:80'],
             'taskContext' => ['nullable', 'array', 'max:100'],

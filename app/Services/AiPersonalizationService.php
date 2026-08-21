@@ -42,6 +42,7 @@ class AiPersonalizationService
         $template = trim((string) ($payload['template'] ?? ''));
         $stage = trim((string) ($payload['stage'] ?? ''));
         $projectContext = trim((string) ($payload['projectContext'] ?? ''));
+        $outreachContext = (array) ($payload['outreachContext'] ?? []);
         $templateContext = (array) ($payload['templateContext'] ?? []);
         $replyContext = (array) ($payload['replyContext'] ?? []);
         $taskContext = (array) ($payload['taskContext'] ?? []);
@@ -114,11 +115,10 @@ You are SocialCore's creator-outreach operator.
 Write like a capable human who understands the offer, the channel, and the creator context. Do not write like a generic AI copywriter.
 
 Primary job:
-- Do not merely write an outreach message. Create one creator-native content idea that makes the offer easy to imagine as a post, reel, story, video, review, challenge, routine, comparison, test, gift reveal, tutorial, or audience interaction.
-- This must work for any niche. If the brand sells gym shorts, pitch a filming idea around training, fit checks, comfort tests, day-in-the-life use, leg day, running errands after the gym, or a creator-specific routine. If the brand sells software, pitch a workflow, teardown, challenge, before/after, template, tutorial, or result-based content idea. If the brand sells gifts, pitch a reveal, reaction, challenge, memory game, or personal story format.
-- The content idea must be based on the creator vertical and brand context. Never hardcode gift, family, fitness, beauty, food, or software angles unless the evidence supports that niche.
-- The message should give the creator a reason to think: "I could actually film that."
-- Prefer one vivid activation idea over a generic collaboration pitch.
+- Earn the next positive reply with a clear, credible opportunity that fits the selected channel and relationship stage.
+- A creative idea is optional in first outreach. Use at most one short direction when it makes the opportunity easier to understand. Never turn a cold message into a campaign brief.
+- This must work for any niche. Never hardcode gift, family, fitness, beauty, food, or software angles unless the evidence supports that niche.
+- The message should make the creator understand who is writing, why they were selected, what kind of opportunity this is, and the easiest next step.
 
 Core rules:
 - Never invent creator details, post topics, audience demographics, location, relationship status, needs, pain points, metrics, or brand features.
@@ -130,7 +130,7 @@ Core rules:
 - Use creator location only as quiet relevance when confidence is high. Never open with it. Never imply audience location.
 - Match the chosen tonePreference. Tone changes sentence shape and word choice; it does not permit fake compliments.
 - Respect the task context over everything else. If the task asks for a comment, write a comment. If it asks for email, write email.
-- Make the next step small: quick yes/no, permission to send details, or one simple question.
+- For cold outreach, prefer one interest CTA or permission to send details. Do not request a meeting by default.
 
 Human style rules:
 - Use plain language.
@@ -162,11 +162,11 @@ Forbidden phrases and patterns:
 - any version of "your X post stood out"
 
 Length guidance:
-- Instagram/TikTok cold DM: 220-430 characters, max 2 short paragraphs.
+- Instagram/TikTok cold DM: 180-350 characters, 2-4 short lines, max 2 short paragraphs.
 - Follow-up DM: 160-340 characters.
 - Warm-up comment: 60-160 characters, no sales pitch.
 - Ultra short tone: keep DM under 300 characters unless email.
-- Email: return a short subject in `emailSubject` and a 90-150 word email body in `personalizedMessage`. Do not put `Subject:` inside the message body.
+- Cold email: return a short subject in `emailSubject` and a 70-110 word body in `personalizedMessage`. Follow-up email must be shorter than the first message. Do not put `Subject:` inside the message body.
 - DM, comment, post, and answer: `emailSubject` must be an empty string. Never include a subject line or email formatting.
 - Email sign-off must use TASK CONTEXT senderSignature when provided.
 - Never end with placeholders like "your name", "[Name]", "(your name)", "company name", or "[Company]".
@@ -178,6 +178,7 @@ PROMPT;
 
         $userPrompt = $this->buildUserPrompt(
             projectContext: $projectContext,
+            outreachContext: $outreachContext,
             stage: $stage,
             messageType: $messageType,
             taskContext: $taskContext,
@@ -235,6 +236,7 @@ PROMPT;
 
     private function buildUserPrompt(
         string $projectContext,
+        array $outreachContext,
         string $stage,
         string $messageType,
         array $taskContext,
@@ -252,6 +254,7 @@ PROMPT;
         $sections = [];
 
         $sections[] = "PROJECT / BRAND CONTEXT\n".($projectContext !== '' ? $projectContext : 'No project context supplied. Keep the message neutral, professional, and low-assumption.');
+        $sections[] = "STRUCTURED OFFER CONTEXT - factual source of truth\n".$this->json($outreachContext);
         $sections[] = "OUTREACH STAGE\n".($stage !== '' ? $stage : 'unspecified');
         $sections[] = "MESSAGE TYPE\n".$messageType;
         $sections[] = "CHANNEL CONTRACT - mandatory\n".$this->channelContractInstruction($messageType);
@@ -287,13 +290,18 @@ PROMPT;
         }
 
         $sections[] = <<<'INSTRUCTIONS'
-CREATOR-NATIVE CONTENT IDEA ENGINE
-Before writing, mentally do this mapping:
-- What creator vertical/use case is visible from the evidence?
-- Which brand benefit from PROJECT / BRAND CONTEXT is most relevant to that vertical/use case?
-- What could this creator actually film, post, test, compare, reveal, teach, challenge, document, or ask their audience to react to?
-- How can the product become part of the creator's normal content format instead of a generic sponsored mention?
-Use this mapping in analysis.recommendedAngle, analysis.creatorContentIdea, analysis.contentMechanic, creativeAngle, and contentIdea. Do not mention a benefit unless the brand context supports it.
+MESSAGE STRATEGY
+Before writing, determine the stage, channel, sender identity, offer type, compensation disclosure, deliverable certainty, strongest supported creator evidence, and one CTA.
+- STRUCTURED OFFER CONTEXT is the factual source of truth for the commercial opportunity.
+- If senderType is agency and showClientName is true, identify both the agency and client naturally. If false, do not reveal clientName.
+- Mention compensation in first outreach when showBudget is true. Respect compensationMode: fixed, range, variable, creator_rates, or none. Never invent a number.
+- Defined deliverables may be stated clearly. Flexible deliverables must sound negotiable. Open deliverables should invite the creator's recommendation rather than inventing a format.
+- For cold outreach, optimize for a positive reply. Use one low-friction interest CTA or ask permission to send details. Do not ask for a meeting unless task context explicitly requires it.
+- Follow-ups must continue from the previous message, add at most one useful detail, and be shorter. Never rewrite the whole pitch.
+
+OPTIONAL CREATIVE DIRECTION
+First outreach does not require a content concept. Use at most one short, creator-native direction only when it makes the offer more compelling and the evidence supports it.
+Use any fuller idea only in the analysis fields. Do not crowd the sendable message with a mini brief.
 
 The content idea must be niche-flexible:
 - For apparel, think fit test, routine, comfort test, styling, before/after, packing, workout, daily wear, comparison, or challenge.
@@ -586,7 +594,7 @@ INSTRUCTIONS;
     private function channelContractInstruction(string $messageType): string
     {
         return match ($messageType) {
-            'email' => 'Write an email only. Return a non-empty emailSubject separately. personalizedMessage must contain the email body only, use 90-150 words, and read like an email rather than a social DM.',
+            'email' => 'Write an email only. Return a non-empty emailSubject separately. personalizedMessage must contain the email body only, use 70-110 words for first outreach, and read like an email rather than a social DM.',
             'comment' => 'Write one short public social comment only. emailSubject must be empty. Do not use a greeting, subject line, email sign-off, or private-message format.',
             'answer' => 'Write a direct reply to the creator only. emailSubject must be empty. Continue the conversation naturally and do not use a subject line or cold-email format.',
             'post' => 'Write social post copy only. emailSubject must be empty. Do not use email or direct-message formatting.',
@@ -609,11 +617,14 @@ INSTRUCTIONS;
             if ($wordCount < 45) {
                 $violations[] = 'email body is too short and reads like a DM';
             }
+            if ($wordCount > 130) {
+                $violations[] = 'email body is too long for first-touch creator outreach';
+            }
         } else {
             if ($emailSubject !== '' || preg_match('/^\s*subject\s*:/i', $message)) {
                 $violations[] = 'non-email draft contains an email subject';
             }
-            if ($requestedMessageType === 'dm' && (mb_strlen($message) > 650 || str_word_count(strip_tags($message)) > 90)) {
+            if ($requestedMessageType === 'dm' && (mb_strlen($message) > 400 || str_word_count(strip_tags($message)) > 65)) {
                 $violations[] = 'DM is formatted like a long email';
             }
         }

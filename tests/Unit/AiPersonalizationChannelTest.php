@@ -86,6 +86,42 @@ class AiPersonalizationChannelTest extends TestCase
         $this->assertSame('Eine konkrete Content-Idee', $result['emailSubject']);
     }
 
+    public function test_structured_offer_controls_are_included_in_the_generation_contract(): void
+    {
+        $gateway = $this->createMock(AiGatewayService::class);
+        $gateway->expects($this->once())
+            ->method('structured')
+            ->with(
+                $this->anything(),
+                $this->callback(fn (string $prompt) => str_contains($prompt, '"senderType": "agency"')
+                    && str_contains($prompt, '"showClientName": false')
+                    && str_contains($prompt, '"compensationMode": "range"')
+                    && str_contains($prompt, '"budgetMin": 800')
+                    && str_contains($prompt, '"deliverableMode": "flexible"')),
+                $this->anything(),
+                $this->anything(),
+                $this->anything(),
+                $this->anything(),
+            )
+            ->willReturn($this->messageResult([
+                'messageType' => 'dm',
+                'personalizedMessage' => 'We have a paid creator opportunity that fits your format. Open to the short details?',
+            ]));
+
+        (new AiPersonalizationService($gateway))->personalize([
+            'creator' => ['handle' => '@creator', 'platform' => 'instagram'],
+            'messageType' => 'dm',
+            'outreachContext' => [
+                'senderType' => 'agency',
+                'showClientName' => false,
+                'compensationMode' => 'range',
+                'budgetMin' => 800,
+                'budgetMax' => 1200,
+                'deliverableMode' => 'flexible',
+            ],
+        ]);
+    }
+
     private function messageResult(array $overrides): array
     {
         return array_merge([
