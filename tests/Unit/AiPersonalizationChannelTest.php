@@ -122,6 +122,37 @@ class AiPersonalizationChannelTest extends TestCase
         ]);
     }
 
+    public function test_first_outreach_requires_a_visible_reference_when_real_post_evidence_exists(): void
+    {
+        $gateway = $this->createMock(AiGatewayService::class);
+        $gateway->expects($this->once())
+            ->method('structured')
+            ->with(
+                $this->anything(),
+                $this->callback(fn (string $prompt) => str_contains($prompt, 'A real recent post is available')
+                    && str_contains($prompt, 'long-distance date ideas')
+                    && str_contains($prompt, 'reference one supported post topic naturally')),
+                $this->anything(),
+                $this->anything(),
+                $this->anything(),
+                $this->anything(),
+            )
+            ->willReturn($this->messageResult([
+                'messageType' => 'dm',
+                'personalizedMessage' => 'Your post about long-distance date ideas made me think this paid collaboration could fit naturally. Open to the details?',
+            ]));
+
+        (new AiPersonalizationService($gateway))->personalize([
+            'creator' => [
+                'handle' => '@creator',
+                'platform' => 'instagram',
+                'recentPosts' => [['caption' => 'Three long-distance date ideas that actually feel personal.']],
+            ],
+            'messageType' => 'dm',
+            'stage' => 'cold_invite',
+        ]);
+    }
+
     private function messageResult(array $overrides): array
     {
         return array_merge([

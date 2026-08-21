@@ -124,7 +124,8 @@ Core rules:
 - Never invent creator details, post topics, audience demographics, location, relationship status, needs, pain points, metrics, or brand features.
 - Do not mention a specific post unless a caption, title, topic, URL, or reply is actually provided.
 - Do not force personalization. Weak or thin evidence should produce a clean, honest relevance-based message, not a fake observation.
-- The best first line is usually offer relevance, not creator mirroring.
+- In first outreach, strong creator evidence should be visible in the message. When a real recent post caption, title, or topic is supplied, reference one concrete topic naturally in the first two sentences so the creator understands why they were selected.
+- Prefer wording such as "Your post about X made me think of..." or "The way you explain X would suit...". Do not make a generic discovery claim without naming the supported topic.
 - Treat templates as strategic angle memory only. Never copy template wording unless the user clearly wrote a draft and the mode is rewrite_existing_draft.
 - If GENERATION MODE is rewrite_existing_draft, the user-written draft is explicit direction. Preserve concrete offer details, incentives, product facts, constraints, and requested CTA unless they are unsafe or directly conflict with task/brand context.
 - Use creator location only as quiet relevance when confidence is high. Never open with it. Never imply audience location.
@@ -297,6 +298,8 @@ Before writing, determine the stage, channel, sender identity, offer type, compe
 - Mention compensation in first outreach when showBudget is true. Respect compensationMode: fixed, range, variable, creator_rates, or none. Never invent a number.
 - Defined deliverables may be stated clearly. Flexible deliverables must sound negotiable. Open deliverables should invite the creator's recommendation rather than inventing a format.
 - For cold outreach, optimize for a positive reply. Use one low-friction interest CTA or ask permission to send details. Do not ask for a meeting unless task context explicitly requires it.
+- For cold outreach with a non-empty recentPosts caption or title, use one specific post topic in the sendable message, normally in sentence one or two. The reference should explain why this creator is relevant, not act as empty praise.
+- If there is no reliable post evidence, use a supported bio or niche detail. If all creator evidence is thin, use honest offer relevance and never fabricate familiarity.
 - Follow-ups must continue from the previous message, add at most one useful detail, and be shorter. Never rewrite the whole pitch.
 
 OPTIONAL CREATIVE DIRECTION
@@ -363,7 +366,8 @@ INSTRUCTIONS;
         }
 
         $repeatedThemes = $this->deriveRepeatedThemes(array_merge($bioSignals, $postSignals));
-        $hasSpecificEvidence = trim($bio) !== '' || count($posts) > 0 || ! empty($replyContext);
+        $hasPostEvidence = count($posts) > 0;
+        $hasSpecificEvidence = trim($bio) !== '' || $hasPostEvidence || ! empty($replyContext);
 
         return [
             'handle' => $handle,
@@ -409,8 +413,15 @@ INSTRUCTIONS;
             'templateContextAvailable' => ! empty($templateContext),
             'replyContextAvailable' => ! empty($replyContext),
             'evidenceStrength' => $hasSpecificEvidence ? 'specific_evidence_available' : 'thin_profile_data',
+            'firstOutreachEvidenceInstruction' => $hasPostEvidence
+                ? 'A real recent post is available. In first outreach, reference one supported post topic naturally in the first two sentences so the creator can see why they were chosen.'
+                : (trim($bio) !== ''
+                    ? 'No usable recent post is available. A supported bio or niche detail may be used naturally; do not imply that a specific post was reviewed.'
+                    : 'No reliable creator-specific evidence is available. Do not fabricate a post reference or claim prior familiarity.'),
             'safeHookInstruction' => $hasSpecificEvidence
-                ? 'Evidence is available, but do not force it into a mirrored first line. Use it only when it creates useful offer relevance.'
+                ? ($hasPostEvidence
+                    ? 'Use one concrete recent-post topic in first outreach. Connect it directly to the opportunity instead of adding a generic compliment.'
+                    : 'Use the supported bio or niche evidence only when it creates useful offer relevance.')
                 : 'No specific creator evidence is available. Use a relevance-based opener without claiming you noticed, saw, liked, or came across a specific detail.',
         ];
     }
