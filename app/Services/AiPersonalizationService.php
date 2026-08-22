@@ -42,7 +42,7 @@ class AiPersonalizationService
         $template = trim((string) ($payload['template'] ?? ''));
         $stage = trim((string) ($payload['stage'] ?? ''));
         $projectContext = trim((string) ($payload['projectContext'] ?? ''));
-        $outreachContext = (array) ($payload['outreachContext'] ?? []);
+        $outreachContext = $this->normalizeOutreachContext((array) ($payload['outreachContext'] ?? []));
         $templateContext = (array) ($payload['templateContext'] ?? []);
         $replyContext = (array) ($payload['replyContext'] ?? []);
         $taskContext = (array) ($payload['taskContext'] ?? []);
@@ -296,6 +296,7 @@ Before writing, determine the stage, channel, sender identity, offer type, compe
 - STRUCTURED OFFER CONTEXT is the factual source of truth for the commercial opportunity.
 - If senderType is agency and showClientName is true, identify both the agency and client naturally. If false, do not reveal clientName.
 - Mention compensation in first outreach when showBudget is true. Respect compensationMode: fixed, range, variable, creator_rates, or none. Never invent a number.
+- compensationMode is authoritative. For creator_rates, ask for the creator's rates and never mention a budget number. For variable, say the opportunity is paid without inventing or reusing an amount. For none, do not imply cash payment.
 - Defined deliverables may be stated clearly. Flexible deliverables must sound negotiable. Open deliverables should invite the creator's recommendation rather than inventing a format.
 - For cold outreach, optimize for a positive reply. Use one low-friction interest CTA or ask permission to send details. Do not ask for a meeting unless task context explicitly requires it.
 - For cold outreach with a non-empty recentPosts caption or title, use one specific post topic in the sendable message, normally in sentence one or two. The reference should explain why this creator is relevant, not act as empty praise.
@@ -591,6 +592,27 @@ INSTRUCTIONS;
         $allowed = ['warm_direct', 'casual', 'premium', 'playful', 'professional', 'ultra_short'];
 
         return in_array($normalized, $allowed, true) ? $normalized : 'warm_direct';
+    }
+
+    private function normalizeOutreachContext(array $context): array
+    {
+        $mode = strtolower(trim((string) ($context['compensationMode'] ?? 'variable')));
+        if (! in_array($mode, ['fixed', 'range', 'variable', 'creator_rates', 'none'], true)) {
+            $mode = 'variable';
+        }
+        $context['compensationMode'] = $mode;
+
+        if ($mode !== 'fixed') {
+            unset($context['budgetFixed']);
+        }
+        if ($mode !== 'range') {
+            unset($context['budgetMin'], $context['budgetMax']);
+        }
+        if (($context['showBudget'] ?? true) === false) {
+            unset($context['budgetFixed'], $context['budgetMin'], $context['budgetMax']);
+        }
+
+        return $context;
     }
 
     private function normalizeMessageType(string $value): string

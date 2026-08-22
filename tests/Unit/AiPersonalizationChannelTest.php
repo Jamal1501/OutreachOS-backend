@@ -153,6 +153,37 @@ class AiPersonalizationChannelTest extends TestCase
         ]);
     }
 
+    public function test_creator_rate_mode_removes_a_stale_fixed_budget_from_the_ai_prompt(): void
+    {
+        $gateway = $this->createMock(AiGatewayService::class);
+        $gateway->expects($this->once())
+            ->method('structured')
+            ->with(
+                $this->anything(),
+                $this->callback(fn (string $prompt) => str_contains($prompt, '"compensationMode": "creator_rates"')
+                    && ! str_contains($prompt, '"budgetFixed"')
+                    && ! str_contains($prompt, '300')),
+                $this->anything(),
+                $this->anything(),
+                $this->anything(),
+                $this->anything(),
+            )
+            ->willReturn($this->messageResult([
+                'messageType' => 'dm',
+                'personalizedMessage' => 'We have a paid creator opportunity in mind. Could you share your rates for this type of partnership?',
+            ]));
+
+        (new AiPersonalizationService($gateway))->personalize([
+            'creator' => ['handle' => '@creator', 'platform' => 'instagram'],
+            'messageType' => 'dm',
+            'outreachContext' => [
+                'compensationMode' => 'creator_rates',
+                'budgetFixed' => 300,
+                'showBudget' => true,
+            ],
+        ]);
+    }
+
     private function messageResult(array $overrides): array
     {
         return array_merge([
