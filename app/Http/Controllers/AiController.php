@@ -19,12 +19,12 @@ class AiController extends Controller
             'projectContext' => ['nullable', 'string', 'max:5000'],
         ]);
 
-        return response()->json([
+        return response()->json($this->withBillingUsage($request, [
             'criteria' => $this->briefs->parse((string) $validated['brief'], [
                 'platform' => $validated['platform'] ?? 'instagram',
                 'projectContext' => $validated['projectContext'] ?? null,
             ]),
-        ]);
+        ]));
     }
 
     public function __construct(
@@ -42,12 +42,12 @@ class AiController extends Controller
             'projectContext' => ['nullable', 'string', 'max:5000'],
         ]);
 
-        return response()->json([
+        return response()->json($this->withBillingUsage($request, [
             'scores' => $this->scoring->scoreCreators(
                 $validated['creators'],
                 $validated['projectContext'] ?? null,
             ),
-        ]);
+        ]));
     }
 
     public function personalizeMessage(Request $request)
@@ -69,7 +69,10 @@ class AiController extends Controller
             'outputLanguage' => ['nullable', Rule::in(['en', 'de'])],
         ]);
 
-        return response()->json($this->personalization->personalize($validated));
+        return response()->json($this->withBillingUsage(
+            $request,
+            $this->personalization->personalize($validated),
+        ));
     }
 
     public function detectDuplicates(Request $request)
@@ -79,8 +82,26 @@ class AiController extends Controller
             'creators.*' => ['array', 'max:80'],
         ]);
 
-        return response()->json([
+        return response()->json($this->withBillingUsage($request, [
             'duplicates' => $this->duplicates->detect($validated['creators']),
-        ]);
+        ]));
+    }
+
+    private function withBillingUsage(Request $request, array $payload): array
+    {
+        $usage = (array) $request->attributes->get('ai_credit_usage', []);
+        if ($usage === []) {
+            return $payload;
+        }
+
+        $payload['_billing'] = [
+            'aiCreditsConsumed' => (int) ($usage['credits_consumed'] ?? 0),
+            'aiCreditsRemaining' => (int) ($usage['remaining_balance'] ?? 0),
+            'aiCreditsBalance' => (int) ($usage['remaining_base_balance'] ?? 0),
+            'bonusAiCredits' => (int) ($usage['remaining_bonus_balance'] ?? 0),
+            'usageEventIds' => array_values((array) ($usage['usage_event_ids'] ?? [])),
+        ];
+
+        return $payload;
     }
 }

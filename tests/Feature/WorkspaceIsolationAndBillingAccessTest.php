@@ -901,6 +901,9 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
             'units' => 10,
             'credit_cost' => 10,
         ]);
+        $this->assertSame(90, (int) $reservation['remaining_balance']);
+        $this->assertSame(90, (int) $reservation['remaining_base_balance']);
+        $this->assertSame(0, (int) $reservation['remaining_bonus_balance']);
         $billing->settleReservationUnits((string) $reservation['usage_event_id'], 4, 0.01);
 
         $event = DB::table('workspace_usage_events')->where('id', $reservation['usage_event_id'])->first();
@@ -1012,6 +1015,127 @@ class WorkspaceIsolationAndBillingAccessTest extends TestCase
 
         $this->assertSame('refunded', DB::table('workspace_usage_events')->latest('created_at')->value('status'));
         $this->assertSame(100, (int) DB::table('workspace_credit_wallets')->where('id', $wallet->id)->value('ai_credits_balance'));
+    }
+
+    public function test_successful_ai_generation_exposes_exact_credit_usage_for_the_response(): void
+    {
+        [, $workspace] = $this->createWorkspaceForRole('owner');
+        $billing = app(WorkspaceBillingService::class);
+        [, $wallet] = $billing->ensureWorkspaceBilling($workspace->id);
+        DB::table('workspace_credit_wallets')->where('id', $wallet->id)->update([
+            'ai_credits_balance' => 7,
+            'bonus_ai_credits' => 2,
+            'lifetime_ai_used' => 0,
+        ]);
+        config(['services.ai.openai_key' => 'test-key', 'services.ai.openai_model' => 'test-model']);
+        request()->attributes->set('workspace_id', $workspace->id);
+        Http::fake([
+            'api.openai.com/*' => Http::response([
+                'id' => 'chatcmpl-valid',
+                'usage' => ['prompt_tokens' => 10, 'completion_tokens' => 2, 'total_tokens' => 12],
+                'choices' => [['message' => ['tool_calls' => [[
+                    'function' => ['arguments' => json_encode(['value' => 'ok'])],
+                ]]]]],
+            ], 200),
+        ]);
+
+        $result = app(AiGatewayService::class)->structured(
+            'system',
+            'user',
+            'test_tool',
+            'test',
+            [
+                'type' => 'object',
+                'properties' => ['value' => ['type' => 'string']],
+                'required' => ['value'],
+                'additionalProperties' => false,
+            ],
+        );
+
+        $usage = (array) request()->attributes->get('ai_credit_usage');
+        $this->assertSame('ok', $result['value']);
+        $this->assertSame(1, (int) $usage['credits_consumed']);
+        $this->assertSame(8, (int) $usage['remaining_balance']);
+        $this->assertSame(6, (int) $usage['remaining_base_balance']);
+        $this->assertSame(2, (int) $usage['remaining_bonus_balance']);
+        $this->assertCount(1, $usage['usage_event_ids']);
+    }
+
+    public function test_personalized_message_response_includes_the_live_ai_credit_balance(): void
+    {
+        [$user, $workspace] = $this->createWorkspaceForRole('owner');
+        $this->fakeSupabaseUser($user);
+        $billing = app(WorkspaceBillingService::class);
+        [, $wallet] = $billing->ensureWorkspaceBilling($workspace->id);
+        DB::table('workspace_credit_wallets')->where('id', $wallet->id)->update([
+            'ai_credits_balance' => 7,
+            'bonus_ai_credits' => 2,
+            'lifetime_ai_used' => 0,
+        ]);
+        config(['services.ai.openai_key' => 'test-key', 'services.ai.openai_model' => 'test-model']);
+        Http::fake([
+            'api.openai.com/*' => Http::response([
+                'id' => 'chatcmpl-personalized',
+                'usage' => ['prompt_tokens' => 20, 'completion_tokens' => 15, 'total_tokens' => 35],
+                'choices' => [
+                    [
+                        'message' => [
+                            'tool_calls' => [
+                                [
+                                    'function' => [
+                                        'arguments' => json_encode([
+                                            'personalizedMessage' => 'Hi Alex, your practical creator tutorials match a paid campaign we are preparing. Open to a short overview?',
+                                            'emailSubject' => '',
+                                            'personalizationNotes' => 'Used the supplied creator context.',
+                                            'creativeAngle' => 'Practical tutorial',
+                                            'contentIdea' => 'Short product walkthrough',
+                                            'fitScore' => 82,
+                                            'confidenceScore' => 0.82,
+                                            'toneUsed' => 'casual',
+                                            'messageType' => 'dm',
+                                            'analysis' => [
+                                                'creatorSummary' => 'Practical tutorial creator',
+                                                'styleSignals' => ['clear'],
+                                                'audienceSignals' => ['tutorial viewers'],
+                                                'proofPoints' => ['supplied bio'],
+                                                'personalizationHooks' => ['practical tutorials'],
+                                                'risksToAvoid' => [],
+                                                'recommendedAngle' => 'Practical tutorial',
+                                                'creatorContentIdea' => 'Short product walkthrough',
+                                                'contentMechanic' => 'tutorial',
+                                                'selectedEvidenceHook' => 'practical tutorials',
+                                                'evidenceQuality' => 'medium',
+                                                'fallbackReason' => '',
+                                                'toneUsed' => 'casual',
+                                                'fitScore' => 82,
+                                            ],
+                                        ]),
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ], 200),
+        ]);
+
+        $response = $this->withToken('valid-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->postJson('/api/ai/personalize-message', [
+                'creator' => [
+                    'handle' => '@alex',
+                    'platform' => 'instagram',
+                    'bio' => 'Practical creator tutorials',
+                ],
+                'messageType' => 'dm',
+                'stage' => 'cold_invite',
+            ]);
+
+        $response->assertOk()
+            ->assertJsonPath('_billing.aiCreditsConsumed', 1)
+            ->assertJsonPath('_billing.aiCreditsRemaining', 8)
+            ->assertJsonPath('_billing.aiCreditsBalance', 6)
+            ->assertJsonPath('_billing.bonusAiCredits', 2);
     }
 
     public function test_public_readiness_does_not_expose_raw_database_exception_messages(): void

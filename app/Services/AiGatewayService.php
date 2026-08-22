@@ -124,6 +124,7 @@ class AiGatewayService
                 'provider_cost_source' => 'openai_token_estimate',
                 'structured_output_validated' => true,
             ], referenceId: (string) ($payload['id'] ?? ''));
+            $this->recordAiCreditUsageForResponse($usageReservation);
         }
 
         $this->usageLogger->logAi([
@@ -141,6 +142,28 @@ class AiGatewayService
         ]);
 
         return $decoded;
+    }
+
+    private function recordAiCreditUsageForResponse(array $reservation): void
+    {
+        $currentRequest = request();
+        if (! $currentRequest) {
+            return;
+        }
+
+        $current = (array) $currentRequest->attributes->get('ai_credit_usage', []);
+        $eventIds = array_values(array_unique(array_filter([
+            ...(array) ($current['usage_event_ids'] ?? []),
+            (string) ($reservation['usage_event_id'] ?? ''),
+        ])));
+
+        $currentRequest->attributes->set('ai_credit_usage', [
+            'credits_consumed' => (int) ($current['credits_consumed'] ?? 0) + (int) ($reservation['credit_cost'] ?? 0),
+            'remaining_balance' => (int) ($reservation['remaining_balance'] ?? 0),
+            'remaining_base_balance' => (int) ($reservation['remaining_base_balance'] ?? 0),
+            'remaining_bonus_balance' => (int) ($reservation['remaining_bonus_balance'] ?? 0),
+            'usage_event_ids' => $eventIds,
+        ]);
     }
 
     private function redactRequestPayload(array $requestPayload): array

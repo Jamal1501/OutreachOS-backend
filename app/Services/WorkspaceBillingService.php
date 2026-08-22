@@ -1017,6 +1017,8 @@ class WorkspaceBillingService
                     'credit_cost' => $creditCost,
                     'units' => $units,
                     'remaining_balance' => (int) $wallet->{$baseField} + (int) $wallet->{$bonusField},
+                    'remaining_base_balance' => (int) $wallet->{$baseField},
+                    'remaining_bonus_balance' => (int) $wallet->{$bonusField},
                 ];
             });
         } catch (ProviderSpendLimitException $exception) {
