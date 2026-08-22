@@ -104,6 +104,25 @@ class TaskOwnershipApiTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_task_list_returns_the_complete_workload_including_future_snoozed_tasks(): void
+    {
+        [$owner, $memberA, $memberB, $workspace, $project] = $this->fixture();
+        $this->task($project);
+        $futureTask = $this->task($project, status: 'SNOOZED');
+        $futureTask->update(['snoozed_until' => now()->addMonth()]);
+        $this->task($project, status: 'COMPLETED', completedAt: now());
+
+        $this->fakeSupabaseUsers(['owner-token' => $owner]);
+
+        $this->withToken('owner-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->getJson('/api/tasks/list?sheetId='.urlencode($project->workbook_id))
+            ->assertOk()
+            ->assertJsonPath('taskCount', 3)
+            ->assertJsonCount(3, 'tasks')
+            ->assertJsonFragment(['status' => 'snoozed']);
+    }
+
     public function test_dashboard_operator_view_is_scoped_to_the_signed_in_members_assignments(): void
     {
         [$owner, $memberA, $memberB, $workspace, $project] = $this->fixture();

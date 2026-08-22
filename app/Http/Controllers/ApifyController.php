@@ -646,6 +646,7 @@ class ApifyController extends Controller
             'message' => 'Tasks fetched',
             'sheetId' => $sheetId,
             'tasks' => $tasks,
+            'taskCount' => count($tasks),
             'queueHealth' => $queueHealth,
         ]);
     }

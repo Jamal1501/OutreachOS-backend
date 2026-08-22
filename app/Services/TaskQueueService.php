@@ -711,7 +711,11 @@ class TaskQueueService
             return null;
         }
 
+        // This endpoint is the canonical workload source for the task page.
+        // Never apply the active-queue/snooze scope here: ownership views must
+        // receive every project task so their rows match teamWorkload totals.
         $tasks = Task::query()
+            ->withoutGlobalScopes()
             ->where('project_id', $project->id)
             ->with(['creatorProfile.creator', 'messageTemplate'])
             ->orderByRaw("CASE priority WHEN 'URGENT' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'MEDIUM' THEN 3 WHEN 'LOW' THEN 4 ELSE 5 END")
