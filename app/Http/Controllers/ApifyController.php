@@ -641,6 +641,20 @@ class ApifyController extends Controller
         $sheetId = $this->workspaceContext->resolveWorkbookId($request, $validated['sheetId'] ?? null);
         $queueHealth = $this->taskQueue->queueHealth($sheetId);
         $tasks = $this->taskQueue->listTasks($sheetId);
+        $role = strtolower(trim((string) $request->attributes->get('workspace_role')));
+        $actorUserId = trim((string) $request->attributes->get('supabase_user_id'));
+        $canViewTeamDetails = in_array($role, ['owner', 'admin'], true);
+
+        if (! $canViewTeamDetails) {
+            // Members need their own work and the claimable queue, but not a
+            // row-level view of another person's workload. Team management is
+            // intentionally reserved for owners and admins.
+            $tasks = array_values(array_filter($tasks, function (array $task) use ($actorUserId) {
+                $assignedUserId = trim((string) ($task['assignedUserId'] ?? ''));
+
+                return $assignedUserId === '' || $assignedUserId === $actorUserId;
+            }));
+        }
 
         return response()->json([
             'message' => 'Tasks fetched',
@@ -648,6 +662,7 @@ class ApifyController extends Controller
             'tasks' => $tasks,
             'taskCount' => count($tasks),
             'queueHealth' => $queueHealth,
+            'canViewTeamDetails' => $canViewTeamDetails,
         ]);
     }
 

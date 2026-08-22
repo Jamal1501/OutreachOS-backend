@@ -184,6 +184,37 @@ class AiPersonalizationChannelTest extends TestCase
         ]);
     }
 
+    public function test_creator_rate_mode_repairs_a_cta_that_claims_the_sender_will_provide_rates(): void
+    {
+        $gateway = $this->createMock(AiGatewayService::class);
+        $gateway->expects($this->exactly(2))
+            ->method('structured')
+            ->willReturnOnConsecutiveCalls(
+                $this->messageResult([
+                    'messageType' => 'email',
+                    'emailSubject' => 'Paid creator idea',
+                    'personalizedMessage' => 'Hi Kayzie, we have a paid creator idea in mind. If this sounds interesting, I can send over the details and creator rates. Best, Loveframes',
+                ]),
+                $this->messageResult([
+                    'messageType' => 'email',
+                    'emailSubject' => 'Paid creator idea',
+                    'personalizedMessage' => 'Hi Kayzie, we have a paid creator idea in mind. If this sounds interesting, I can send the full details. Could you also share your rates for this type of partnership? Best, Loveframes',
+                ]),
+            );
+
+        $result = (new AiPersonalizationService($gateway))->personalize([
+            'creator' => ['handle' => '@creator', 'platform' => 'instagram'],
+            'messageType' => 'email',
+            'outreachContext' => [
+                'compensationMode' => 'creator_rates',
+                'showBudget' => true,
+            ],
+        ]);
+
+        $this->assertStringContainsString('share your rates', $result['personalizedMessage']);
+        $this->assertStringNotContainsString('send over the details and creator rates', $result['personalizedMessage']);
+    }
+
     private function messageResult(array $overrides): array
     {
         return array_merge([

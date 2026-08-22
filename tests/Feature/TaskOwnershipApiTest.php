@@ -123,6 +123,38 @@ class TaskOwnershipApiTest extends TestCase
             ->assertJsonFragment(['status' => 'snoozed']);
     }
 
+    public function test_member_task_list_hides_other_members_row_level_work(): void
+    {
+        [$owner, $memberA, $memberB, $workspace, $project] = $this->fixture();
+        $mine = $this->task($project, $memberA->supabase_user_id);
+        $unassigned = $this->task($project);
+        $otherMembers = $this->task($project, $memberB->supabase_user_id);
+
+        $this->fakeSupabaseUsers([
+            'member-a-token' => $memberA,
+            'owner-token' => $owner,
+        ]);
+
+        $memberResponse = $this->withToken('member-a-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->getJson('/api/tasks/list?sheetId='.urlencode($project->workbook_id))
+            ->assertOk()
+            ->assertJsonPath('canViewTeamDetails', false)
+            ->assertJsonPath('taskCount', 2);
+
+        $memberTaskIds = collect($memberResponse->json('tasks'))->pluck('taskId');
+        $this->assertTrue($memberTaskIds->contains($mine->external_task_key));
+        $this->assertTrue($memberTaskIds->contains($unassigned->external_task_key));
+        $this->assertFalse($memberTaskIds->contains($otherMembers->external_task_key));
+
+        $this->withToken('owner-token')
+            ->withHeader('X-Workspace-Id', $workspace->id)
+            ->getJson('/api/tasks/list?sheetId='.urlencode($project->workbook_id))
+            ->assertOk()
+            ->assertJsonPath('canViewTeamDetails', true)
+            ->assertJsonPath('taskCount', 3);
+    }
+
     public function test_dashboard_operator_view_is_scoped_to_the_signed_in_members_assignments(): void
     {
         [$owner, $memberA, $memberB, $workspace, $project] = $this->fixture();

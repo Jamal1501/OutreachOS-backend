@@ -210,6 +210,7 @@ PROMPT;
         $violations = array_values(array_unique(array_merge(
             $this->detectCheapOutreachViolations((string) ($result['personalizedMessage'] ?? '')),
             $this->detectChannelContractViolations($result, $messageType, $returnedMessageType),
+            $this->detectOfferContractViolations((string) ($result['personalizedMessage'] ?? ''), $outreachContext, $outputLanguage),
         )));
         if (! empty($violations)) {
             $repairPrompt = $userPrompt
@@ -767,6 +768,32 @@ INSTRUCTIONS;
         }
 
         return array_values(array_unique($violations));
+    }
+
+    private function detectOfferContractViolations(string $message, array $outreachContext, string $outputLanguage): array
+    {
+        if (($outreachContext['compensationMode'] ?? null) !== 'creator_rates') {
+            return [];
+        }
+
+        $lower = mb_strtolower($message);
+        $asksCreatorForRates = $outputLanguage === 'de'
+            ? (bool) preg_match('/\b(deine|ihre|eure)\b.{0,35}\b(konditionen|honorar|honorare|preise|rate)\b/iu', $lower)
+            : (bool) preg_match('/\b(your)\b.{0,25}\b(rate|rates|pricing)\b/iu', $lower);
+        $senderClaimsToProvideRates = (bool) preg_match(
+            '/\b(i|we)\s+(can|could|will|would|[’\']ll)\s+(send|share|provide)\b[^.!?\n]{0,80}\b(creator\s+)?rates?\b/iu',
+            $lower,
+        );
+
+        $violations = [];
+        if (! $asksCreatorForRates) {
+            $violations[] = 'creator-rate mode must ask the creator to share their rates';
+        }
+        if ($senderClaimsToProvideRates) {
+            $violations[] = 'sender incorrectly claims they will provide creator rates';
+        }
+
+        return $violations;
     }
 
     private function textFromKeys(array $source, array $keys): string
